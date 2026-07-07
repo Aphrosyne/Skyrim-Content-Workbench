@@ -7,7 +7,7 @@
 * Python 3.12+
 * PySide6
 * SQLite + FTS5
-* Pillow
+* Pillow（阶段 2 不引入；缩略图服务实现前添加）
 * pytest
 * ruff
 * PyInstaller 或 Nuitka，用于后续 Windows 打包
@@ -37,6 +37,12 @@ Infrastructure
     ├─ Thumbnail Service
     └─ JSON Import/Export Service
 ```
+
+UI 分层规则（阶段 2 起）：
+
+* widget / view 不直接访问 Repository 或文件系统；通过 controller、view model 或 application service 调用。
+* Qt worker 仅包裹同步扫描器（`FileScanner.scan_many()`），不得包含文件系统写入逻辑；扫描结果仅写应用数据库。
+* 目录树的数据源是 SQLite `FolderNode`，不是可写的即时文件系统树。
 
 ## 3. 模块职责
 
@@ -74,7 +80,7 @@ Infrastructure
 
 负责：
 
-* SQLite 数据库连接、迁移和 Repository
+* SQLite 数据库连接、迁移和 Repository（含阶段 2 新增的 `ManagedRootRepository`）
 * 文件扫描
 * 路径标准化
 * 文件移动、复制、存在性检查和权限检查
@@ -94,6 +100,12 @@ Infrastructure
 * 导出和导入 AI 建议
 * 更新搜索索引
 
+阶段 2 新增职责：
+
+* `ManagedRootService`：受管理根目录配置的添加、列出、移除、校验；路径检查仅用只读文件系统 API；不扫描、不移动、不删除用户文件。
+* `ScanWorkflowService`：读取已配置根目录，调用 `FileScanner.scan_many()` 与 `persist_scan_result()`，返回结构化摘要（根目录数、扫描条目数、持久化条目数、错误列表）；不修改 `FileScanner` 同步接口。
+* 可选 `WorkbenchQueryService`：集中 UI 查询逻辑（目录树构建、未关联素材查询、ModItem 列表查询），避免 widget 直接访问 Repository。
+
 ## 4. 数据存储
 
 应用数据应位于：
@@ -109,6 +121,11 @@ Infrastructure
 用户 Mod 文件不应被复制到应用数据目录。唯一例外是缩略图缓存。
 
 数据库损坏不应影响用户原始 Mod 文件；重新扫描后应能重建基础索引。
+
+Schema 版本与迁移：
+
+* schema v1（阶段 1）：`mod_item` / `file_asset` / `folder_node` / `operation_log` 四表。
+* schema v2（阶段 2 任务 1）：新增 `managed_root` 表（`id` / `real_path` / `path_key` UNIQUE / `display_name` / `created_at` / `updated_at`）。`managed_root` 保存用户配置，独立于扫描结果；`folder_node.is_managed_root` 保留作为扫描结果标记。移除 `managed_root` 配置不自动清理 `folder_node` 记录（清理策略待确认）。v1→v2 迁移不丢失已有业务数据。
 
 ## 5. 路径与 Unicode
 
@@ -147,6 +164,8 @@ MovePlan 必须包含：
 
 执行前，MovePlan 必须持久化为 `planned` 状态。用户确认后才变为 `confirmed` 并执行。
 
+预演后外部变化风险（阶段 2 UI 处理说明）：`execute_move` 从 OperationLog 读取 source/target 直接执行，执行前再次检查源存在与目标重名。预演到执行之间文件可能被外部改动，执行结果必须重新反映实际成功/失败，旧预演不作为执行保证。UI 必须展示执行结果的实际状态，不得直接复用预演结果。
+
 ## 7. 搜索架构
 
 使用 SQLite FTS5 建立本地搜索索引。
@@ -165,6 +184,8 @@ MovePlan 必须包含：
 
 ## 8. 缩略图架构
 
+阶段 2 未实现。缩略图生成与预览图墙归阶段 5（预览增强）。
+
 * 原图保持不变。
 * 缩略图以 `asset_id` 或内容标识命名。
 * 缩略图缓存可随时删除并重建。
@@ -180,7 +201,16 @@ MovePlan 必须包含：
 * AI 不得提供 shell 命令、任意文件路径或删除指令。
 * 分类移动必须由本地 `folder_id` 映射到真实路径。
 
-## 10. 测试策略
+## 10. 操作历史查询
+
+阶段 2 任务 5 需要展示最近操作列表与撤销入口。
+
+* UI 不得直接拼接 `operation_log` SQL。
+* 操作历史最小查询接口由 `OperationLogRepository` 或新增 query service 提供（如 `list_recent(limit)` / `list_undoable()`）。
+* 查询接口仅读取数据库，不访问文件系统。
+* 撤销可行性判断由 `FileOperationService.plan_undo()` 负责，UI 不得自行实现安全校验。
+
+## 11. 测试策略
 
 必须优先测试：
 
@@ -194,3 +224,13 @@ MovePlan 必须包含：
 * 撤销预演。
 * AI JSON 非法字段拒绝。
 * 数据库重启后数据恢复。
+
+阶段 2 新增优先测试项：
+
+* v1→v2 schema 迁移。
+* ManagedRoot CRUD 与中文路径往返。
+* 扫描工作流多根目录、错误继续、后台线程摘要。
+* 移动预演→确认→执行→刷新→撤销预演→确认撤销完整流程。
+* 取消确认后不执行移动。
+* 部分失败结果展示。
+* B1/B2 撤销阻止结果展示。
