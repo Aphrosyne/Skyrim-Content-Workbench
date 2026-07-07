@@ -33,20 +33,20 @@
 
 ---
 
-## 阶段 1：安全数据与文件操作基础  ⬜
+## 阶段 1：安全数据与文件操作基础  ⏳
 
 | 任务 | 状态 | 备注 |
 |---|---|---|
-| 受管理根目录配置 | ⬜ | Task 2/3 |
+| 受管理根目录配置 | ⬜ | Task 3 |
 | 文件和目录扫描 | ⬜ | Task 3 |
-| FolderNode、FileAsset、ModItem、OperationLog 数据模型 | ⬜ | Task 2 |
+| FolderNode、FileAsset、ModItem、OperationLog 数据模型 | ✅ | Task 2 完成；schema v1，4 表 + Repository CRUD |
 | 手动创建 Mod 条目 | ⬜ | Task 4 |
 | 手动关联多个 FileAsset | ⬜ | Task 4 |
 | 移动预演 | ⬜ | Task 5 |
 | 确认后移动 | ⬜ | Task 5 |
-| 操作日志 | ⬜ | Task 2/5 |
+| 操作日志 | 🔶 | Task 2 完成 Repository CRUD；预演/执行/撤销逻辑在 Task 5 |
 | 撤销预演与撤销执行 | ⬜ | Task 5 |
-| 中文路径测试 | ⬜ | Task 3/5 |
+| 中文路径测试 | 🔶 | Task 2 已覆盖 path_key 与中文路径往返；Task 3/5 继续覆盖 |
 
 **验收（来自 roadmap）**：
 

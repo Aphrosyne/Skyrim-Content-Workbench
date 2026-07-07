@@ -135,7 +135,9 @@
 
 创建 Python 3.12+ 项目骨架，使用 PySide6、SQLite、pytest 和 ruff。建立 `src/app`、`src/domain`、`src/infrastructure`、`src/application`、`tests` 和 `docs` 目录。实现一个可启动的空 PySide6 主窗口、应用数据目录初始化和基础日志。不要实现任何文件扫描或文件移动。添加最小测试，验证应用数据目录和 SQLite 数据库文件可被初始化。使用 pathlib.Path，所有文本按 UTF-8 处理。完成后运行 pytest 和 ruff，并报告修改的文件、测试结果和未解决问题。
 
-## Task 2：实现数据库 Schema 与领域模型
+## Task 2：实现数据库 Schema 与领域模型 ✅
+
+> 完成于 2026-07-07。schema_version=1。详见 [CHANGELOG.md](../CHANGELOG.md) 与 [docs/progress.md](progress.md)。
 
 基于 `docs/spec.md` 实现 SQLite Schema 和领域模型：ModItem、FileAsset、FolderNode、OperationLog。实现数据库初始化和 Repository 的最小 CRUD。暂不实现 UI、扫描器、文件移动或 AI JSON。要求支持 Unicode 和中文路径。为创建 Mod 条目、关联多个 FileAsset、保存 FolderNode、写入 OperationLog 编写测试。不得假设文件名格式，不得自动分组。完成后运行 pytest 和 ruff，并报告数据库文件位置、schema 版本策略和待确认项。
 

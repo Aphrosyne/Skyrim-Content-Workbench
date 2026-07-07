@@ -125,3 +125,14 @@
 - 不决策原因：阶段 1 不涉及。
 - 预计决定里程碑：阶段 3 启动前。
 - 兼容性约束：阶段 3 启动前需先产出 schema 文件并评审。
+
+## 16. OperationType 完整值集
+- 问题：spec §6.4 列出 operation_type 字段但未枚举完整值集。
+- 背景：Task 2 实现领域模型时引入 OperationType 枚举，仅定义 MOVE 与 UNDO；
+  DB 不加 CHECK 约束以避免限制未来扩展。
+- 可选方向：保持 {move, undo} / 扩展 {move, undo, copy, ...} / 引入更细粒度类型。
+- 不决策原因：Task 5（撤销实现）会确定撤销相关操作类型；其他操作类型在后续阶段可能引入。
+- 预计决定里程碑：Task 5 实现时。
+- 兼容性约束：DB operation_log.operation_type 列为 TEXT 无 CHECK；
+  代码层 OperationType 枚举仅定义已知值，新增值需同步更新枚举与文档；
+  读取未知值时 Repository 抛 ValueError（不静默吞掉）。
