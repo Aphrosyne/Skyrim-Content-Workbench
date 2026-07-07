@@ -47,3 +47,43 @@ def db_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         conn.close()
+
+
+@pytest.fixture
+def sample_mod_tree(tmp_path: Path) -> Path:
+    """构造一个混合中英文的样本 Mod 目录树，返回根目录路径。
+
+    结构：
+        sample_mods/
+        ├── 护甲/
+        │   ├── 寒霜之心.7z
+        │   ├── 寒霜之心-汉化.zip
+        │   └── preview.webp
+        ├── Weapons/
+        │   ├── DragonSword.rar
+        │   └── README.txt
+        ├── 空目录/
+        ├── normal_file.txt
+        └── no_extension
+    """
+    root = tmp_path / "sample_mods"
+    root.mkdir(parents=True, exist_ok=True)
+
+    armor = root / "护甲"
+    armor.mkdir()
+    (armor / "寒霜之心.7z").write_bytes(b"\x00" * 100)
+    (armor / "寒霜之心-汉化.zip").write_bytes(b"\x00" * 50)
+    (armor / "preview.webp").write_bytes(b"\x00" * 200)
+
+    weapons = root / "Weapons"
+    weapons.mkdir()
+    (weapons / "DragonSword.rar").write_bytes(b"\x00" * 80)
+    (weapons / "README.txt").write_bytes(b"hello")
+
+    empty = root / "空目录"
+    empty.mkdir()
+
+    (root / "normal_file.txt").write_bytes(b"data")
+    (root / "no_extension").write_bytes(b"\x00")
+
+    return root

@@ -141,7 +141,9 @@
 
 基于 `docs/spec.md` 实现 SQLite Schema 和领域模型：ModItem、FileAsset、FolderNode、OperationLog。实现数据库初始化和 Repository 的最小 CRUD。暂不实现 UI、扫描器、文件移动或 AI JSON。要求支持 Unicode 和中文路径。为创建 Mod 条目、关联多个 FileAsset、保存 FolderNode、写入 OperationLog 编写测试。不得假设文件名格式，不得自动分组。完成后运行 pytest 和 ruff，并报告数据库文件位置、schema 版本策略和待确认项。
 
-## Task 3：实现只读扫描器
+## Task 3：实现只读扫描器 ✅
+
+> 完成于 2026-07-07。详见 [CHANGELOG.md](../CHANGELOG.md) 与 [docs/progress.md](progress.md)。
 
 实现一个只读扫描器：接收用户指定根目录，递归扫描文件和文件夹，将结果写入 FileAsset 与 FolderNode。扫描器不得移动、重命名、删除、修改或打开用户文件。至少识别文件、文件夹、图片和常见压缩包扩展名，但不得解析压缩包内部内容。扫描结果必须支持中文路径。使用 pytest 临时目录构造中文目录、英文目录、图片名和压缩包名测试。完成后运行 pytest 和 ruff，并报告扫描规则、忽略规则和性能待确认项。
 

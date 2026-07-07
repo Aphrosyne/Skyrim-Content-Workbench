@@ -37,8 +37,8 @@
 
 | 任务 | 状态 | 备注 |
 |---|---|---|
-| 受管理根目录配置 | ⬜ | Task 3 |
-| 文件和目录扫描 | ⬜ | Task 3 |
+| 受管理根目录配置 | 🔶 | Task 3 完成 scanner 接口（接受调用方传入根目录）；配置 UI 在阶段 2 |
+| 文件和目录扫描 | ✅ | Task 3 完成；只读扫描器 + persist_scan_result |
 | FolderNode、FileAsset、ModItem、OperationLog 数据模型 | ✅ | Task 2 完成；schema v1，4 表 + Repository CRUD |
 | 手动创建 Mod 条目 | ⬜ | Task 4 |
 | 手动关联多个 FileAsset | ⬜ | Task 4 |
@@ -46,7 +46,7 @@
 | 确认后移动 | ⬜ | Task 5 |
 | 操作日志 | 🔶 | Task 2 完成 Repository CRUD；预演/执行/撤销逻辑在 Task 5 |
 | 撤销预演与撤销执行 | ⬜ | Task 5 |
-| 中文路径测试 | 🔶 | Task 2 已覆盖 path_key 与中文路径往返；Task 3/5 继续覆盖 |
+| 中文路径测试 | 🔶 | Task 2/3 已覆盖 path_key、扫描器中文路径往返；Task 5 继续覆盖 |
 
 **验收（来自 roadmap）**：
 

@@ -8,6 +8,61 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.3.0] - 2026-07-07
+
+对应 [docs/roadmap.md](docs/roadmap.md) Task 3（只读扫描器）完成。
+
+### Added
+
+- 扩展名分类 [src/infrastructure/file_classify.py](src/infrastructure/file_classify.py)：
+  `AssetHint` 枚举（IMAGE/ARCHIVE/OTHER）；`IMAGE_EXTENSIONS` 与 `ARCHIVE_EXTENSIONS` 集合；
+  `get_extension(filename)` 与 `classify_by_extension(filename)`。
+  分类结果仅扫描器内部使用，不持久化到 FileAsset 表。
+- 只读扫描器 [src/infrastructure/file_scanner.py](src/infrastructure/file_scanner.py)：
+  - `FileScanner.scan(root)` / `scan_many(roots)` 递归扫描，返回 `ScanResult`。
+  - `ScanResult` 含 `folders`、`files`（`ScannedFileEntry` 列表）与 `errors`（`ScanError` 列表）。
+  - `persist_scan_result(scan_result, folder_repo, file_repo)` 将扫描结果通过 Repository 写入 DB，
+    处理 path_key 去重（A3 重叠根目录）、父子关系、is_managed_root 标记。
+  - 仅使用只读文件系统 API（`Path.iterdir` / `is_dir(follow_symlinks=False)` / `stat(follow_symlinks=False)` / `suffix`），
+    不移动、不重命名、不删除、不修改、不打开（读取内容）任何用户文件。
+  - 符号链接与 junction 不跟随，按文件处理。
+  - 异常（PermissionError / OSError / stat 失败）记入 `ScanError`，不中断整次扫描。
+  - 支持中文路径；mtime 转 ISO 8601 UTC。
+  - `now_provider` / `uuid_provider` 可注入，便于测试。
+- 测试 fixture [tests/conftest.py](tests/conftest.py)：新增 `sample_mod_tree`（混合中英文目录与文件）。
+- 单元测试 37 项新增（总计 112 项），覆盖：
+  - file_classify：扩展名识别、大小写、多扩展名、中文文件名、点号边界。
+  - file_scanner：空目录、样本树、中英文目录/文件名、图片/压缩包分类、文件大小、文件夹 size=0、
+    modified_at ISO 格式、扩展名小写、根不存在、根为文件、权限不足（POSIX skip）、
+    符号链接不跟随（Windows skip）、scan_many 独立根。
+  - persist_scan_result：写入 FolderNode/FileAsset、根 is_managed_root、父子关系、
+    字段完整、中文路径往返、重叠根去重、幂等、多受管理根。
+  - 只读保证：扫描前后文件 mtime/size/内容一致；扫描不创建/删除文件。
+
+### Skipped
+
+- 2 项测试在 Windows 平台被 skip：`test_scan_permission_denied_directory`（chmod 000 在 Windows 不可靠）、
+  `test_scan_symlink_not_followed`（创建符号链接需管理员权限或开发者模式）。
+  逻辑已实现，可在 POSIX 平台或具备权限的 Windows 环境验证。
+
+### 待确认项
+
+- 新增 [open-questions.md Q17](docs/open-questions.md#L140-L148)：增量扫描与变更检测策略。
+- 新增 [open-questions.md Q18](docs/open-questions.md#L150-L157)：扫描并发与取消模型。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 34 files already formatted
+- `python -m pytest` → 110 passed, 2 skipped in 1.74s
+
+### Not in Scope
+
+未实现：UI、application 层编排（Task 4）、Mod 条目组装（Task 4）、文件移动（Task 5）、
+搜索索引、缩略图、AI JSON、压缩包内容解析、文件哈希去重、文件监听、
+根目录配置持久化、扫描进度回调与取消、增量扫描。
+扫描器不读取文件内容，仅按扩展名识别图片/压缩包。
+
 ## [0.2.0] - 2026-07-07
 
 对应 [docs/roadmap.md](docs/roadmap.md) Task 2（数据库 Schema 与领域模型）完成。schema_version 由 0 升至 1。
