@@ -167,3 +167,18 @@
 - 兼容性约束：ROLE_LIMITS 字典在 application/mod_assembly_service.py 中定义，
   可独立调整；schema 无 CHECK 约束依赖角色数量；
   修改 ROLE_LIMITS 不影响已有关联数据。
+
+## 20. 部分失败时的回滚策略
+- 问题：移动操作中部分成员成功、部分失败时，已成功移动的成员是否需要回滚。
+- 背景：spec §7.12 仅要求「不得将整个 Mod 条目标记为完全成功」，
+  未定义已成功成员的处置。
+- 可选方向：不自动回滚（当前实现）/ 自动回滚已成功成员 / 提供用户选择。
+- 不决策原因：移动可能跨盘且不可逆（spec §7.9 复制后删除原文件），
+  自动回滚存在二次风险；当前实现 OperationLog.status=failed，
+  用户可手动执行撤销（plan_undo/execute_undo）。
+- 预计决定里程碑：阶段 2 UI 设计阶段（需结合 UI 提示与用户操作流）。
+- 兼容性约束：FileOperationService.execute_move 单成员失败不中断其他成员；
+  失败时 OperationLog.status=failed 但已成功成员的真实文件已被移动，
+  undo_payload 仅记录已成功成员；
+  不引入 status=partial 等新枚举值；未来引入自动回滚需扩展 OperationStatus
+  并保持向后兼容。

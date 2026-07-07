@@ -33,7 +33,7 @@
 
 ---
 
-## 阶段 1：安全数据与文件操作基础  ⏳
+## 阶段 1：安全数据与文件操作基础  ✅
 
 | 任务 | 状态 | 备注 |
 |---|---|---|
@@ -42,18 +42,18 @@
 | FolderNode、FileAsset、ModItem、OperationLog 数据模型 | ✅ | Task 2 完成；schema v1，4 表 + Repository CRUD |
 | 手动创建 Mod 条目 | ✅ | Task 4 完成；ModAssemblyService.create_mod_item |
 | 手动关联多个 FileAsset | ✅ | Task 4 完成；add_member / set_member_role / set_cover / remove_member |
-| 移动预演 | ⬜ | Task 5 |
-| 确认后移动 | ⬜ | Task 5 |
-| 操作日志 | 🔶 | Task 2 完成 Repository CRUD；预演/执行/撤销逻辑在 Task 5 |
-| 撤销预演与撤销执行 | ⬜ | Task 5 |
-| 中文路径测试 | 🔶 | Task 2/3 已覆盖 path_key、扫描器中文路径往返；Task 5 继续覆盖 |
+| 移动预演 | ✅ | Task 5 完成；FileOperationService.plan_move + MovePlan/MovePlanEntry |
+| 确认后移动 | ✅ | Task 5 完成；execute_move 同盘 rename / 跨盘 copy2+unlink |
+| 操作日志 | ✅ | Task 5 完成；plan_move 写 planned、execute_move 写 completed/failed + undo_payload |
+| 撤销预演与撤销执行 | ✅ | Task 5 完成；plan_undo（B1/B2 校验）+ execute_undo |
+| 中文路径测试 | ✅ | Task 2/3/5 全覆盖；Task 5 新增 execute_move 中文路径往返测试 |
 
 **验收（来自 roadmap）**：
 
-- [ ] 能在测试目录中创建一个包含本体、汉化和预览图的 Mod 条目
-- [ ] 能预演并执行整体移动
-- [ ] 能在安全条件下撤销
-- [ ] 能阻止重名、缺失、目标为子目录等危险操作
+- [x] 能在测试目录中创建一个包含本体、汉化和预览图的 Mod 条目
+- [x] 能预演并执行整体移动
+- [x] 能在安全条件下撤销
+- [x] 能阻止重名、缺失、目标为子目录等危险操作
 
 ---
 

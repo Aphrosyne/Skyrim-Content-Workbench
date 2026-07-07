@@ -22,7 +22,9 @@
 - [x] 自动创建本地数据库。
 - [x] 可运行测试和静态检查。
 
-## 阶段 1：安全数据与文件操作基础
+## 阶段 1：安全数据与文件操作基础 ✅
+
+> 完成于 2026-07-07。详见 [CHANGELOG.md](../CHANGELOG.md) 与 [docs/progress.md](progress.md)。
 
 目标：建立扫描、数据模型和安全移动能力，不先做复杂 UI。
 
@@ -153,6 +155,8 @@
 
 实现应用服务，使用户能够从已有 FileAsset 手动创建 ModItem，并将多个 FileAsset 关联到该 ModItem。支持为成员设置角色：main_mod、translation、preview、readme、optional_file、unknown。不得自动根据文件名推断或合并成员。实现查询接口，返回 ModItem 及其成员列表。为一个本体、一个汉化包和一个 WEBP 预览图组成同一 ModItem 编写测试，测试中文显示名和用途说明保存与读取。不要实现文件移动或 UI。完成后运行 pytest 和 ruff，并报告领域约束和待确认项。
 
-## Task 5：实现安全移动预演与执行服务
+## Task 5：实现安全移动预演与执行服务 ✅
+
+> 完成于 2026-07-07。详见 [CHANGELOG.md](../CHANGELOG.md) 与 [docs/progress.md](progress.md)。
 
 实现统一文件操作服务，支持对一个 ModItem 的所有成员生成移动预演，并在确认后执行移动。预演必须检查：源文件存在、目标目录存在且可写、目标重名、目标是否为源目录自身或子目录、是否跨盘。默认冲突策略为 ask，不得覆盖。执行前必须将 OperationLog 保存为 planned；执行成功后更新为 completed，并记录每个成员的源路径和目标路径。实现撤销预演和安全撤销执行；撤销前必须验证当前文件状态。所有测试必须使用 pytest 临时目录，覆盖同盘移动、重名冲突、成员缺失、非法子目录目标和撤销。不要接入 PySide6 UI。完成后运行 pytest 和 ruff，并报告所有安全限制、无法原子回滚的情况和待确认项。

@@ -8,6 +8,80 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.5.0] - 2026-07-07
+
+对应 [docs/roadmap.md](docs/roadmap.md) Task 5（安全移动预演与执行服务）完成。阶段 1（安全数据与文件操作基础）全部验收通过。
+
+### Added
+
+- 统一文件操作服务 [src/infrastructure/file_operation_service.py](src/infrastructure/file_operation_service.py)：
+  唯一允许修改用户文件位置的模块（arch §6）。
+  - `FileOperationService` 协调 ModItem / FileAsset / FolderNode / OperationLog 四个 Repository。
+  - `plan_move(mod_item_id, target_folder_id) -> MovePlan`：生成移动预演并持久化
+    `OperationLog(status=PLANNED)`。预演检查每个成员的源存在性、目标目录存在性、
+    目标重名（B3：重名即阻止）、目标目录可写性、目标是否为源自身或子目录（spec §7.7）、
+    是否跨盘。`can_execute` 仅在全部成员可执行时为 True。
+  - `execute_move(plan_id) -> OperationResult`：校验 status=planned → 更新为 confirmed
+    → 同盘 `Path.rename`（spec §7.8 原子）/ 跨盘 `shutil.copy2 + Path.unlink`
+    （spec §7.9）→ 单成员失败不中断其他成员（spec §7.12）→ status=completed/failed
+    + 写 undo_payload（Q14）。
+  - `plan_undo(operation_id) -> UndoPlan`：B1 不安全即整体阻止；B2 跨盘撤销校验
+    目标文件 size + mtime 与 undo_payload 记录一致。
+  - `execute_undo(undo_plan_id) -> OperationResult`：先调用 plan_undo 重新验证
+    （B1），不安全则直接返回失败；安全则反向移动 + status=undone。
+  - 数据类：`MovePlan` / `MovePlanEntry` / `UndoPlan` / `UndoPlanEntry` / `OperationResult`。
+  - `undo_payload` JSON 结构（Q14 由本任务定义）：
+    `{version:1, members:[{asset_id, src_path, dst_path, size_bytes, mtime_iso}]}`。
+  - 可注入 `now_provider` / `uuid_provider`，便于测试。
+  - 执行后更新 FileAsset.real_path / path_key / modified_at 以反映新位置。
+- 单元测试 23 项新增（总计 165 项），覆盖：
+  - plan_move：正常、源缺失阻止、目标重名阻止、目标目录不存在阻止、
+    子目录非法阻止、空 ModItem、ModItem 不存在、OperationLog 持久化为 planned。
+  - execute_move：同盘单成员、同盘多成员、部分成员失败不中断、
+    拒绝非 planned 状态、中文路径往返、undo_payload 记录 size+mtime、
+    不删除用户文件（spec §7.13）。
+  - plan_undo：正常、原目标文件缺失阻止、原源路径已占用阻止、
+    size 不一致阻止（B2）、mtime 不一致阻止（B2）、非 completed/failed 拒绝。
+  - execute_undo：正常往返、拒绝不安全撤销（B1）。
+  - 完整场景：move + undo 往返验证文件回到原位。
+
+### 安全限制
+
+- UI 层不直接调用 shutil / Path.rename（AGENTS 规则 3）。
+- 所有移动必须先 plan_move 生成预演并持久化为 planned（AGENTS 规则 4）。
+- 所有移动支持撤销预演与安全撤销执行（AGENTS 规则 5）。
+- 重名即阻止，不覆盖（B3）。
+- 禁止移到源自身或子目录（spec §7.7）。
+- 不删除用户文件（spec §7.13）；不修改文件内容（spec §7.14）。
+- 撤销前强制重新验证文件状态（B1）；跨盘撤销校验 size+mtime（B2）。
+
+### 无法原子回滚的情况
+
+- 跨盘移动采用 copy2+unlink，原文件已删除；撤销为反向 copy2+unlink，
+  依赖 undo_payload 中记录的 size+mtime 校验目标文件未被外部改动（B2）。
+- 部分成员失败时已成功成员不自动回滚（Q20，决策里程碑=阶段 2）；
+  OperationLog.status=failed，用户可手动执行 plan_undo + execute_undo。
+
+### 待确认项
+
+- 新增 [open-questions.md Q20](docs/open-questions.md#L171-L184)：部分失败时的回滚策略。
+- 关闭 Q14（undo_payload 结构由本任务定义）。
+- 关闭 Q16（OperationType 仅 {move, undo}，Task 5 未引入新值）。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 39 files already formatted
+- `python -m pytest tests/test_file_operation_service.py -v` → 23 passed
+- `python -m pytest` → 165 passed, 2 skipped
+
+### Not in Scope
+
+未实现：UI、application 层文件操作编排（Task 4 已实现的 ModAssemblyService
+不含文件操作）、根目录配置持久化、缩略图、搜索索引、AI JSON、压缩包内容解析。
+本服务不修改 OperationStatus 枚举（未引入 UNDO_BLOCKED/partial 等新值）；
+不修改数据库 schema（沿用 Task 2 的 v1）。
+
 ## [0.4.0] - 2026-07-07
 
 对应 [docs/roadmap.md](docs/roadmap.md) Task 4（Mod 条目组装服务）完成。
