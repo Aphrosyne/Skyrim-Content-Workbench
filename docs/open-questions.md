@@ -145,14 +145,19 @@
 - 兼容性约束：FileScanner.scan / scan_many 为全量扫描，不维护状态；
   未来增量扫描需新模块，不修改现有 FileScanner 接口。
 
-## 18. 扫描并发与取消模型 ✅ 阶段 2 部分关闭
+## 18. 扫描并发与取消模型 ✅ 已关闭（阶段 2 部分决策）
 - 问题：扫描是否需要线程池、进度回调、取消机制。
 - 背景：Task 3 为同步阻塞实现；阶段 2 UI 需要非阻塞扫描与进度显示。
-- 阶段 2 决策：使用 Qt 后台线程包裹 `FileScanner.scan_many()`，提供进度文本与完成/失败状态；不承诺取消功能。
-- 决策来源：[docs/phase-2-plan.md](phase-2-plan.md) §3 D4。
-- 未决部分：取消机制拆为新问题，留待后续阶段评估。
+- 阶段 2 决策：使用 Qt 后台线程包裹同步 `FileScanner.scan()`，提供进度文本与完成/失败状态；不承诺取消功能。
+- 决策来源：[docs/phase-2-plan.md](phase-2-plan.md) §3 D4；阶段 2 Task 1 已实现 [src/app/scan_worker.py](../src/app/scan_worker.py) `ScanWorker`（QObject + QThread）。
+- 已实现行为：
+  - `ScanWorker` 在自身线程内创建独立 SQLite 连接，不与主线程 UI 查询连接共享。
+  - 通过 `scan_started` / `scan_progress(str)` / `scan_finished(ScanSummary)` / `scan_failed(str)` 信号回传状态至主线程。
+  - 扫描期间 UI 禁用「扫描选中目录」与「添加目录」按钮，避免重复扫描与并发写库。
+  - `FileScanner` 保持同步签名不变，无 UI 依赖。
+- 未决部分：取消机制保留未决；当前扫描一旦开始无法中断，由 `FileScanner.scan()` 同步执行至完成后回传摘要。
 - 预计决定里程碑：阶段 4（交互优化）或后续阶段。
-- 兼容性约束：FileScanner 接口为同步；并发层包裹 FileScanner，不修改其同步签名。
+- 兼容性约束：`FileScanner` 接口为同步；并发层包裹 `FileScanner`，不修改其同步签名；未来取消机制需在 `ScanWorker` 层实现，不下沉到 `FileScanner`。
 
 ## 19. 成员角色数量限制 ✅ 已关闭
 - 问题：FileAsset 各角色（main_mod/translation/preview/readme/optional_file/unknown）

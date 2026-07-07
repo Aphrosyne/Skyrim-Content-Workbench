@@ -200,3 +200,35 @@ class OperationLog:
             raise TypeError("OperationLog.source_paths 必须是 list[str]")
         if not isinstance(self.target_paths, list):
             raise TypeError("OperationLog.target_paths 必须是 list[str]")
+
+
+@dataclass
+class ManagedRoot:
+    """用户配置的受管理根目录。spec §6.5。schema v2 引入。
+
+    与 FolderNode 的区别：ManagedRoot 保存用户配置，独立于扫描结果；
+    FolderNode 表示扫描得到的目录树节点，is_managed_root 标识扫描时的根。
+    移除 ManagedRoot 配置不自动清理对应 FolderNode 记录。
+
+    real_path 原样存储，path_key 用于比较与唯一约束（A2 决策）。
+    本模型不访问文件系统；路径合法性由调用方在 application 层校验。
+    """
+
+    id: str
+    real_path: str
+    path_key: str
+    created_at: str
+    updated_at: str
+    display_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            raise ValueError("ManagedRoot.id 不能为空")
+        if not self.real_path:
+            raise ValueError("ManagedRoot.real_path 不能为空")
+        if not self.path_key:
+            raise ValueError("ManagedRoot.path_key 不能为空")
+        if not self.created_at:
+            raise ValueError("ManagedRoot.created_at 不能为空")
+        if not self.updated_at:
+            raise ValueError("ManagedRoot.updated_at 不能为空")

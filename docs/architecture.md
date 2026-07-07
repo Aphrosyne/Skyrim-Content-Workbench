@@ -41,8 +41,24 @@ Infrastructure
 UI 分层规则（阶段 2 起）：
 
 * widget / view 不直接访问 Repository 或文件系统；通过 controller、view model 或 application service 调用。
-* Qt worker 仅包裹同步扫描器（`FileScanner.scan_many()`），不得包含文件系统写入逻辑；扫描结果仅写应用数据库。
+* Qt worker 仅包裹同步扫描器（`FileScanner.scan()`），不得包含文件系统写入逻辑；扫描结果仅写应用数据库。
 * 目录树的数据源是 SQLite `FolderNode`，不是可写的即时文件系统树。
+
+### 2.1 Qt 后台扫描线程边界（阶段 2 Task 1 实现）
+
+扫描使用 `QObject + QThread` 模式，严格划分线程边界：
+
+* `ScanWorker`（[src/app/scan_worker.py](../src/app/scan_worker.py)）继承 `QObject`，通过 `moveToThread` 在独立 `QThread` 中执行 `run()`。
+* 主线程持有 SQLite 连接用于 UI 查询（`ManagedRootService` 列出根目录等）；`ScanWorker` 在 `run()` 内调用 `get_connection(db_path)` 创建独立连接，**不与主线程连接共享**，避免 SQLite 跨线程问题。
+* `ScanWorker` 仅调用 `ScanWorkflowService.scan_root()`（同步），不访问 UI、不直接调用 `FileScanner`。
+* 结果回传通过 Qt 信号跨线程投递：
+  * `scan_started()`：扫描开始。
+  * `scan_progress(str)`：进度文本（当前任务仅发送"正在扫描…"）。
+  * `scan_finished(ScanSummary)`：扫描完成（含错误摘要时也触发，错误计入 `ScanSummary.errors`）。
+  * `scan_failed(str)`：扫描过程抛出未预期异常（如 `root_id` 不存在、DB 异常）。
+* `scan_finished` 与 `scan_failed` 均连接至 `thread.quit`，扫描完成后线程自动退出；`thread.finished` 连接至 `worker.deleteLater` / `thread.deleteLater` 清理资源。
+* 扫描期间 `MainWindow` 禁用「扫描选中目录」与「添加目录」按钮，避免重复扫描与并发写库；扫描结束后恢复。
+* 本任务不提供取消机制（Q18 未决部分）。`FileScanner.scan()` 同步执行至完成后通过信号回传，无法中断。
 
 ## 3. 模块职责
 
@@ -102,9 +118,9 @@ UI 分层规则（阶段 2 起）：
 
 阶段 2 新增职责：
 
-* `ManagedRootService`：受管理根目录配置的添加、列出、移除、校验；路径检查仅用只读文件系统 API；不扫描、不移动、不删除用户文件。
-* `ScanWorkflowService`：读取已配置根目录，调用 `FileScanner.scan_many()` 与 `persist_scan_result()`，返回结构化摘要（根目录数、扫描条目数、持久化条目数、错误列表）；不修改 `FileScanner` 同步接口。
-* 可选 `WorkbenchQueryService`：集中 UI 查询逻辑（目录树构建、未关联素材查询、ModItem 列表查询），避免 widget 直接访问 Repository。
+* `ManagedRootService`：受管理根目录配置的添加、列出、查询；路径检查仅用只读文件系统 API（`Path.exists` / `Path.is_dir`）；不扫描、不移动、不删除用户文件。本任务不实现移除配置。
+* `ScanWorkflowService`：读取已配置根目录，调用 `FileScanner.scan()` 与 `persist_scan_result()`，返回结构化 `ScanSummary`（扫描目录数、扫描文件数、持久化目录数、持久化文件数、错误列表）；不修改 `FileScanner` 同步接口；不访问 UI。
+* 可选 `WorkbenchQueryService`：集中 UI 查询逻辑（目录树构建、未关联素材查询、ModItem 列表查询），避免 widget 直接访问 Repository。本任务未实现。
 
 ## 4. 数据存储
 

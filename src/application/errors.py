@@ -28,3 +28,15 @@ class MemberLimitError(ApplicationError):
 
 class DuplicateMemberError(ApplicationError):
     """同一 FileAsset 已关联到同一 ModItem。"""
+
+
+class ManagedRootNotFoundError(ApplicationError):
+    """ManagedRoot 不存在。"""
+
+
+class DuplicateManagedRootError(ApplicationError):
+    """同一 path_key 的受管理根目录已存在。"""
+
+
+class InvalidRootPathError(ApplicationError):
+    """受管理根目录路径非法：不存在或非目录。"""

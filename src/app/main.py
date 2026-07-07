@@ -15,7 +15,9 @@ from PySide6.QtWidgets import QApplication
 from app.app_paths import ensure_app_directories, get_app_db_path
 from app.logging_setup import setup_logging
 from app.main_window import MainWindow
-from infrastructure.db import init_db
+from application.managed_root_service import ManagedRootService
+from infrastructure.db import get_connection, init_db
+from infrastructure.repositories.managed_root import ManagedRootRepository
 
 logger = logging.getLogger(__name__)
 
@@ -36,19 +38,28 @@ def main() -> int:
 
     logger.info("应用启动")
 
+    db_path = get_app_db_path()
     try:
-        init_db(get_app_db_path())
+        init_db(db_path)
     except sqlite3.Error as e:
         logger.exception("数据库初始化失败")
         print(f"无法初始化数据库：{e}", file=sys.stderr)
         return 1
 
-    logger.info("数据库路径：%s", get_app_db_path())
+    logger.info("数据库路径：%s", db_path)
+
+    # 主线程持有一个连接用于 UI 查询。
+    # 后台扫描 worker 在自身线程内创建独立连接，不与本连接共享。
+    conn = get_connection(db_path)
+    conn.row_factory = sqlite3.Row
+    managed_root_service = ManagedRootService(ManagedRootRepository(conn))
 
     app = QApplication(sys.argv)
-    window = MainWindow()
+    window = MainWindow(managed_root_service, db_path)
     window.show()
-    return app.exec()
+    exit_code = app.exec()
+    conn.close()
+    return exit_code
 
 
 if __name__ == "__main__":

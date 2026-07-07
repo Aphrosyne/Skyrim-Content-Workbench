@@ -100,6 +100,37 @@ def migrate_v0_to_v1(conn: sqlite3.Connection) -> None:
     logger.info("迁移 v0 → v1 完成")
 
 
+def migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """v1 → v2：新增 managed_root 表。
+
+    managed_root 保存用户配置的受管理根目录，独立于 folder_node 扫描结果。
+    与 folder_node.is_managed_root 的关系（见 docs/architecture.md §4）：
+    - managed_root：用户配置（持久化、跨扫描保留）。
+    - folder_node.is_managed_root：扫描结果标记（标识哪些 FolderNode 是扫描时的根）。
+    移除 managed_root 配置不自动清理 folder_node 记录（清理策略待确认）。
+
+    依据 docs/spec.md §6.5、docs/phase-2-plan.md 任务 1 D1。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS managed_root (
+            id TEXT PRIMARY KEY,
+            real_path TEXT NOT NULL,
+            path_key TEXT NOT NULL UNIQUE,
+            display_name TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_managed_root_path_key ON managed_root(path_key);
+        """
+    )
+    logger.info("迁移 v1 → v2 完成")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
-MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [(1, migrate_v0_to_v1)]
+MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+    (1, migrate_v0_to_v1),
+    (2, migrate_v1_to_v2),
+]

@@ -8,6 +8,103 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.6.0] - 2026-07-07
+
+对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 1（工作台骨架与根目录扫描）完成。schema_version 由 1 升至 2。
+
+### Added
+
+- Schema v2 迁移 [src/infrastructure/migrations.py](src/infrastructure/migrations.py)：
+  - 新增 `migrate_v1_to_v2(conn)`：创建 `managed_root` 表（`id` / `real_path` / `path_key` UNIQUE / `display_name` / `created_at` / `updated_at`）+ 索引 `idx_managed_root_path_key`。
+  - `MIGRATIONS` 注册表新增 `(2, migrate_v1_to_v2)`；迁移函数幂等（CREATE TABLE IF NOT EXISTS）。
+  - `CURRENT_SCHEMA_VERSION` 升至 2（[src/infrastructure/db.py](src/infrastructure/db.py)）。
+  - v1→v2 迁移不修改既有业务表，不丢失已有数据。
+- 领域模型 [src/domain/models.py](src/domain/models.py)：新增 `ManagedRoot` dataclass（spec §6.5），`__post_init__` 校验必填字段。
+- Repository [src/infrastructure/repositories/managed_root.py](src/infrastructure/repositories/managed_root.py)：
+  `ManagedRootRepository`（create / get_by_id / get_by_path_key / list_all）。
+  不访问文件系统；real_path 仅作为字符串存储；path_key 唯一约束冲突抛 `ConstraintViolationError`。
+- Application 层错误 [src/application/errors.py](src/application/errors.py)：
+  新增 `ManagedRootNotFoundError` / `DuplicateManagedRootError` / `InvalidRootPathError`。
+- 受管理根目录服务 [src/application/managed_root_service.py](src/application/managed_root_service.py)：
+  - `ManagedRootService.add_root(real_path)`：只读校验路径存在+是目录（`Path.exists` / `Path.is_dir`），path_key 去重，display_name=目录名。
+  - `list_roots()` / `get_root(root_id)`。
+  - 不扫描、不移动、不复制、不修改该目录或其中任何用户文件。
+  - 可注入 `now_provider` / `uuid_provider`。
+- 扫描工作流服务 [src/application/scan_workflow_service.py](src/application/scan_workflow_service.py)：
+  - `ScanSummary` dataclass：root_id / root_path / scanned_folders / scanned_files / persisted_folders / persisted_files / skipped_folders / skipped_files / error_count / errors；`is_success` property。
+  - `ScanWorkflowService.scan_root(root_id)` / `scan_root_by_path(real_path)`：读取 ManagedRoot，调用 `FileScanner.scan()` + `persist_scan_result()`，返回 `ScanSummary`。
+  - 不修改 `FileScanner` 同步签名；不访问 UI；仅写应用数据库。
+  - 根目录不存在/非目录时返回含错误的 `ScanSummary`（error_count > 0），不抛异常。
+- Qt 后台扫描 worker [src/app/scan_worker.py](src/app/scan_worker.py)：
+  - `ScanWorker(QObject)`：信号 `scan_started` / `scan_progress(str)` / `scan_finished(ScanSummary)` / `scan_failed(str)`。
+  - `run()` 在 worker 所在线程内创建独立 SQLite 连接（`get_connection(db_path)`），不与主线程连接共享。
+  - 捕获所有异常转为 `scan_failed` 信号，不向调用线程抛出。
+  - 本任务不提供取消机制（Q18 未决部分）。
+- UI 文本常量 [src/app/ui_constants.py](src/app/ui_constants.py)：
+  集中定义窗口标题、按钮文本、状态文本、错误消息、占位区提示、`format_summary()` 函数。
+- 主窗口重写 [src/app/main_window.py](src/app/main_window.py)：
+  - `MainWindow(managed_root_service, db_path, parent=None)` 构造注入，便于测试。
+  - 布局：QSplitter 水平分割——左侧「受管理根目录」区域（QListWidget + 添加目录按钮 + 扫描选中目录按钮），右侧扫描状态区域 + 三占位 GroupBox（目录树/素材池/详情，本任务不实现数据展示）。
+  - 添加目录：`QFileDialog.getExistingDirectory` 选择目录，调用 `ManagedRootService.add_root()`；重复路径 / 路径不存在 / 路径非目录均展示用户可读错误。
+  - 扫描：选中根目录后点击按钮，创建 `QThread` + `ScanWorker` 后台执行；扫描期间禁用「扫描选中目录」与「添加目录」按钮，显示「扫描中…」状态。
+  - 扫描完成：展示摘要（扫描目录数/文件数/持久化目录数/文件数/错误数）；若有错误展示前 5 条错误摘要（路径与原因）。
+  - 扫描失败：展示用户可读错误信息。
+  - 测试接口：`status_text()` / `root_count()` / `is_scan_button_enabled()`。
+- 应用入口 [src/app/main.py](src/app/main.py)：构造主线程 SQLite 连接，构造 `ManagedRootService` 注入 `MainWindow`；退出时关闭连接。
+- 单元测试 38 项新增（总计 203 项），覆盖：
+  - managed_root_repository（7 项）：创建与读取、中文路径、path_key 查询、path_key 唯一约束、list_all 排序、重启后读取、不存在 id 返回 None。
+  - managed_root_service（10 项）：添加合法目录、中文路径、拒绝不存在路径、拒绝非目录路径、拒绝重复、不修改目标目录、list_roots 空/非空、get_root 存在/不存在。
+  - scan_workflow_service（7 项）：成功结果回传、持久化验证、scan_root_by_path、缺失目录错误回传、未知 root_id 抛错、scan_root_by_path 未知路径抛错、ScanSummary.is_success 逻辑。
+  - scan_worker（4 项）：成功 scan_finished 信号回传、缺失目录错误摘要回传、未知 root_id scan_failed 信号、worker 创建独立连接（主线程连接关闭后仍可扫描）。
+  - migrations（10 项，原 3 项扩展）：CURRENT_SCHEMA_VERSION=2、v1→v2 创建 managed_root 表与索引、列结构、幂等、path_key 唯一约束、init_db 从 v0 迁移到 v2、init_db 在 v2 上幂等。
+  - main_window（5 项，原 1 项重写）：构造与初始状态、已保存根目录显示、无选择时扫描按钮禁用、选中后启用、状态文本可读。
+
+### Changed
+
+- [src/infrastructure/db.py](src/infrastructure/db.py)：`CURRENT_SCHEMA_VERSION` 由 1 升至 2。
+- [src/infrastructure/migrations.py](src/infrastructure/migrations.py)：`MIGRATIONS` 注册表新增 v1→v2 迁移。
+- [src/domain/models.py](src/domain/models.py)：末尾新增 `ManagedRoot` dataclass。
+- [src/app/main_window.py](src/app/main_window.py)：从空窗口重写为带根目录配置与扫描区域的工作台骨架；构造签名变更（需注入 `ManagedRootService` + `db_path`）。
+- [src/app/main.py](src/app/main.py)：构造 `ManagedRootService` 并注入 `MainWindow`。
+- [tests/test_main_window.py](tests/test_main_window.py)：适配新构造签名，扩展为 5 项测试。
+- [tests/test_migrations.py](tests/test_migrations.py)：扩展为覆盖 v1→v2 迁移。
+
+### 安全限制
+
+- 本任务不调用 `FileOperationService.execute_move` / `execute_undo` 或任何文件写 API。
+- 扫描仅使用只读文件系统 API（`Path.iterdir` / `is_dir(follow_symlinks=False)` / `stat(follow_symlinks=False)` / `suffix`）。
+- 添加根目录配置仅写应用数据库 `managed_root` 表；不移动、不复制、不修改该目录。
+- 不将用户 Mod 文件复制进应用数据目录。
+- 日志写入 `%LOCALAPPDATA%\SkyrimModWorkbench\logs\app.log`，不写入用户目录。
+- 路径、日志、数据库文本编码为 UTF-8。
+
+### 待确认项
+
+- 关闭 [open-questions.md Q18](docs/open-questions.md) 扫描并发与取消模型（阶段 2 部分决策：Qt 后台线程包裹同步扫描器，不提供取消；取消机制保留未决）。
+- ManagedRoot 与 FolderNode.is_managed_root 的关系已在架构文档明确（D1 决策）：ManagedRoot 是用户配置，FolderNode.is_managed_root 是扫描结果标记；移除 ManagedRoot 不自动清理 FolderNode（清理策略待确认）。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 48 files already formatted
+- `python -m pytest` → 203 passed, 2 skipped in 114.80s
+- `python -m app.main` → 主窗口正常启动，可添加目录、扫描、查看结果（人工验证步骤见下方）
+
+### 人工验证步骤
+
+1. 运行 `python -m app.main`，主窗口应显示非空白布局：左侧「受管理根目录」区域，右侧「扫描状态」+ 三占位区。
+2. 点击「添加目录」，选择一个本地目录，目录应出现在左侧列表。
+3. 关闭应用后重新运行，已保存的根目录应仍在列表中。
+4. 选中根目录，点击「扫描选中目录」，状态应显示「正在扫描…」，扫描期间按钮禁用。
+5. 扫描完成后，状态区域应显示扫描目录数/文件数/持久化数/错误数。
+6. 选择一个不存在的目录路径配置（需通过手动修改 DB 或先配置后删除目录），扫描应显示错误摘要。
+7. 验证扫描前后用户文件未被修改（mtime/size 不变）。
+
+### Not in Scope
+
+未实现：删除根目录配置、目录树数据展示、素材池、ModItem 列表与详情、移动预演/确认/撤销 UI、搜索、AI JSON、缩略图、文件监听、增量扫描、取消扫描、压缩包内容解析。
+本任务不修改 `FileScanner` 同步签名；不调用 `FileOperationService` 的任何方法。
+
 ## [0.5.0] - 2026-07-07
 
 对应 [docs/roadmap.md](docs/roadmap.md) Task 5（安全移动预演与执行服务）完成。阶段 1（安全数据与文件操作基础）全部验收通过。

@@ -57,27 +57,49 @@
 
 ---
 
-## 阶段 2：基础桌面工作台  ⬜
+## 阶段 2：基础桌面工作台  ⏳
 
-未开始。详见 [roadmap.md](roadmap.md) 阶段 2 与 [phase-2-plan.md](phase-2-plan.md)。
+进行中。详见 [roadmap.md](roadmap.md) 阶段 2 与 [phase-2-plan.md](phase-2-plan.md)。
 
 | 任务 | 状态 | 备注 |
 |---|---|---|
-| 受管理根目录持久化与 schema v2 | ⬜ | 阶段 2 任务 1；ManagedRoot + ManagedRootRepository + ManagedRootService |
-| 扫描工作流应用层与后台任务适配 | ⬜ | 阶段 2 任务 2；ScanWorkflowService + Qt worker |
-| 主窗口骨架与目录树、素材池、ModItem 列表 | ⬜ | 阶段 2 任务 3；三栏浏览工作台 |
+| 受管理根目录持久化与 schema v2 | ✅ | Task 1 完成；ManagedRoot + ManagedRootRepository + ManagedRootService + v1→v2 迁移 |
+| 扫描工作流应用层与后台任务适配 | ✅ | Task 1 完成；ScanWorkflowService + ScanWorker（Qt 后台线程） |
+| 主窗口骨架与目录树、素材池、ModItem 列表 | ⏳ | Task 1 完成主窗口骨架与根目录/扫描区域；目录树/素材池/详情为占位区，Task 3 实现 |
 | ModItem 手动组装与编辑 UI | ⬜ | 阶段 2 任务 4；成员角色、封面、元数据 |
 | 安全移动与撤销确认工作流 UI | ⬜ | 阶段 2 任务 5；预演→确认→执行→撤销 |
 
+**Task 1 完成内容（v0.6.0）**：
+
+- Schema v2 迁移：新增 `managed_root` 表（`id` / `real_path` / `path_key` UNIQUE / `display_name` / `created_at` / `updated_at`）+ 索引；`CURRENT_SCHEMA_VERSION` 升至 2；v1→v2 迁移幂等。
+- 领域模型：`ManagedRoot` dataclass（[src/domain/models.py](../src/domain/models.py) §6.5）。
+- Repository：`ManagedRootRepository`（create / get_by_id / get_by_path_key / list_all）。
+- Application 层：
+  - `ManagedRootService.add_root()`：只读校验路径存在+是目录，path_key 去重，display_name=目录名；不扫描、不移动、不复制、不修改。
+  - `ScanWorkflowService.scan_root()` / `scan_root_by_path()`：调用 `FileScanner.scan()` + `persist_scan_result()`，返回 `ScanSummary`（含目录/文件/持久化/错误统计）。
+  - 错误类型：`ManagedRootNotFoundError` / `DuplicateManagedRootError` / `InvalidRootPathError`。
+- UI 层：
+  - `ScanWorker`（QObject + QThread）：后台线程执行扫描，独立 SQLite 连接，信号回传 `scan_finished(ScanSummary)` / `scan_failed(str)`。
+  - `MainWindow` 重写：左侧根目录列表 + 添加目录 + 扫描选中目录；右侧扫描状态 + 三占位区（目录树/素材池/详情）。
+  - `ui_constants.py`：UI 文本集中定义。
+  - `main.py`：构造 `ManagedRootService` 注入 `MainWindow`。
+- 测试新增 38 项（总计 203 项）：
+  - `test_managed_root_repository.py`（7 项）：CRUD、中文路径、path_key 唯一约束、重启后读取。
+  - `test_managed_root_service.py`（10 项）：添加合法目录、拒绝不存在/非目录路径、重复根目录、不修改目标目录、list/get。
+  - `test_scan_workflow_service.py`（7 项）：scan_root 成功结果回传、持久化、scan_root_by_path、缺失目录错误回传、未知 root_id、ScanSummary.is_success 逻辑。
+  - `test_scan_worker.py`（4 项）：成功 scan_finished 信号回传、缺失目录错误摘要回传、未知 root_id scan_failed 信号、独立连接。
+  - `test_migrations.py`（10 项）：v1→v2 创建 managed_root 表、幂等、path_key 唯一约束、init_db 从 v0 迁移到 v2、幂等。
+  - `test_main_window.py`（5 项，原 1 项重写）：构造、已保存根目录显示、扫描按钮无选择禁用、选中启用、状态文本。
+
 **验收（来自 roadmap）**：
 
-- [ ] 用户可添加、查看、移除受管理根目录配置
-- [ ] 用户可手动触发扫描，看到扫描结果、错误摘要与未关联素材
+- [ ] 用户可添加、查看、移除受管理根目录配置（添加/查看已实现；移除未在 Task 1 范围）
+- [x] 用户可手动触发扫描，看到扫描结果与错误摘要（未关联素材池待 Task 3）
 - [ ] 用户可在素材池选择文件创建 ModItem，设置成员角色与封面
 - [ ] 用户可在目录树选择目标分类，发起移动预演并明确确认执行
 - [ ] 用户可看到执行结果，对安全操作发起撤销预演并确认撤销
-- [ ] 中文路径、中文显示名和 UTF-8 数据在完整流程中保持可用
-- [ ] 所有用户文件位置变化仍只由 FileOperationService 执行
+- [x] 中文路径、中文显示名和 UTF-8 数据在扫描流程中保持可用
+- [x] 所有用户文件位置变化仍只由 `FileOperationService` 执行（本任务不调用任何文件写 API）
 
 ## 阶段 3：搜索与 AI JSON 交换  ⬜
 
