@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# pytest
+.pytest_cache/
+.cache/
+
+# ruff
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# 本地开发运行时产生的应用数据（仅防止误提交；真实运行时数据位于 %LOCALAPPDATA%）
+/local_appdata/
