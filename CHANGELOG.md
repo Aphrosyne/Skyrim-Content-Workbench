@@ -8,6 +8,56 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.4.0] - 2026-07-07
+
+对应 [docs/roadmap.md](docs/roadmap.md) Task 4（Mod 条目组装服务）完成。
+
+### Added
+
+- Application 层错误 [src/application/errors.py](src/application/errors.py)：
+  `ApplicationError`、`ModItemNotFoundError`、`FileAssetNotFoundError`、
+  `MemberLimitError`、`DuplicateMemberError`。
+- Mod 条目组装服务 [src/application/mod_assembly_service.py](src/application/mod_assembly_service.py)：
+  - `ModAssemblyService` 协调 ModItemRepository 与 FileAssetRepository。
+  - `create_mod_item`：创建空 ModItem（无成员）。
+  - `add_member`：将 FileAsset 关联到 ModItem，设置角色；检查重复关联与角色数量限制。
+  - `set_member_role`：更新已关联成员的角色。
+  - `set_cover`：设置封面，要求成员为 PREVIEW 角色。
+  - `get_mod_item` / `get_members` / `get_mod_item_with_members` / `list_mod_items`：查询接口。
+  - `update_mod_item`：更新可编辑字段（display_name/description/source_url/category_folder_id/tags）。
+  - `remove_member`：解除关联（mod_item_id=None, role=UNKNOWN）；若被移除的是 cover 同步清除。
+  - `ROLE_LIMITS`：MAIN_MOD≤1、README≤1；其他角色不限制（Q19）。
+  - 不自动推断成员关系（AGENTS 规则 7）；不访问文件系统；
+    不实现 ModItem.status（Q1）、FileAsset.batch_id（Q2）、候选生成（Q10）。
+- 单元测试 32 项新增（总计 144 项），覆盖：
+  - 创建空 ModItem、带中文字段的 ModItem。
+  - 关联单成员、多成员（本体+汉化+预览图，roadmap 验收场景）。
+  - 重复关联 → DuplicateMemberError；MAIN_MOD/README 超限 → MemberLimitError；
+    TRANSLATION/PREVIEW 不限制。
+  - set_member_role：更新角色、改为 MAIN_MOD 时超限、同角色 noop。
+  - set_cover：正常设置、非 PREVIEW 拒绝、未关联拒绝。
+  - 查询：get_mod_item_not_found、get_members_not_found、
+    get_mod_item_with_members、list_mod_items、空成员列表。
+  - update_mod_item：全字段、部分字段、中文往返、not_found、tags 非 set 拒绝。
+  - remove_member：解除关联、清除 cover、未关联拒绝、解除后重新关联。
+  - 完整场景：本体+汉化+预览图+封面+中文显示名。
+
+### 待确认项
+
+- 新增 [open-questions.md Q19](docs/open-questions.md#L159-L169)：成员角色数量限制。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 37 files already formatted
+- `python -m pytest` → 142 passed, 2 skipped in 2.80s
+
+### Not in Scope
+
+未实现：UI、文件移动、预演、撤销（Task 5）、OperationLog 写入（Task 5）、
+搜索索引、缩略图、AI JSON、候选生成、删除 ModItem 或 FileAsset。
+Service 不访问文件系统，仅通过 Repository 读写 SQLite。
+
 ## [0.3.0] - 2026-07-07
 
 对应 [docs/roadmap.md](docs/roadmap.md) Task 3（只读扫描器）完成。

@@ -147,7 +147,9 @@
 
 实现一个只读扫描器：接收用户指定根目录，递归扫描文件和文件夹，将结果写入 FileAsset 与 FolderNode。扫描器不得移动、重命名、删除、修改或打开用户文件。至少识别文件、文件夹、图片和常见压缩包扩展名，但不得解析压缩包内部内容。扫描结果必须支持中文路径。使用 pytest 临时目录构造中文目录、英文目录、图片名和压缩包名测试。完成后运行 pytest 和 ruff，并报告扫描规则、忽略规则和性能待确认项。
 
-## Task 4：实现 Mod 条目组装服务
+## Task 4：实现 Mod 条目组装服务 ✅
+
+> 完成于 2026-07-07。详见 [CHANGELOG.md](../CHANGELOG.md) 与 [docs/progress.md](progress.md)。
 
 实现应用服务，使用户能够从已有 FileAsset 手动创建 ModItem，并将多个 FileAsset 关联到该 ModItem。支持为成员设置角色：main_mod、translation、preview、readme、optional_file、unknown。不得自动根据文件名推断或合并成员。实现查询接口，返回 ModItem 及其成员列表。为一个本体、一个汉化包和一个 WEBP 预览图组成同一 ModItem 编写测试，测试中文显示名和用途说明保存与读取。不要实现文件移动或 UI。完成后运行 pytest 和 ruff，并报告领域约束和待确认项。
 

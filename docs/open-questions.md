@@ -155,3 +155,15 @@
 - 预计决定里程碑：阶段 2 UI 设计阶段。
 - 兼容性约束：FileScanner 接口为同步；未来并发层应包裹 FileScanner，
   不修改其同步签名。
+
+## 19. 成员角色数量限制
+- 问题：FileAsset 各角色（main_mod/translation/preview/readme/optional_file/unknown）
+  的数量上限。
+- 背景：spec §6.2 列出 6 种角色但未定义数量限制。Task 4 实现最小约束：
+  MAIN_MOD≤1、README≤1；其他角色不限制。
+- 可选方向：保持当前 / 调整为 MAIN_MOD 可 0 个 / 限制 PREVIEW 数量 / 完全不限制。
+- 不决策原因：spec 未明确；阶段 1 最小约束满足基本使用；UI 阶段可能需要调整。
+- 预计决定里程碑：阶段 2 UI 设计阶段。
+- 兼容性约束：ROLE_LIMITS 字典在 application/mod_assembly_service.py 中定义，
+  可独立调整；schema 无 CHECK 约束依赖角色数量；
+  修改 ROLE_LIMITS 不影响已有关联数据。
