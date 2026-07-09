@@ -91,6 +91,22 @@
   - `test_migrations.py`（10 项）：v1→v2 创建 managed_root 表、幂等、path_key 唯一约束、init_db 从 v0 迁移到 v2、幂等。
   - `test_main_window.py`（5 项，原 1 项重写）：构造、已保存根目录显示、扫描按钮无选择禁用、选中启用、状态文本。
 
+**Task 1 验收修复（v0.6.1，未提交）**：
+
+用户复测发现两处与预期不符的问题，已按最小修复方案处理：
+
+1. **根目录配置未持久化**：`ManagedRootRepository.create` 未调用 `conn.commit()`，连接关闭后数据丢失。修复：`create` 在 INSERT 成功后自提交。
+2. **扫描完成进程 CTD**：`MainWindow._end_scanning` 在 `thread.quit()` 生效前清空 `_thread` 引用，QThread 在 `Running` 状态被析构导致 `QThread: Destroyed while thread is still running`。修复：
+   - `_end_scanning` 不再清空引用；新增 `_on_thread_finished`（`thread.finished` 信号触发）负责清空。
+   - 调整信号连接顺序：先连 `thread.quit`，再连 UI 处理槽。
+   - 新增 `MainWindow.closeEvent`：扫描中关窗时 `thread.quit()` + `wait(5000)` 等待线程退出。
+
+测试新增 4 项（总计 207 passed, 2 skipped）：
+- `test_create_commits_transaction_without_explicit_commit`：repo 自提交回归。
+- `test_add_root_persists_without_explicit_commit`：service 自提交回归。
+- `test_main_window_scan_completes_without_crash`：扫描完成线程安全退出回归。
+- `test_main_window_close_event_safe_when_idle`：closeEvent 空闲路径。
+
 **验收（来自 roadmap）**：
 
 - [ ] 用户可添加、查看、移除受管理根目录配置（添加/查看已实现；移除未在 Task 1 范围）

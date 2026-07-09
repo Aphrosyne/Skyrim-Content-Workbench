@@ -56,9 +56,16 @@ UI 分层规则（阶段 2 起）：
   * `scan_progress(str)`：进度文本（当前任务仅发送"正在扫描…"）。
   * `scan_finished(ScanSummary)`：扫描完成（含错误摘要时也触发，错误计入 `ScanSummary.errors`）。
   * `scan_failed(str)`：扫描过程抛出未预期异常（如 `root_id` 不存在、DB 异常）。
-* `scan_finished` 与 `scan_failed` 均连接至 `thread.quit`，扫描完成后线程自动退出；`thread.finished` 连接至 `worker.deleteLater` / `thread.deleteLater` 清理资源。
+* `scan_finished` 与 `scan_failed` 均连接至 `thread.quit`，扫描完成后线程自动退出；`thread.finished` 连接至 `worker.deleteLater` / `thread.deleteLater` 与 `_on_thread_finished` 清理资源。
+* **线程生命周期约定**（Task 1 修复）：`MainWindow._end_scanning` 恢复按钮状态，但**不得清空 `_worker` / `_thread` Python 引用**；引用清空只能由 `_on_thread_finished`（`thread.finished` 信号触发）执行，确保 QThread 在 `Finished` 状态下被析构。否则 QThread 在 `Running` 状态析构会导致进程 CTD（`QThread: Destroyed while thread is still running`）。
+* **窗口关闭约定**（Task 1 修复）：`MainWindow.closeEvent` 在关闭前检查 `thread.isRunning()`，若为真则调用 `thread.quit()` + `thread.wait(5000)` 等待线程退出，避免扫描中关窗触发同类 CTD。
 * 扫描期间 `MainWindow` 禁用「扫描选中目录」与「添加目录」按钮，避免重复扫描与并发写库；扫描结束后恢复。
 * 本任务不提供取消机制（Q18 未决部分）。`FileScanner.scan()` 同步执行至完成后通过信号回传，无法中断。
+
+### 2.2 事务管理约定（Task 1 修复）
+
+* `ManagedRootRepository.create` 为写操作自提交：INSERT 成功后调用 `conn.commit()`，确保调用方无需显式 commit 即可跨连接/重启可见。
+* 其他 Repository（FolderNode / FileAsset / OperationLog）的写操作提交策略暂未统一，`persist_scan_result` 仍依赖调用方或上下文提交；此为已知遗留问题，待后续任务处理。
 
 ## 3. 模块职责
 

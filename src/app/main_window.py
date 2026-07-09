@@ -74,6 +74,13 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._refresh_root_list()
 
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        """关闭窗口前等待后台扫描线程退出，避免 QThread Running 状态析构 CTD。"""
+        if self._thread is not None and self._thread.isRunning():
+            self._thread.quit()
+            self._thread.wait(5000)
+        super().closeEvent(event)
+
     # --- UI 构建 ---
 
     def _setup_ui(self) -> None:
@@ -213,13 +220,17 @@ class MainWindow(QMainWindow):
         self._worker = ScanWorker(self._db_path, root_id)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
+        # 先连 thread.quit，确保扫描完成/失败信号触发后线程尽快请求退出，
+        # 再连 UI 处理槽。quit 是异步请求，实际退出由 thread.finished 信号通知。
         self._worker.scan_started.connect(self._on_scan_started)
-        self._worker.scan_finished.connect(self._on_scan_finished)
-        self._worker.scan_failed.connect(self._on_scan_failed)
         self._worker.scan_finished.connect(self._thread.quit)
         self._worker.scan_failed.connect(self._thread.quit)
+        self._worker.scan_finished.connect(self._on_scan_finished)
+        self._worker.scan_failed.connect(self._on_scan_failed)
+        # 线程真正退出后再清理 worker/thread，避免 Running 状态下析构导致 CTD。
         self._thread.finished.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._on_thread_finished)
         self._thread.start()
 
     def _begin_scanning(self) -> None:
@@ -230,11 +241,18 @@ class MainWindow(QMainWindow):
         self._set_status(ui.STATUS_SCANNING)
 
     def _end_scanning(self) -> None:
+        """恢复按钮状态。不在此处清空 _worker / _thread 引用——
+        QThread 析构必须由 thread.finished 信号触发（_on_thread_finished），
+        否则 Running 状态下析构会导致进程 CTD。
+        """
         self._is_scanning = False
         self._scan_button.setText(ui.SCAN_BUTTON)
         self._add_button.setEnabled(True)
         has_selection = self._selected_root_id() is not None
         self._scan_button.setEnabled(has_selection)
+
+    def _on_thread_finished(self) -> None:
+        """QThread 真正退出后清理 Python 引用，让 deleteLater 生效。"""
         self._worker = None
         self._thread = None
 

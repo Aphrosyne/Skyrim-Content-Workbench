@@ -182,3 +182,41 @@ def test_get_root_missing_raises(db_connection) -> None:
     service = ManagedRootService(repo)
     with pytest.raises(ManagedRootNotFoundError):
         service.get_root("missing-id")
+
+
+def test_add_root_persists_without_explicit_commit(db_path: Path, tmp_path: Path) -> None:
+    """add_root 应通过 Repository 自提交持久化，无需调用方显式 commit。
+
+    回归测试：模拟生产路径——UI 调用 service.add_root() 后不显式 commit，
+    关闭并重开数据库应仍能读到该根目录。
+    """
+    from infrastructure.db import get_connection, init_db
+
+    init_db(db_path)
+    path = tmp_path / "PersistedRoot"
+    path.mkdir()
+
+    # 第一次连接：通过 service 添加，不显式 commit
+    conn1 = get_connection(db_path)
+    conn1.row_factory = __import__("sqlite3").Row
+    try:
+        service = ManagedRootService(
+            ManagedRootRepository(conn1),
+            now_provider=lambda: "2026-07-07T00:00:00Z",
+            uuid_provider=lambda: "persist-uuid",
+        )
+        service.add_root(path)
+    finally:
+        conn1.close()
+
+    # 第二次连接：应能读到
+    conn2 = get_connection(db_path)
+    conn2.row_factory = __import__("sqlite3").Row
+    try:
+        service2 = ManagedRootService(ManagedRootRepository(conn2))
+        roots = service2.list_roots()
+        assert len(roots) == 1
+        assert roots[0].real_path == str(path)
+        assert roots[0].id == "persist-uuid"
+    finally:
+        conn2.close()

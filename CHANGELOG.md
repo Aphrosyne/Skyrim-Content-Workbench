@@ -8,6 +8,25 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### Fixed（阶段 2 Task 1 验收修复）
+
+- **根目录配置未持久化**：`ManagedRootRepository.create` 未调用 `conn.commit()`，应用关闭后数据丢失，重启后已添加的根目录不可见。修复：`create` 在 INSERT 成功后自提交事务（[src/infrastructure/repositories/managed_root.py](src/infrastructure/repositories/managed_root.py)）。
+- **扫描完成进程 CTD**：`MainWindow._end_scanning` 在 `thread.quit()` 生效前清空 `self._thread` 引用，QThread 在 `Running` 状态被析构导致 `QThread: Destroyed while thread is still running`，扫描完成后约 3 秒内进程崩溃。修复（[src/app/main_window.py](src/app/main_window.py)）：
+  - `_end_scanning` 不再清空 `_worker` / `_thread` 引用；新增 `_on_thread_finished`（由 `thread.finished` 信号触发）负责清空，确保 QThread 在 `Finished` 状态下被析构。
+  - 调整信号连接顺序：先连 `thread.quit`，再连 UI 处理槽，确保 quit 先入队。
+  - 新增 `MainWindow.closeEvent`：扫描中关窗时调用 `thread.quit()` + `wait(5000)` 等待线程退出，避免同类 CTD。
+
+### Added（测试）
+
+- `test_create_commits_transaction_without_explicit_commit`：验证 repo 自提交，无需调用方显式 commit（[tests/test_managed_root_repository.py](tests/test_managed_root_repository.py)）。
+- `test_add_root_persists_without_explicit_commit`：验证 service 自提交，模拟生产路径（[tests/test_managed_root_service.py](tests/test_managed_root_service.py)）。
+- `test_main_window_scan_completes_without_crash`：扫描完成线程安全退出回归测试（[tests/test_main_window.py](tests/test_main_window.py)）。
+- `test_main_window_close_event_safe_when_idle`：closeEvent 空闲路径测试（[tests/test_main_window.py](tests/test_main_window.py)）。
+
+### Known Issues（未修复，超出本次范围）
+
+- `persist_scan_result`（扫描结果持久化）同样未自提交事务，重启后扫描结果丢失。本任务范围内未修复，待后续任务统一处理 Repository 写操作提交策略。
+
 ## [0.6.0] - 2026-07-07
 
 对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 1（工作台骨架与根目录扫描）完成。schema_version 由 1 升至 2。

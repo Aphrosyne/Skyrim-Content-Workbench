@@ -158,3 +158,33 @@ def test_get_by_id_returns_none_for_missing(
     """不存在 id 返回 None。"""
     repo = ManagedRootRepository(db_connection)
     assert repo.get_by_id("nonexistent") is None
+
+
+def test_create_commits_transaction_without_explicit_commit(db_path: Path, tmp_path: Path) -> None:
+    """create 应自提交事务，无需调用方显式 commit 即可跨连接可见。
+
+    回归测试：修复前 create 未调用 conn.commit()，关闭连接后数据丢失。
+    """
+    init_db(db_path)
+    path = tmp_path / "AutoCommit"
+    path.mkdir()
+
+    # 第一次连接：写入但不显式 commit
+    conn1 = get_connection(db_path)
+    conn1.row_factory = sqlite3.Row
+    try:
+        repo1 = ManagedRootRepository(conn1)
+        repo1.create(_make_root(path, root_id="autocommit-1"))
+    finally:
+        conn1.close()
+
+    # 第二次连接：应能读到（证明 create 已自提交）
+    conn2 = get_connection(db_path)
+    conn2.row_factory = sqlite3.Row
+    try:
+        repo2 = ManagedRootRepository(conn2)
+        fetched = repo2.get_by_id("autocommit-1")
+        assert fetched is not None, "create 未提交事务，数据丢失"
+        assert fetched.real_path == str(path)
+    finally:
+        conn2.close()

@@ -26,7 +26,10 @@ class ManagedRootRepository:
         self._conn = conn
 
     def create(self, root: ManagedRoot) -> ManagedRoot:
-        """插入 ManagedRoot。path_key 唯一约束冲突抛 ConstraintViolationError。"""
+        """插入 ManagedRoot 并提交事务。path_key 唯一约束冲突抛 ConstraintViolationError。
+
+        写操作自提交，确保调用方无需显式 commit 即可跨连接/重启可见。
+        """
         try:
             self._conn.execute(
                 """
@@ -43,6 +46,7 @@ class ManagedRootRepository:
                     root.updated_at,
                 ),
             )
+            self._conn.commit()
         except sqlite3.IntegrityError as e:
             raise ConstraintViolationError(f"无法创建 ManagedRoot：{e}") from e
         except sqlite3.Error as e:
