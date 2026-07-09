@@ -20,7 +20,9 @@ pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication, QListWidget  # noqa: E402
 
 from app.main_window import MainWindow  # noqa: E402
+from application.folder_tree_service import FolderTreeService  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
+from infrastructure.repositories.folder_node import FolderNodeRepository  # noqa: E402
 from infrastructure.repositories.managed_root import ManagedRootRepository  # noqa: E402
 
 
@@ -33,7 +35,10 @@ def qapp() -> QApplication:
 def _make_window(db_connection, db_path: Path) -> MainWindow:
     """构造 MainWindow，注入已配置的 service。"""
     service = ManagedRootService(ManagedRootRepository(db_connection))
-    return MainWindow(service, db_path)
+    tree_service = FolderTreeService(
+        ManagedRootRepository(db_connection), FolderNodeRepository(db_connection)
+    )
+    return MainWindow(service, tree_service, db_path)
 
 
 def test_main_window_constructs(qapp: QApplication, db_connection, db_path: Path) -> None:
@@ -100,8 +105,6 @@ def test_main_window_scan_button_enabled_with_selection(
 
     window = _make_window(db_connection, db_path)
     # 模拟选中第一项
-    from app.main_window import QListWidget
-
     list_widget = window.findChild(QListWidget)
     assert list_widget is not None
     list_widget.setCurrentRow(0)
@@ -144,7 +147,8 @@ def test_main_window_scan_completes_without_crash(
     conn2 = get_connection(db_path)
     conn2.row_factory = __import__("sqlite3").Row
     service2 = ManagedRootService(ManagedRootRepository(conn2))
-    window = MainWindow(service2, db_path)
+    tree_service2 = FolderTreeService(ManagedRootRepository(conn2), FolderNodeRepository(conn2))
+    window = MainWindow(service2, tree_service2, db_path)
     assert window.root_count() == 1
 
     # 选中根目录并触发扫描
@@ -153,7 +157,7 @@ def test_main_window_scan_completes_without_crash(
     list_widget.setCurrentRow(0)
     assert window.is_scan_button_enabled() is True
 
-    window._on_scan()  # noqa: SLF001（直接触发，避免按钮事件封装）
+    window._on_scan()  # noqa: SLF001  直接触发，避免按钮事件封装
     assert window._is_scanning is True  # noqa: SLF001
     assert window.is_scan_button_enabled() is False
 
@@ -186,3 +190,127 @@ def test_main_window_close_event_safe_when_idle(
 
     window.closeEvent(QCloseEvent())
     # 无异常即通过
+
+
+def test_main_window_has_tree_view(qapp: QApplication, db_connection, db_path: Path) -> None:
+    """主窗口包含目录树视图。"""
+    from PySide6.QtWidgets import QTreeView
+
+    window = _make_window(db_connection, db_path)
+    tree_view = window.findChild(QTreeView)
+    assert tree_view is not None
+    # 初始无根目录，树顶层节点数为 0
+    assert window.tree_root_count() == 0
+
+
+def test_main_window_tree_shows_unscanned_root(
+    qapp: QApplication, db_connection, db_path: Path, tmp_path: Path
+) -> None:
+    """已配置但未扫描的根目录在树中显示为"未扫描"。"""
+    service = ManagedRootService(
+        ManagedRootRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-1",
+    )
+    mods = tmp_path / "未扫描目录"
+    mods.mkdir()
+    service.add_root(mods)
+
+    window = _make_window(db_connection, db_path)
+    assert window.tree_root_count() == 1
+
+
+def test_main_window_detail_updates_on_tree_selection(
+    qapp: QApplication, db_connection, db_path: Path, sample_mod_tree: Path
+) -> None:
+    """选中目录树节点后详情区域更新。"""
+    from PySide6.QtWidgets import QTreeView
+
+    # 添加并扫描根目录
+    service = ManagedRootService(
+        ManagedRootRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-1",
+    )
+    service.add_root(sample_mod_tree)
+    from infrastructure.file_scanner import FileScanner, persist_scan_result
+    from infrastructure.repositories.file_asset import FileAssetRepository
+    from infrastructure.repositories.folder_node import FolderNodeRepository
+
+    scanner = FileScanner()
+    result = scanner.scan(sample_mod_tree)
+    persist_scan_result(
+        result,
+        FolderNodeRepository(db_connection),
+        FileAssetRepository(db_connection),
+    )
+    db_connection.commit()
+
+    window = _make_window(db_connection, db_path)
+    assert window.tree_root_count() == 1
+
+    # 初始详情为提示
+    assert "未选中" in window.detail_text()
+
+    # 选中根节点
+    tree_view = window.findChild(QTreeView)
+    assert tree_view is not None
+
+    model = tree_view.model()
+    root_idx = model.index(0, 0)
+    tree_view.setCurrentIndex(root_idx)
+
+    detail = window.detail_text()
+    assert sample_mod_tree.name in detail
+    assert str(sample_mod_tree) in detail
+    assert "受管理根目录" in detail
+
+
+def test_main_window_tree_refresh_after_scan(
+    qapp: QApplication, db_path: Path, sample_mod_tree: Path
+) -> None:
+    """扫描完成后目录树刷新，展示扫描得到的子目录。"""
+    from infrastructure.db import get_connection, init_db
+    from infrastructure.repositories.folder_node import FolderNodeRepository
+
+    init_db(db_path)
+    conn = get_connection(db_path)
+    conn.row_factory = __import__("sqlite3").Row
+    try:
+        service = ManagedRootService(
+            ManagedRootRepository(conn),
+            now_provider=lambda: "2026-07-07T00:00:00Z",
+            uuid_provider=lambda: "scan-tree-test",
+        )
+        service.add_root(sample_mod_tree)
+        conn.commit()
+    finally:
+        conn.close()
+
+    # 构造窗口（扫描前树显示为未扫描）
+    conn2 = get_connection(db_path)
+    conn2.row_factory = __import__("sqlite3").Row
+    service2 = ManagedRootService(ManagedRootRepository(conn2))
+    tree_service2 = FolderTreeService(ManagedRootRepository(conn2), FolderNodeRepository(conn2))
+    window = MainWindow(service2, tree_service2, db_path)
+    assert window.tree_root_count() == 1
+
+    # 选中并扫描
+    list_widget = window.findChild(QListWidget)
+    assert list_widget is not None
+    list_widget.setCurrentRow(0)
+    window._on_scan()  # noqa: SLF001
+
+    # 等待扫描完成
+    import time
+
+    deadline = time.monotonic() + 30.0
+    while window._thread is not None and time.monotonic() < deadline:  # noqa: SLF001
+        qapp.processEvents()
+        time.sleep(0.05)
+
+    assert window._thread is None  # noqa: SLF001
+    # 扫描完成后树仍为 1 个顶层节点（根），但根已关联 FolderNode
+    assert window.tree_root_count() == 1
+
+    conn2.close()

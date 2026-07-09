@@ -97,6 +97,44 @@ class FolderNodeRepository:
             raise RepositoryError(f"无法列出受管理根目录：{e}") from e
         return [self._row_to_model(r) for r in rows]
 
+    def list_all(self) -> list[FolderNode]:
+        """返回全部 FolderNode，按 real_path 排序。
+
+        供目录树构建等只读批量查询场景使用；不区分根/子节点。
+        """
+        try:
+            rows = self._conn.execute("SELECT * FROM folder_node ORDER BY real_path").fetchall()
+        except sqlite3.Error as e:
+            raise RepositoryError(f"无法列出全部 FolderNode：{e}") from e
+        return [self._row_to_model(r) for r in rows]
+
+    def get_by_path_key(self, path_key: str) -> FolderNode | None:
+        """按 path_key 查询；不存在返回 None。
+
+        用于将 ManagedRoot 配置关联到扫描得到的 FolderNode 根节点。
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM folder_node WHERE path_key = ?",
+                (path_key,),
+            ).fetchone()
+        except sqlite3.Error as e:
+            raise RepositoryError(f"无法按 path_key 查询 FolderNode：{e}") from e
+        if row is None:
+            return None
+        return self._row_to_model(row)
+
+    def count_children(self, parent_id: str) -> int:
+        """返回指定父节点下的子目录数量（仅 FolderNode，不含文件）。"""
+        try:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM folder_node WHERE parent_id = ?",
+                (parent_id,),
+            ).fetchone()
+        except sqlite3.Error as e:
+            raise RepositoryError(f"无法统计子目录数量：{e}") from e
+        return int(row[0])
+
     def update(self, node: FolderNode) -> FolderNode:
         """全字段更新。实体不存在时抛 NotFoundError。"""
         try:

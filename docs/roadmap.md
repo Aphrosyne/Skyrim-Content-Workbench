@@ -56,7 +56,8 @@
 
 * 受管理根目录配置持久化（schema v2）。✅ Task 1 完成
 * 扫描工作流与后台线程适配。✅ Task 1 完成（ScanWorkflowService + ScanWorker）
-* 三栏浏览工作台：受管理根目录列表 + 目录树、未关联素材池、ModItem 列表与详情。⬜ Task 3
+* 只读目录树视图（FolderNode 数据源、三栏布局、详情区）。✅ Task 2 完成
+* 三栏浏览工作台：未关联素材池、ModItem 列表与详情。⬜ Task 3
 * 手动 ModItem 组装与编辑（成员角色、封面、元数据）。⬜ Task 4
 * 安全移动预演、确认、结果与撤销 UI。⬜ Task 5
 

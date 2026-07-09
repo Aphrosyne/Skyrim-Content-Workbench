@@ -32,6 +32,22 @@ PLACEHOLDER_POOL_HINT = "将在阶段 2 任务 3-4 实现：未关联素材与 M
 PLACEHOLDER_DETAIL_TITLE = "详情（待实现）"
 PLACEHOLDER_DETAIL_HINT = "将在阶段 2 任务 4-5 实现：成员、角色、移动预演与撤销。"
 
+# 目录树区域（Task 2）
+TREE_GROUP_TITLE = "受管理目录树"
+TREE_EMPTY_HINT = "尚未配置任何受管理根目录。点击「添加目录」开始。"
+TREE_UNSCANNED_HINT = "已配置但尚未扫描。点击「扫描选中目录」加载目录结构。"
+
+# 详情区域（Task 2）
+DETAIL_GROUP_TITLE = "选中目录信息"
+DETAIL_NONE_HINT = "未选中任何目录。"
+DETAIL_NAME_LABEL = "目录名称"
+DETAIL_PATH_LABEL = "完整路径"
+DETAIL_IS_ROOT_LABEL = "是否为受管理根目录"
+DETAIL_CHILDREN_COUNT_LABEL = "子目录数量"
+DETAIL_CATEGORY_ROOT = "受管理根目录（已扫描）"
+DETAIL_CATEGORY_UNSCANNED = "受管理根目录（未扫描）"
+DETAIL_CATEGORY_FOLDER = "子目录"
+
 # 错误
 ERR_ADD_ROOT_FAILED = "添加目录失败"
 ERR_NO_ROOT_SELECTED = "请先在左侧选择一个受管理根目录。"

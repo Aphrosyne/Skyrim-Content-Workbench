@@ -8,24 +8,96 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
-### Fixed（阶段 2 Task 1 验收修复）
+## [0.7.0] - 2026-07-09
+
+对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 2（只读目录树视图）完成。
+
+### Added
+
+- Repository 查询扩展 [src/infrastructure/repositories/folder_node.py](src/infrastructure/repositories/folder_node.py)：
+  - `list_all()`：返回全部 FolderNode，按 `real_path` 排序。
+  - `get_by_path_key(path_key)`：按 `path_key` 查询，用于 `ManagedRoot` 与 `FolderNode` 关联。
+  - `count_children(parent_id)`：返回直接子目录数量（不含文件、不含孙节点）。
+- Application 层只读目录树查询服务 [src/application/folder_tree_service.py](src/application/folder_tree_service.py)：
+  - `TreeNode` dataclass：node_id / display_name / real_path / category（`managed_root` / `unscanned_root` / `folder`）/ is_managed_root / managed_root_id / folder_node_id / parent_id。
+  - `FolderTreeService`：`list_root_nodes()` 合并 `ManagedRoot` 配置与 `FolderNode` 扫描根；`list_children(node_id)` 按 node_id 前缀（`mr:` / `fn:`）分发查询；`get_node(node_id)` / `count_children(node_id)` / `has_scan_data(managed_root_id)`。
+  - `ManagedRoot` 与 `FolderNode` 通过 `path_key` 关联（`get_by_path_key`），不在 UI 层散落字符串匹配。
+  - `display_name` 回退：`FolderNode.display_name` 为 None 时用 `PurePath(real_path).name`。
+  - 不访问文件系统、不写数据库、不调用 `FileOperationService`。
+- Qt 目录树 model [src/app/folder_tree_model.py](src/app/folder_tree_model.py)：
+  - `FolderTreeModel(QAbstractItemModel)`：惰性加载（`canFetchMore` / `fetchMore`），`refresh()` 重置顶层。
+  - 节点内部 ID：`"mr:<managed_root_id>"` / `"fn:<folder_node_id>"`，通过 `internalPointer` 往返。
+  - 错误隔离：捕获查询异常，记录日志并降级为空子树，不让整个树崩溃。
+  - 测试接口：`node_at(index)` / `node_id_at(index)` / `root_node_count()`。
+- UI 文本常量 [src/app/ui_constants.py](src/app/ui_constants.py)：新增目录树与详情区常量（TREE_GROUP_TITLE / TREE_EMPTY_HINT / TREE_UNSCANNED_HINT / DETAIL_*）。
+- 主窗口重写 [src/app/main_window.py](src/app/main_window.py)：
+  - 构造签名新增 `folder_tree_service` 参数。
+  - 三栏 QSplitter 布局：左栏根目录列表+按钮；中栏目录树（QTreeView，headerHidden / NoEditTriggers / NoDragDrop）+素材池占位；右栏扫描状态+选中目录详情。
+  - `_refresh_tree()`：扫描完成/根目录变更后刷新 `FolderTreeModel`，更新空状态提示。
+  - `_on_tree_selection_changed` → `_update_detail`：选中节点显示目录名称/完整真实路径/是否受管理根目录/类型/直接子目录数量；未扫描根目录追加"（未扫描）"提示。
+  - 测试接口：`detail_text()` / `tree_root_count()`。
+- 应用入口 [src/app/main.py](src/app/main.py)：构造 `FolderTreeService` 注入 `MainWindow`。
+- 单元测试 34 项新增（总计 241 passed, 2 skipped），覆盖：
+  - folder_node_repository（+4 项）：list_all 排序与空表、get_by_path_key 中文路径、count_children 直接子目录数与孙节点不计入。
+  - folder_tree_service（16 项）：空数据、未扫描根显示为 unscanned_root、已扫描根显示为 managed_root、中文目录名、空目录、多层层级 parent_id 链、多根目录、重复扫描不重复、重叠根去重（子根显示为 unscanned_root）、get_node managed_root/folder/无效 ID、list_children 无效 ID、count_children 无效 ID、TreeNode category 校验、重新连接数据库后树可加载。
+  - folder_tree_model（11 项）：空 model、顶层节点、惰性加载 fetchMore、父子关系 parent()、深层 index 链访问、node_at 返回 TreeNode、node_id_at、refresh 重置、无效 index 返回 None、中文显示名。
+  - main_window（+4 项）：包含树视图、未扫描根目录显示提示、选中节点后详情区更新、扫描完成后树刷新。
+
+### Fixed（阶段 2 Task 1 验收修复，自 v0.6.0 起）
 
 - **根目录配置未持久化**：`ManagedRootRepository.create` 未调用 `conn.commit()`，应用关闭后数据丢失，重启后已添加的根目录不可见。修复：`create` 在 INSERT 成功后自提交事务（[src/infrastructure/repositories/managed_root.py](src/infrastructure/repositories/managed_root.py)）。
 - **扫描完成进程 CTD**：`MainWindow._end_scanning` 在 `thread.quit()` 生效前清空 `self._thread` 引用，QThread 在 `Running` 状态被析构导致 `QThread: Destroyed while thread is still running`，扫描完成后约 3 秒内进程崩溃。修复（[src/app/main_window.py](src/app/main_window.py)）：
   - `_end_scanning` 不再清空 `_worker` / `_thread` 引用；新增 `_on_thread_finished`（由 `thread.finished` 信号触发）负责清空，确保 QThread 在 `Finished` 状态下被析构。
   - 调整信号连接顺序：先连 `thread.quit`，再连 UI 处理槽，确保 quit 先入队。
   - 新增 `MainWindow.closeEvent`：扫描中关窗时调用 `thread.quit()` + `wait(5000)` 等待线程退出，避免同类 CTD。
-
-### Added（测试）
-
-- `test_create_commits_transaction_without_explicit_commit`：验证 repo 自提交，无需调用方显式 commit（[tests/test_managed_root_repository.py](tests/test_managed_root_repository.py)）。
-- `test_add_root_persists_without_explicit_commit`：验证 service 自提交，模拟生产路径（[tests/test_managed_root_service.py](tests/test_managed_root_service.py)）。
+- `test_create_commits_transaction_without_explicit_commit`：验证 repo 自提交（[tests/test_managed_root_repository.py](tests/test_managed_root_repository.py)）。
+- `test_add_root_persists_without_explicit_commit`：验证 service 自提交（[tests/test_managed_root_service.py](tests/test_managed_root_service.py)）。
 - `test_main_window_scan_completes_without_crash`：扫描完成线程安全退出回归测试（[tests/test_main_window.py](tests/test_main_window.py)）。
 - `test_main_window_close_event_safe_when_idle`：closeEvent 空闲路径测试（[tests/test_main_window.py](tests/test_main_window.py)）。
 
-### Known Issues（未修复，超出本次范围）
+### Changed
 
-- `persist_scan_result`（扫描结果持久化）同样未自提交事务，重启后扫描结果丢失。本任务范围内未修复，待后续任务统一处理 Repository 写操作提交策略。
+- [src/app/main_window.py](src/app/main_window.py)：从单栏根目录/扫描区域重写为三栏布局（左栏根目录列表+按钮、中栏目录树+素材池占位、右栏扫描状态+详情区）；构造签名新增 `folder_tree_service`。
+- [src/app/main.py](src/app/main.py)：构造 `FolderTreeService` 注入 `MainWindow`。
+- [src/app/ui_constants.py](src/app/ui_constants.py)：新增目录树与详情区常量。
+- [src/infrastructure/repositories/folder_node.py](src/infrastructure/repositories/folder_node.py)：新增 `list_all` / `get_by_path_key` / `count_children` 只读查询方法。
+- [tests/test_folder_node_repository.py](tests/test_folder_node_repository.py)：扩展 4 项新查询方法测试。
+- [tests/test_main_window.py](tests/test_main_window.py)：适配新构造签名，扩展 4 项目录树测试。
+
+### 安全限制
+
+- 本任务严格只读：不调用 `FileOperationService.execute_move` / `execute_undo` 或任何文件写 API。
+- 目录树数据源严格为 SQLite `FolderNode`；不在 UI 线程临时递归真实文件系统。
+- `FolderTreeService` / `FolderTreeModel` / Repository 查询均不调用 `Path.rename` / `unlink` / `shutil` / `FileOperationService.execute_*`。
+- 不重新扫描真实目录来填充树；不修改用户文件或目录；不将目录树缓存写回用户目录。
+- 路径、日志、数据库文本编码为 UTF-8。
+
+### 待确认项
+
+- 本任务未触及新的 open question；Q3（移动入口）保持未决（本任务不实现移动入口）。
+- 重叠根目录展示策略已在本任务中确定为：子根因 `path_key` 已被父根扫描覆盖时显示为"未扫描"虚拟节点（spec §5.4 第 9 条、architecture §2.3）。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 52 files already formatted
+- `python -m pytest` → 241 passed, 2 skipped in 7.28s
+- `python -m app.main` → 主窗口正常启动，三栏布局，可添加目录、扫描、浏览目录树、选中节点查看详情（人工验证步骤见下方）
+
+### 人工验证步骤
+
+1. 运行 `python -m app.main`，主窗口显示三栏布局：左栏「受管理根目录」+ 按钮、中栏「目录树」+ 素材池占位、右栏「扫描状态」+ 详情区。
+2. 点击「添加目录」，选择一个含中英文目录与空目录的测试根目录，目录应出现在左侧列表。
+3. 选中根目录，点击「扫描选中目录」，扫描完成后中栏目录树应显示根目录及其子目录。
+4. 展开树节点，确认空目录正常显示，中文目录名正确。
+5. 选中深层目录，右栏详情区应显示目录名称、完整路径、是否为根、类型、子目录数量。
+6. 关闭应用后重新运行，目录树应从已持久化的扫描数据加载，无需重新扫描。
+7. 添加一个新根目录但不扫描，树中应显示该根目录为"未扫描"。
+
+### Not in Scope
+
+未实现：拖拽移动、右键文件操作、文件系统写入、文件监听、自动刷新、搜索、缩略图、ModItem 卡片、AI JSON、未关联素材池数据展示、ModItem 列表、移动预演/确认/撤销 UI、删除根目录配置、目录树缓存写回用户目录。
+本任务不修改 `FileOperationService` 的行为；不修改 `FileScanner` 同步签名；不改变 `path_key` 语义。
 
 ## [0.6.0] - 2026-07-07
 

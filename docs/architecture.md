@@ -67,6 +67,34 @@ UI 分层规则（阶段 2 起）：
 * `ManagedRootRepository.create` 为写操作自提交：INSERT 成功后调用 `conn.commit()`，确保调用方无需显式 commit 即可跨连接/重启可见。
 * 其他 Repository（FolderNode / FileAsset / OperationLog）的写操作提交策略暂未统一，`persist_scan_result` 仍依赖调用方或上下文提交；此为已知遗留问题，待后续任务处理。
 
+### 2.3 目录树 model/view 边界（阶段 2 Task 2 实现）
+
+目录树使用 Qt model/view 架构，严格分层：
+
+```text
+QTreeView (view)
+    ↓ 读取
+FolderTreeModel (QAbstractItemModel)
+    ↓ 读取
+FolderTreeService (application)
+    ↓ 读取
+FolderNodeRepository / ManagedRootRepository (infrastructure)
+    ↓ 读取
+SQLite FolderNode / ManagedRoot 表
+```
+
+边界约定：
+
+* `FolderTreeModel`（[src/app/folder_tree_model.py](../src/app/folder_tree_model.py)）继承 `QAbstractItemModel`，仅包装 `FolderTreeService` 返回的 `TreeNode`，不访问文件系统、不写数据库、不调用 `FileOperationService`。
+* `FolderTreeService`（[src/application/folder_tree_service.py](../src/application/folder_tree_service.py)）为只读查询服务，协调 `ManagedRootRepository` 与 `FolderNodeRepository`，返回 `TreeNode` 列表；不在 UI 层递归拼 SQL。
+* 数据源严格为 SQLite `FolderNode`；不在 UI 线程临时递归真实文件系统。`ManagedRoot` 与 `FolderNode` 通过 `path_key` 关联（`FolderNodeRepository.get_by_path_key()`），不通过隐式字符串匹配散落 UI。
+* 惰性加载：`FolderTreeModel.canFetchMore()` / `fetchMore()` 在 view 请求时（展开、`rowCount` 调用）查询 `FolderTreeService.list_children(node_id)`，避免一次性加载整棵树。
+* 节点内部 ID 编码：`"mr:<managed_root_id>"` 表示 `ManagedRoot` 顶层节点，`"fn:<folder_node_id>"` 表示 `FolderNode` 节点；通过 `QModelIndex.internalPointer()` 在 index 与 node 间往返。
+* `TreeNode.category` 三类：`managed_root`（已配置且已扫描）、`unscanned_root`（已配置未扫描，虚拟节点）、`folder`（扫描得到的子目录）。
+* 错误隔离：`FolderTreeService` 与 `FolderTreeModel` 捕获查询异常，记录日志并降级为空列表/空子树，不让整个树崩溃。
+* `display_name` 回退：`FileScanner.persist_scan_result` 持久化时 `display_name` 为 `None`，`FolderTreeService` 用 `PurePath(real_path).name` 回退显示真实目录名。
+* 线程边界：`FolderTreeModel` 与 `FolderTreeService` 在 UI 主线程构造与访问，使用主线程 SQLite 连接（与 `ManagedRootService` 共享），不创建后台线程。
+
 ## 3. 模块职责
 
 ### ui/
@@ -110,6 +138,8 @@ UI 分层规则（阶段 2 起）：
 * 缩略图生成与缓存
 * JSON 导入导出
 
+`FolderNodeRepository`（Task 2 新增只读查询方法）：`list_all()` 返回全部节点按 `real_path` 排序；`get_by_path_key(path_key)` 按 `path_key` 查询，用于 `ManagedRoot` 与 `FolderNode` 关联；`count_children(parent_id)` 返回直接子目录数量（不含文件、不含孙节点）。
+
 ### application/
 
 负责：
@@ -127,7 +157,8 @@ UI 分层规则（阶段 2 起）：
 
 * `ManagedRootService`：受管理根目录配置的添加、列出、查询；路径检查仅用只读文件系统 API（`Path.exists` / `Path.is_dir`）；不扫描、不移动、不删除用户文件。本任务不实现移除配置。
 * `ScanWorkflowService`：读取已配置根目录，调用 `FileScanner.scan()` 与 `persist_scan_result()`，返回结构化 `ScanSummary`（扫描目录数、扫描文件数、持久化目录数、持久化文件数、错误列表）；不修改 `FileScanner` 同步接口；不访问 UI。
-* 可选 `WorkbenchQueryService`：集中 UI 查询逻辑（目录树构建、未关联素材查询、ModItem 列表查询），避免 widget 直接访问 Repository。本任务未实现。
+* `FolderTreeService`（Task 2 新增）：只读目录树查询服务，协调 `ManagedRootRepository` 与 `FolderNodeRepository`，返回 `TreeNode` 列表供 UI model 包装。方法：`list_root_nodes()` / `list_children(node_id)` / `get_node(node_id)` / `count_children(node_id)` / `has_scan_data(managed_root_id)`。不访问文件系统、不写数据库、不调用 `FileOperationService`。`ManagedRoot` 与 `FolderNode` 通过 `path_key` 关联，不在 UI 层散落字符串匹配。
+* 可选 `WorkbenchQueryService`：集中 UI 查询逻辑（未关联素材查询、ModItem 列表查询），避免 widget 直接访问 Repository。本任务未实现。
 
 ## 4. 数据存储
 
@@ -257,3 +288,6 @@ MovePlan 必须包含：
 * 取消确认后不执行移动。
 * 部分失败结果展示。
 * B1/B2 撤销阻止结果展示。
+* 目录树查询：多根目录、中文目录、空目录、重叠根目录去重、重新连接数据库后树可加载（Task 2）。
+* 目录树 model：节点层级、父子关系、惰性加载、无数据/错误数据不崩溃、刷新后状态正确（Task 2）。
+* 目录树 UI：主窗口包含树视图、选中节点后详情区更新、未扫描根目录显示提示、扫描后树刷新（Task 2）。

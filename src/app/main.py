@@ -15,8 +15,10 @@ from PySide6.QtWidgets import QApplication
 from app.app_paths import ensure_app_directories, get_app_db_path
 from app.logging_setup import setup_logging
 from app.main_window import MainWindow
+from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from infrastructure.db import get_connection, init_db
+from infrastructure.repositories.folder_node import FolderNodeRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
 
 logger = logging.getLogger(__name__)
@@ -53,9 +55,10 @@ def main() -> int:
     conn = get_connection(db_path)
     conn.row_factory = sqlite3.Row
     managed_root_service = ManagedRootService(ManagedRootRepository(conn))
+    folder_tree_service = FolderTreeService(ManagedRootRepository(conn), FolderNodeRepository(conn))
 
     app = QApplication(sys.argv)
-    window = MainWindow(managed_root_service, db_path)
+    window = MainWindow(managed_root_service, folder_tree_service, db_path)
     window.show()
     exit_code = app.exec()
     conn.close()
