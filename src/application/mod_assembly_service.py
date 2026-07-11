@@ -204,6 +204,13 @@ class ModAssemblyService:
         """返回全部 ModItem。"""
         return self._mod_repo.list_all()
 
+    def list_unassociated_assets(self) -> list[FileAsset]:
+        """返回未关联到任何 ModItem 的 FileAsset（按 imported_at 排序）。
+
+        阶段 2 Task 3：供 UI 素材池展示。不提供忽略/删除/移出素材池机制（Q11）。
+        """
+        return self._file_repo.list_unassociated()
+
     # --- 编辑 ---
 
     def update_mod_item(self, mod_item_id: str, **fields: object) -> ModItem:

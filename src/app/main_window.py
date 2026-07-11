@@ -1,9 +1,9 @@
-"""主窗口。阶段 2 Task 1/Task 2：工作台骨架、根目录扫描、只读目录树。
+"""主窗口。阶段 2 Task 1/Task 2/Task 3：工作台骨架、根目录扫描、只读目录树、素材池与 Mod 组装。
 
 布局（三栏骨架）：
 - 左栏：受管理根目录列表 + 添加目录 + 扫描选中目录按钮。
-- 中栏：受管理目录树（Task 2 实现，以 FolderNode 为数据源）+ 占位素材池。
-- 右栏：扫描状态 + 选中目录信息区域（Task 2 实现基础元数据展示）。
+- 中栏：受管理目录树（Task 2）+ 未归类素材池（Task 3）+ Mod 条目列表（Task 3）。
+- 右栏：扫描状态 + 选中目录信息（Task 2）+ Mod 条目详情与成员编辑（Task 3）。
 
 约束（AGENTS 规则 3）：
 - UI 不直接调用 shutil / Path.rename / Path.unlink 等文件写 API。
@@ -12,6 +12,9 @@
 - 扫描期间禁用重复扫描入口。
 - 目录树数据源为 SQLite FolderNode，不在 UI 线程临时递归真实文件系统。
 - 目录树严格只读：不实现拖拽移动、右键文件操作、重命名/删除/新建。
+- 素材池与 Mod 组装只写应用数据库关联；不移动、不复制、不删除真实文件（Task 3）。
+- 成员角色编辑通过 ModAssemblyService.set_member_role；UI 不复制关联规则。
+- 移除成员只解除关联，不删除 FileAsset 记录。
 """
 
 from __future__ import annotations
@@ -21,15 +24,24 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
     QFileDialog,
     QGroupBox,
+    QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QLineEdit,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -37,20 +49,35 @@ from PySide6.QtWidgets import (
 
 from app import ui_constants as ui
 from app.folder_tree_model import FolderTreeModel
+from app.pool_model import (
+    ROLE_DISPLAY_NAMES,
+    ROLE_ORDER,
+    ModItemListModel,
+    UnassociatedPoolModel,
+)
 from app.scan_worker import ScanWorker
 from application.errors import (
+    ApplicationError,
     DuplicateManagedRootError,
     InvalidRootPathError,
 )
 from application.folder_tree_service import FolderTreeService, TreeNode
 from application.managed_root_service import ManagedRootService
+from application.mod_assembly_service import ModAssemblyService
 from application.scan_workflow_service import ScanSummary
-from domain.models import ManagedRoot
+from domain.models import AssetKind, FileRole, ManagedRoot, ModItem
 
 logger = logging.getLogger(__name__)
 
 # 错误摘要最多展示条数
 MAX_ERROR_SUMMARY_LINES = 5
+
+# 成员表格列索引
+_COL_FILENAME = 0
+_COL_KIND = 1
+_COL_ROLE = 2
+_COL_PATH = 3
+_COL_ACTION = 4
 
 
 class MainWindow(QMainWindow):
@@ -64,16 +91,20 @@ class MainWindow(QMainWindow):
         self,
         managed_root_service: ManagedRootService,
         folder_tree_service: FolderTreeService,
+        mod_assembly_service: ModAssemblyService,
         db_path: Path,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._service = managed_root_service
         self._tree_service = folder_tree_service
+        self._mod_service = mod_assembly_service
         self._db_path = db_path
         self._thread: QThread | None = None
         self._worker: ScanWorker | None = None
         self._is_scanning = False
+        # 当前选中的 ModItem（供详情编辑与关联操作使用）
+        self._current_mod_id: str | None = None
 
         self.setWindowTitle(ui.APP_TITLE)
         self.resize(ui.WINDOW_DEFAULT_WIDTH, ui.WINDOW_DEFAULT_HEIGHT)
@@ -81,6 +112,8 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._refresh_root_list()
         self._refresh_tree()
+        self._refresh_pool()
+        self._refresh_mod_list()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         """关闭窗口前等待后台扫描线程退出，避免 QThread Running 状态析构 CTD。"""
@@ -145,11 +178,48 @@ class MainWindow(QMainWindow):
         tree_layout.addWidget(self._tree_hint)
         center_layout.addWidget(self._tree_group, stretch=3)
 
-        # 素材池占位
-        pool_box = QGroupBox(ui.PLACEHOLDER_POOL_TITLE)
-        pool_layout = QVBoxLayout(pool_box)
-        pool_layout.addWidget(QLabel(ui.PLACEHOLDER_POOL_HINT))
-        center_layout.addWidget(pool_box, stretch=2)
+        # 素材池
+        self._pool_group = QGroupBox(ui.POOL_GROUP_TITLE)
+        pool_layout = QVBoxLayout(self._pool_group)
+        self._pool_model = UnassociatedPoolModel(self._mod_service)
+        self._pool_view = QListView()
+        self._pool_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._pool_view.setModel(self._pool_model)
+        pool_layout.addWidget(self._pool_view)
+
+        self._pool_hint = QLabel(ui.POOL_EMPTY_HINT)
+        self._pool_hint.setWordWrap(True)
+        pool_layout.addWidget(self._pool_hint)
+
+        # Mod 条目列表 + 操作按钮
+        mod_list_box = QGroupBox(ui.MOD_LIST_GROUP_TITLE)
+        mod_list_layout = QVBoxLayout(mod_list_box)
+        self._mod_list_model = ModItemListModel(self._mod_service)
+        self._mod_list_view = QListView()
+        self._mod_list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._mod_list_view.setModel(self._mod_list_model)
+        self._mod_list_view.selectionModel().selectionChanged.connect(
+            self._on_mod_selection_changed
+        )
+        mod_list_layout.addWidget(self._mod_list_view)
+
+        self._mod_list_hint = QLabel(ui.MOD_LIST_EMPTY_HINT)
+        self._mod_list_hint.setWordWrap(True)
+        mod_list_layout.addWidget(self._mod_list_hint)
+
+        # 新建 + 关联按钮行
+        action_row = QHBoxLayout()
+        self._new_mod_button = QPushButton(ui.NEW_MOD_BUTTON)
+        self._new_mod_button.clicked.connect(self._on_new_mod)
+        action_row.addWidget(self._new_mod_button)
+
+        self._associate_button = QPushButton(ui.ASSOCIATE_BUTTON)
+        self._associate_button.clicked.connect(self._on_associate)
+        self._associate_button.setEnabled(False)
+        action_row.addWidget(self._associate_button)
+        mod_list_layout.addLayout(action_row)
+
+        center_layout.addWidget(mod_list_box, stretch=2)
 
         splitter.addWidget(center)
 
@@ -174,6 +244,74 @@ class MainWindow(QMainWindow):
         self._detail_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         detail_layout.addWidget(self._detail_label)
         right_layout.addWidget(self._detail_group, stretch=1)
+
+        # Mod 条目详情编辑区域（Task 3）
+        self._mod_detail_group = QGroupBox(ui.MOD_DETAIL_GROUP_TITLE)
+        mod_detail_layout = QVBoxLayout(self._mod_detail_group)
+
+        self._mod_detail_hint = QLabel(ui.MOD_DETAIL_NONE_HINT)
+        self._mod_detail_hint.setWordWrap(True)
+        mod_detail_layout.addWidget(self._mod_detail_hint)
+
+        # 元数据编辑表单
+        form_row1 = QHBoxLayout()
+        form_row1.addWidget(QLabel(ui.MOD_DETAIL_NAME_LABEL))
+        self._name_edit = QLineEdit()
+        form_row1.addWidget(self._name_edit, stretch=1)
+        mod_detail_layout.addLayout(form_row1)
+
+        mod_detail_layout.addWidget(QLabel(ui.MOD_DETAIL_DESC_LABEL))
+        self._desc_edit = QTextEdit()
+        self._desc_edit.setMaximumHeight(60)
+        mod_detail_layout.addWidget(self._desc_edit)
+
+        form_row3 = QHBoxLayout()
+        form_row3.addWidget(QLabel(ui.MOD_DETAIL_URL_LABEL))
+        self._url_edit = QLineEdit()
+        form_row3.addWidget(self._url_edit, stretch=1)
+        mod_detail_layout.addLayout(form_row3)
+
+        form_row4 = QHBoxLayout()
+        form_row4.addWidget(QLabel(ui.MOD_DETAIL_TAGS_LABEL))
+        self._tags_edit = QLineEdit()
+        self._tags_edit.setPlaceholderText("用逗号分隔，例如：护甲,魔法,沉浸式")
+        form_row4.addWidget(self._tags_edit, stretch=1)
+        mod_detail_layout.addLayout(form_row4)
+
+        self._save_meta_button = QPushButton(ui.MOD_DETAIL_SAVE_BUTTON)
+        self._save_meta_button.clicked.connect(self._on_save_metadata)
+        self._save_meta_button.setEnabled(False)
+        mod_detail_layout.addWidget(self._save_meta_button)
+
+        right_layout.addWidget(self._mod_detail_group, stretch=2)
+
+        # 成员列表表格（Task 3）
+        self._members_group = QGroupBox(ui.MEMBERS_GROUP_TITLE)
+        members_layout = QVBoxLayout(self._members_group)
+        self._members_hint = QLabel(ui.MEMBERS_EMPTY_HINT)
+        self._members_hint.setWordWrap(True)
+        members_layout.addWidget(self._members_hint)
+
+        self._members_table = QTableWidget(0, 5)
+        self._members_table.setHorizontalHeaderLabels(
+            [
+                ui.MEMBERS_COL_FILENAME,
+                ui.MEMBERS_COL_KIND,
+                ui.MEMBERS_COL_ROLE,
+                ui.MEMBERS_COL_PATH,
+                ui.MEMBERS_COL_ACTION,
+            ]
+        )
+        self._members_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._members_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._members_table.horizontalHeader().setStretchLastSection(False)
+        self._members_table.setColumnWidth(_COL_FILENAME, 180)
+        self._members_table.setColumnWidth(_COL_KIND, 60)
+        self._members_table.setColumnWidth(_COL_ROLE, 100)
+        self._members_table.setColumnWidth(_COL_ACTION, 80)
+        members_layout.addWidget(self._members_table)
+
+        right_layout.addWidget(self._members_group, stretch=2)
 
         splitter.addWidget(right)
 
@@ -373,12 +511,15 @@ class MainWindow(QMainWindow):
         self._end_scanning()
         # 扫描完成刷新目录树以展示新加载的 FolderNode
         self._refresh_tree()
+        # 扫描后新素材进入素材池
+        self._refresh_pool()
 
     def _on_scan_failed(self, message: str) -> None:
         self._set_status(f"{ui.STATUS_SCAN_FAILED}\n{message}")
         self._end_scanning()
         # 扫描失败仍刷新目录树（根目录可能已配置但无扫描数据）
         self._refresh_tree()
+        self._refresh_pool()
 
     # --- 状态 ---
 
@@ -396,3 +537,280 @@ class MainWindow(QMainWindow):
     def is_scan_button_enabled(self) -> bool:
         """返回扫描按钮是否可用（供测试）。"""
         return self._scan_button.isEnabled()
+
+    # === Task 3：素材池 / ModItem 组装 ===
+
+    def _refresh_pool(self) -> None:
+        """从未关联素材重新加载素材池。"""
+        self._pool_model.refresh()
+        count = self._pool_model.asset_count()
+        self._pool_hint.setVisible(count == 0)
+        self._update_associate_button()
+
+    def _refresh_mod_list(self) -> None:
+        """重新加载 ModItem 列表。"""
+        self._mod_list_model.refresh()
+        count = self._mod_list_model.item_count()
+        self._mod_list_hint.setVisible(count == 0)
+        # 刷新后若当前选中的 ModItem 不再存在，清空选择
+        if self._current_mod_id is not None:
+            remaining_ids = {
+                self._mod_list_model.mod_item_id_at(i)
+                for i in range(self._mod_list_model.item_count())
+            }
+            if self._current_mod_id not in remaining_ids:
+                self._current_mod_id = None
+                self._clear_mod_detail()
+        self._update_associate_button()
+
+    def pool_count(self) -> int:
+        """返回素材池当前素材数（供测试）。"""
+        return self._pool_model.asset_count()
+
+    def mod_list_count(self) -> int:
+        """返回 ModItem 列表条数（供测试）。"""
+        return self._mod_list_model.item_count()
+
+    def _selected_asset_ids(self) -> list[str]:
+        """返回素材池中当前选中的 asset_id 列表。"""
+        rows = {idx.row() for idx in self._pool_view.selectedIndexes()}
+        ids: list[str] = []
+        for row in sorted(rows):
+            asset_id = self._pool_model.asset_id_at(row)
+            if asset_id is not None:
+                ids.append(asset_id)
+        return ids
+
+    def _update_associate_button(self) -> None:
+        """根据素材池与 ModItem 列表选择状态更新关联按钮。"""
+        has_assets = len(self._selected_asset_ids()) > 0
+        has_mod = self._current_mod_id is not None
+        self._associate_button.setEnabled(has_assets and has_mod)
+
+    def _on_mod_selection_changed(self, *args) -> None:  # noqa: ARG002
+        """ModItem 列表选中变化时加载详情与成员。"""
+        rows = self._mod_list_view.selectedIndexes()
+        if not rows:
+            self._current_mod_id = None
+            self._clear_mod_detail()
+            self._update_associate_button()
+            return
+        row = rows[0].row()
+        item = self._mod_list_model.mod_item_at(row)
+        if item is None:
+            self._current_mod_id = None
+            self._clear_mod_detail()
+            self._update_associate_button()
+            return
+        self._current_mod_id = item.id
+        self._load_mod_detail(item)
+        self._load_members(item.id)
+        self._update_associate_button()
+
+    def _clear_mod_detail(self) -> None:
+        """清空 ModItem 详情编辑区与成员表。"""
+        self._mod_detail_hint.setText(ui.MOD_DETAIL_NONE_HINT)
+        self._name_edit.clear()
+        self._desc_edit.clear()
+        self._url_edit.clear()
+        self._tags_edit.clear()
+        self._save_meta_button.setEnabled(False)
+        self._members_table.setRowCount(0)
+        self._members_hint.setText(ui.MEMBERS_EMPTY_HINT)
+        self._members_hint.show()
+
+    def _load_mod_detail(self, item: ModItem) -> None:
+        """加载 ModItem 元数据到编辑表单。"""
+        self._mod_detail_hint.setText(f"正在编辑：{item.display_name or '（未命名）'}")
+        self._name_edit.setText(item.display_name or "")
+        self._desc_edit.setPlainText(item.description or "")
+        self._url_edit.setText(item.source_url or "")
+        self._tags_edit.setText("，".join(sorted(item.tags)))
+        self._save_meta_button.setEnabled(True)
+
+    def _load_members(self, mod_item_id: str) -> None:
+        """加载 ModItem 成员到表格。"""
+        self._members_table.setRowCount(0)
+        try:
+            members = self._mod_service.get_members(mod_item_id)
+        except ApplicationError as e:
+            self._members_hint.setText(f"加载成员失败：{e}")
+            self._members_hint.show()
+            return
+
+        self._members_table.setRowCount(len(members))
+        for row, asset in enumerate(members):
+            # 文件名
+            name_item = QTableWidgetItem(asset.filename)
+            name_item.setToolTip(asset.real_path)
+            name_item.setData(Qt.UserRole, asset.id)
+            self._members_table.setItem(row, _COL_FILENAME, name_item)
+
+            # 类型
+            kind_text = "文件夹" if asset.asset_kind == AssetKind.FOLDER else "文件"
+            self._members_table.setItem(row, _COL_KIND, QTableWidgetItem(kind_text))
+
+            # 角色（QComboBox）
+            combo = QComboBox()
+            for role in ROLE_ORDER:
+                combo.addItem(ROLE_DISPLAY_NAMES[role], role)
+            current_idx = (
+                ROLE_ORDER.index(asset.role) if asset.role in ROLE_ORDER else len(ROLE_ORDER) - 1
+            )
+            combo.setCurrentIndex(current_idx)
+            combo.currentIndexChanged.connect(lambda _idx, a=asset: self._on_role_changed(a.id))
+            self._members_table.setCellWidget(row, _COL_ROLE, combo)
+
+            # 完整路径
+            path_item = QTableWidgetItem(asset.real_path)
+            path_item.setToolTip(asset.real_path)
+            self._members_table.setItem(row, _COL_PATH, path_item)
+
+            # 移除按钮
+            remove_btn = QPushButton(ui.MEMBERS_REMOVE_BUTTON)
+            remove_btn.clicked.connect(lambda _checked=False, a=asset: self._on_remove_member(a.id))
+            self._members_table.setCellWidget(row, _COL_ACTION, remove_btn)
+
+        if members:
+            self._members_hint.hide()
+        else:
+            self._members_hint.setText(ui.MEMBERS_EMPTY_HINT)
+            self._members_hint.show()
+
+    def _on_role_changed(self, asset_id: str) -> None:
+        """成员角色下拉变化时更新角色。"""
+        if self._current_mod_id is None:
+            return
+        # 找到对应的 combo 获取新角色
+        sender = self.sender()
+        if not isinstance(sender, QComboBox):
+            return
+        role = sender.currentData()
+        if not isinstance(role, FileRole):
+            return
+        try:
+            self._mod_service.set_member_role(self._current_mod_id, asset_id, role)
+        except ApplicationError as e:
+            QMessageBox.warning(self, ui.ERR_SET_ROLE_FAILED, str(e))
+            # 回滚 UI：重新加载成员
+            self._load_members(self._current_mod_id)
+
+    def _on_remove_member(self, asset_id: str) -> None:
+        """移除成员关联。不删除 FileAsset 记录。"""
+        if self._current_mod_id is None:
+            return
+        try:
+            self._mod_service.remove_member(self._current_mod_id, asset_id)
+        except ApplicationError as e:
+            QMessageBox.warning(self, ui.ERR_REMOVE_MEMBER_FAILED, str(e))
+            return
+        # 刷新成员表与素材池
+        self._load_members(self._current_mod_id)
+        self._refresh_pool()
+
+    def _on_new_mod(self) -> None:
+        """新建 ModItem 对话框。"""
+        if self._is_scanning:
+            return
+        name, ok = QInputDialog.getText(
+            self,
+            ui.NEW_MOD_DIALOG_TITLE,
+            ui.NEW_MOD_DIALOG_LABEL,
+            text=ui.NEW_MOD_DIALOG_DEFAULT_NAME,
+        )
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        try:
+            new_item = self._mod_service.create_mod_item(display_name=name)
+        except ApplicationError as e:
+            QMessageBox.warning(self, ui.ERR_CREATE_MOD_FAILED, str(e))
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.exception("创建 ModItem 失败")
+            QMessageBox.critical(self, ui.ERR_CREATE_MOD_FAILED, str(e))
+            return
+        self._refresh_mod_list()
+        # 选中新创建的条目
+        for i in range(self._mod_list_model.item_count()):
+            if self._mod_list_model.mod_item_id_at(i) == new_item.id:
+                idx = self._mod_list_model.index(i)
+                self._mod_list_view.setCurrentIndex(idx)
+                break
+
+    def _on_associate(self) -> None:
+        """将素材池选中的素材关联到当前 ModItem。"""
+        if self._current_mod_id is None:
+            QMessageBox.information(self, ui.ASSOCIATE_BUTTON, ui.ERR_NO_MOD_SELECTED)
+            return
+        asset_ids = self._selected_asset_ids()
+        if not asset_ids:
+            QMessageBox.information(self, ui.ASSOCIATE_BUTTON, ui.ERR_NO_ASSET_SELECTED)
+            return
+
+        mod_item = self._mod_service.get_mod_item(self._current_mod_id)
+        mod_name = mod_item.display_name or "（未命名）"
+
+        success = 0
+        errors: list[str] = []
+        for asset_id in asset_ids:
+            try:
+                self._mod_service.add_member(self._current_mod_id, asset_id, FileRole.UNKNOWN)
+                success += 1
+            except ApplicationError as e:
+                errors.append(str(e))
+
+        # 刷新成员表与素材池
+        self._load_members(self._current_mod_id)
+        self._refresh_pool()
+
+        if errors:
+            detail = "\n".join(errors[:5])
+            if len(errors) > 5:
+                detail += f"\n…（共 {len(errors)} 个错误）"
+            QMessageBox.warning(
+                self,
+                ui.ASSOCIATE_FAILED,
+                f"成功 {success} 个，失败 {len(errors)} 个：\n{detail}",
+            )
+        else:
+            self._set_status(ui.ASSOCIATE_SUCCESS.format(n=success, name=mod_name))
+
+    def _on_save_metadata(self) -> None:
+        """保存 ModItem 元数据。"""
+        if self._current_mod_id is None:
+            return
+        name = self._name_edit.text().strip()
+        desc = self._desc_edit.toPlainText().strip() or None
+        url = self._url_edit.text().strip() or None
+        tags_text = self._tags_edit.text().strip()
+        tags = {t.strip() for t in tags_text.split("，") if t.strip()} if tags_text else set()
+
+        try:
+            self._mod_service.update_mod_item(
+                self._current_mod_id,
+                display_name=name or None,
+                description=desc,
+                source_url=url,
+                tags=tags,
+            )
+        except ApplicationError as e:
+            QMessageBox.warning(self, ui.ERR_UPDATE_MOD_FAILED, str(e))
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.exception("保存元数据失败")
+            QMessageBox.critical(self, ui.ERR_UPDATE_MOD_FAILED, str(e))
+            return
+        self._set_status(ui.MOD_DETAIL_SAVED_HINT)
+        # 刷新列表以反映新名称
+        self._refresh_mod_list()
+
+    def mod_detail_name(self) -> str:
+        """返回当前编辑表单中的名称（供测试）。"""
+        return self._name_edit.text()
+
+    def members_table_row_count(self) -> int:
+        """返回成员表格行数（供测试）。"""
+        return self._members_table.rowCount()

@@ -17,9 +17,12 @@ from app.logging_setup import setup_logging
 from app.main_window import MainWindow
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
+from application.mod_assembly_service import ModAssemblyService
 from infrastructure.db import get_connection, init_db
+from infrastructure.repositories.file_asset import FileAssetRepository
 from infrastructure.repositories.folder_node import FolderNodeRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
+from infrastructure.repositories.mod_item import ModItemRepository
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +59,10 @@ def main() -> int:
     conn.row_factory = sqlite3.Row
     managed_root_service = ManagedRootService(ManagedRootRepository(conn))
     folder_tree_service = FolderTreeService(ManagedRootRepository(conn), FolderNodeRepository(conn))
+    mod_assembly_service = ModAssemblyService(ModItemRepository(conn), FileAssetRepository(conn))
 
     app = QApplication(sys.argv)
-    window = MainWindow(managed_root_service, folder_tree_service, db_path)
+    window = MainWindow(managed_root_service, folder_tree_service, mod_assembly_service, db_path)
     window.show()
     exit_code = app.exec()
     conn.close()

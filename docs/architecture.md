@@ -95,6 +95,41 @@ SQLite FolderNode / ManagedRoot 表
 * `display_name` 回退：`FileScanner.persist_scan_result` 持久化时 `display_name` 为 `None`，`FolderTreeService` 用 `PurePath(real_path).name` 回退显示真实目录名。
 * 线程边界：`FolderTreeModel` 与 `FolderTreeService` 在 UI 主线程构造与访问，使用主线程 SQLite 连接（与 `ManagedRootService` 共享），不创建后台线程。
 
+### 2.4 素材池与 Mod 组装 UI model/view 边界（阶段 2 Task 3 实现）
+
+素材池与 ModItem 组装使用 Qt model/view 架构，严格分层：
+
+```text
+QListView / QTableWidget (view)
+    ↓ 读取 / 事件
+UnassociatedPoolModel / ModItemListModel (QAbstractListModel)
+    ↓ 读取
+ModAssemblyService (application)
+    ↓ 读取 / 写入
+FileAssetRepository / ModItemRepository (infrastructure)
+    ↓ 读取 / 写入
+SQLite file_asset / mod_item 表
+```
+
+写入链路（UI 不直接组合 Repository 写操作）：
+
+* `MainWindow._on_new_mod()` → `ModAssemblyService.create_mod_item()` → `ModItemRepository.create()`：创建空 ModItem。
+* `MainWindow._on_associate()` → `ModAssemblyService.add_member(mod_id, asset_id, UNKNOWN)` → `FileAssetRepository.update()`：将选中素材以 `UNKNOWN` 角色关联到当前 ModItem。UI 不直接调用 `FileAssetRepository.update()`。
+* `MainWindow._on_role_changed(asset_id)` → `ModAssemblyService.set_member_role(mod_id, asset_id, role)` → `FileAssetRepository.update()`：角色下拉变更后通过 service 写入。UI 不复制 `ROLE_LIMITS` 规则，直接展示服务层返回的 `MemberLimitError` / `DuplicateMemberError`。
+* `MainWindow._on_remove_member(asset_id)` → `ModAssemblyService.remove_member(mod_id, asset_id)` → `FileAssetRepository.update()`：解除关联（`mod_item_id=None`, `role=UNKNOWN`），不删除、不移动真实文件。
+* `MainWindow._on_save_metadata()` → `ModAssemblyService.update_mod_item(mod_id, ...)` → `ModItemRepository.update()`：保存显示名称/说明/来源链接/标签。
+
+边界约定：
+
+* `UnassociatedPoolModel`（[src/app/pool_model.py](../src/app/pool_model.py)）继承 `QAbstractListModel`，包装 `ModAssemblyService.list_unassociated_assets()` 返回的 `FileAsset` 列表，不访问文件系统、不写数据库。
+* `ModItemListModel`（同文件）继承 `QAbstractListModel`，包装 `ModAssemblyService.list_mod_items()` 返回的 `ModItem` 列表。
+* `ROLE_DISPLAY_NAMES` / `ROLE_ORDER` 集中定义在 [src/app/pool_model.py](../src/app/pool_model.py)，UI 层角色下拉顺序与中文显示名从此处导出，不散落 widget 代码；角色数量限制仍由 `ModAssemblyService.ROLE_LIMITS` 强制，UI 不复制规则。
+* 成员表格使用 `QTableWidget`，每行内嵌 `QComboBox`（角色编辑）和 `QPushButton`（移除按钮）；角色变更通过 `self.sender()` 获取发送者后调用 service。
+* 素材池刷新时机：扫描完成（`_on_scan_finished` / `_on_scan_failed`）、关联素材（`_on_associate`）、移除成员（`_on_remove_member`）后调用 `_refresh_pool()`。
+* 错误展示：service 层抛出的 `ApplicationError` 子类由 UI 捕获并通过 `QMessageBox` 或状态栏展示给用户；中文文案集中在 [src/app/ui_constants.py](../src/app/ui_constants.py)，不写进 domain/application 层异常逻辑。
+* 线程边界：`UnassociatedPoolModel` / `ModItemListModel` 与 `MainWindow` 在 UI 主线程构造与访问，使用主线程 SQLite 连接，不创建后台线程。
+* 数据源严格为 SQLite `file_asset` / `mod_item` 表；不在 UI 线程重新扫描文件系统。
+
 ## 3. 模块职责
 
 ### ui/
@@ -158,7 +193,7 @@ SQLite FolderNode / ManagedRoot 表
 * `ManagedRootService`：受管理根目录配置的添加、列出、查询；路径检查仅用只读文件系统 API（`Path.exists` / `Path.is_dir`）；不扫描、不移动、不删除用户文件。本任务不实现移除配置。
 * `ScanWorkflowService`：读取已配置根目录，调用 `FileScanner.scan()` 与 `persist_scan_result()`，返回结构化 `ScanSummary`（扫描目录数、扫描文件数、持久化目录数、持久化文件数、错误列表）；不修改 `FileScanner` 同步接口；不访问 UI。
 * `FolderTreeService`（Task 2 新增）：只读目录树查询服务，协调 `ManagedRootRepository` 与 `FolderNodeRepository`，返回 `TreeNode` 列表供 UI model 包装。方法：`list_root_nodes()` / `list_children(node_id)` / `get_node(node_id)` / `count_children(node_id)` / `has_scan_data(managed_root_id)`。不访问文件系统、不写数据库、不调用 `FileOperationService`。`ManagedRoot` 与 `FolderNode` 通过 `path_key` 关联，不在 UI 层散落字符串匹配。
-* 可选 `WorkbenchQueryService`：集中 UI 查询逻辑（未关联素材查询、ModItem 列表查询），避免 widget 直接访问 Repository。本任务未实现。
+* `ModAssemblyService`（Task 3 新增 UI 查询入口）：在阶段 1 既有 `create_mod_item` / `add_member` / `set_member_role` / `remove_member` / `update_mod_item` / `get_members` / `list_mod_items` 等写操作与查询接口基础上，新增 `list_unassociated_assets()` 委托 `FileAssetRepository.list_unassociated()`，返回 `mod_item_id` 为 `NULL` 的 `FileAsset` 列表供 UI 素材池展示。不复制关联规则到 UI；`ROLE_LIMITS` 仍为唯一规则源。
 
 ## 4. 数据存储
 
@@ -291,3 +326,7 @@ MovePlan 必须包含：
 * 目录树查询：多根目录、中文目录、空目录、重叠根目录去重、重新连接数据库后树可加载（Task 2）。
 * 目录树 model：节点层级、父子关系、惰性加载、无数据/错误数据不崩溃、刷新后状态正确（Task 2）。
 * 目录树 UI：主窗口包含树视图、选中节点后详情区更新、未扫描根目录显示提示、扫描后树刷新（Task 2）。
+* 素材池 model：未关联素材显示、关联后消失、解除关联后重新出现、中文文件名、文件/文件夹类型（Task 3）。
+* ModItem 列表 model：空列表、显示条目、创建后刷新、中文标签 tooltip（Task 3）。
+* Mod 组装 UI：无选择时创建/关联保护、错误展示、元数据编辑后重载保留、关联与移除后素材池刷新（Task 3）。
+* ModAssemblyService 回归：创建 ModItem、添加多个成员、文件与文件夹成员、中文名称与中文标签、设置角色、移除成员、角色限制与重复成员错误（Task 3）。

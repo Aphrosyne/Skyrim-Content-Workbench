@@ -66,8 +66,8 @@
 | 受管理根目录持久化与 schema v2 | ✅ | Task 1 完成；ManagedRoot + ManagedRootRepository + ManagedRootService + v1→v2 迁移 |
 | 扫描工作流应用层与后台任务适配 | ✅ | Task 1 完成；ScanWorkflowService + ScanWorker（Qt 后台线程） |
 | 只读目录树视图 | ✅ | Task 2 完成；FolderTreeService + FolderTreeModel + 三栏布局 + 详情区 |
-| 未关联素材池与 ModItem 列表 | ⬜ | Task 3；素材池占位区已就位 |
-| ModItem 手动组装与编辑 UI | ⬜ | 阶段 2 任务 4；成员角色、封面、元数据 |
+| 未关联素材池与 ModItem 列表 | ✅ | Task 3 完成；UnassociatedPoolModel + ModItemListModel + 素材池多选 + ModItem 列表 |
+| ModItem 手动组装与编辑 UI | ✅ | Task 3 完成；成员关联/移除、角色编辑、元数据编辑；封面设置待后续 |
 | 安全移动与撤销确认工作流 UI | ⬜ | 阶段 2 任务 5；预演→确认→执行→撤销 |
 
 **Task 1 完成内容（v0.6.0）**：
@@ -179,15 +179,43 @@
 - **遗留技术债**：`persist_scan_result` 不自提交仍为已知遗留问题，
   本次仅在 `ScanWorker` 层补提交，不统一 Repository 写操作提交策略。
 
+**Task 3 完成内容（v0.8.0）**：
+
+- Application 层 [src/application/mod_assembly_service.py](../src/application/mod_assembly_service.py)：
+  - 新增 `list_unassociated_assets()`：委托 `FileAssetRepository.list_unassociated()`，返回 `mod_item_id` 为 `NULL` 的 `FileAsset` 列表，供 UI 素材池展示。
+  - 复用阶段 1 既有 `create_mod_item` / `add_member` / `set_member_role` / `remove_member` / `update_mod_item` / `get_members` / `list_mod_items`，不复制关联规则到 UI。
+- UI model [src/app/pool_model.py](../src/app/pool_model.py)：
+  - `UnassociatedPoolModel(QAbstractListModel)`：包装未关联 `FileAsset` 列表，显示 `📁 filename` / `📄 filename`，tooltip 显示完整路径；`refresh()` 重置；`asset_at` / `asset_id_at` / `asset_count` 测试接口。
+  - `ModItemListModel(QAbstractListModel)`：包装 `ModItem` 列表，显示 `display_name` 或"(未命名)"；`refresh()` 重置；`mod_item_at` / `mod_item_id_at` / `item_count` 测试接口。
+  - `ROLE_DISPLAY_NAMES` / `ROLE_ORDER`：角色中文显示名与下拉顺序，集中定义；角色数量限制仍由 `ModAssemblyService.ROLE_LIMITS` 强制。
+  - 错误隔离：捕获查询异常，记录日志并降级为空列表。
+- UI 文本常量 [src/app/ui_constants.py](../src/app/ui_constants.py)：新增素材池、ModItem 列表、详情编辑、成员表格、角色中文名、操作按钮与错误提示常量。
+- 主窗口重写 [src/app/main_window.py](../src/app/main_window.py)：
+  - 构造签名新增 `mod_assembly_service` 参数。
+  - 中栏：素材池 `QListView`（ExtendedSelection）+ ModItem 列表 `QListView`（SingleSelection）+ 新建 Mod 条目按钮 + 关联到选中条目按钮。
+  - 右栏：ModItem 详情编辑表单（显示名称/说明/来源链接/标签 + 保存元数据按钮）+ 成员表格 `QTableWidget`（文件名/类型/角色下拉/路径/移除按钮）。
+  - `_on_new_mod()`：QInputDialog 输入名称创建 ModItem，刷新列表并选中新条目。
+  - `_on_associate()`：多选素材以 `UNKNOWN` 角色关联到当前 ModItem，展示错误。
+  - `_on_role_changed(asset_id)`：通过 `self.sender()` 获取 QComboBox，调用 `set_member_role`。
+  - `_on_remove_member(asset_id)`：调用 `remove_member`，刷新成员表和素材池。
+  - `_on_save_metadata()`：保存名称/说明/URL/标签（中文逗号分隔标签）。
+  - 扫描完成/失败后调用 `_refresh_pool()`。
+  - 测试接口：`pool_count()` / `mod_list_count()` / `mod_detail_name()` / `members_table_row_count()`。
+- 应用入口 [src/app/main.py](../src/app/main.py)：构造 `ModAssemblyService` 注入 `MainWindow`。
+- 测试新增 22 项（总计 266 passed, 2 skipped）：
+  - `test_mod_assembly_service.py`（+3 项）：`list_unassociated_assets` 基础、中文名素材、文件夹型素材。
+  - `test_pool_model.py`（13 项）：素材池空/显示未关联/关联后消失/解除后重现/中文文件名/文件夹类型/文件 tooltip；ModItem 列表空/显示条目/未命名显示/创建后刷新/中文标签 tooltip。
+  - `test_main_window.py`（+6 项）：素材池初始空、扫描后显示未关联素材、创建 ModItem 并关联、移除成员回到素材池、元数据保存持久化、无选择时关联保护。
+
 **验收（来自 roadmap）**：
 
 - [ ] 用户可添加、查看、移除受管理根目录配置（添加/查看已实现；移除未在 Task 1 范围）
-- [x] 用户可手动触发扫描，看到扫描结果与错误摘要（未关联素材池待 Task 3）
+- [x] 用户可手动触发扫描，看到扫描结果与错误摘要（未关联素材池已实现）
 - [x] 用户可在目录树中浏览已扫描目录并选中目标分类目录（Task 2 只读浏览；移动入口待 Task 5）
-- [ ] 用户可在素材池选择文件创建 ModItem，设置成员角色与封面
+- [x] 用户可在素材池选择文件创建 ModItem，设置成员角色与元数据（封面设置待后续）
 - [ ] 用户可在目录树选择目标分类，发起移动预演并明确确认执行
 - [ ] 用户可看到执行结果，对安全操作发起撤销预演并确认撤销
-- [x] 中文路径、中文显示名和 UTF-8 数据在扫描与目录树浏览流程中保持可用
+- [x] 中文路径、中文显示名和 UTF-8 数据在扫描、目录树浏览与 Mod 组装流程中保持可用
 - [x] 所有用户文件位置变化仍只由 `FileOperationService` 执行（本任务不调用任何文件写 API）
 
 ## 阶段 3：搜索与 AI JSON 交换  ⬜

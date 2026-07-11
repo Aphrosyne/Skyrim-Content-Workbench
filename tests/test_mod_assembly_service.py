@@ -373,6 +373,85 @@ def test_list_mod_items(
     assert len(items) == 2
 
 
+def test_list_unassociated_assets(
+    service: ModAssemblyService,
+    file_repo: FileAssetRepository,
+) -> None:
+    """list_unassociated_assets 只返回 mod_item_id 为 None 的素材。
+
+    阶段 2 Task 3 回归测试：UI 素材池数据源。
+    """
+    mod = service.create_mod_item(display_name="测试")
+
+    # 3 个未关联 + 2 个已关联
+    _insert_file_asset(file_repo, asset_id="a1", real_path="D:/A.7z", filename="A.7z")
+    _insert_file_asset(file_repo, asset_id="a2", real_path="D:/B.zip", filename="B.zip")
+    _insert_file_asset(file_repo, asset_id="a3", real_path="D:/C.webp", filename="C.webp")
+    _insert_file_asset(
+        file_repo,
+        asset_id="a4",
+        real_path="D:/D.7z",
+        filename="D.7z",
+        mod_item_id=mod.id,
+    )
+    _insert_file_asset(
+        file_repo,
+        asset_id="a5",
+        real_path="D:/E.txt",
+        filename="E.txt",
+        mod_item_id=mod.id,
+    )
+
+    unassociated = service.list_unassociated_assets()
+    assert len(unassociated) == 3
+    ids = {a.id for a in unassociated}
+    assert ids == {"a1", "a2", "a3"}
+
+
+def test_list_unassociated_assets_chinese(
+    service: ModAssemblyService,
+    file_repo: FileAssetRepository,
+) -> None:
+    """中文名素材正确返回。"""
+    _insert_file_asset(
+        file_repo,
+        asset_id="cn1",
+        real_path="D:/Mods/寒霜之心.7z",
+        filename="寒霜之心.7z",
+    )
+    _insert_file_asset(
+        file_repo,
+        asset_id="cn2",
+        real_path="D:/Mods/汉化包.zip",
+        filename="汉化包.zip",
+    )
+
+    unassociated = service.list_unassociated_assets()
+    assert len(unassociated) == 2
+    names = {a.filename for a in unassociated}
+    assert "寒霜之心.7z" in names
+    assert "汉化包.zip" in names
+
+
+def test_list_unassociated_assets_folder_kind(
+    service: ModAssemblyService,
+    file_repo: FileAssetRepository,
+) -> None:
+    """文件夹型素材正确返回。"""
+    _insert_file_asset(
+        file_repo,
+        asset_id="folder1",
+        real_path="D:/Mods/护甲包",
+        filename="护甲包",
+        extension="",
+        asset_kind=AssetKind.FOLDER,
+    )
+
+    unassociated = service.list_unassociated_assets()
+    assert len(unassociated) == 1
+    assert unassociated[0].asset_kind == AssetKind.FOLDER
+
+
 def test_get_members_empty(
     service: ModAssemblyService,
 ) -> None:

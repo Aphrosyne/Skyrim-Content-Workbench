@@ -8,7 +8,51 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
-### Fixed（阶段 2 Task 2 验收修复）
+## [0.8.0] - 2026-07-11
+
+对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 3（未归类素材池与人工 Mod 条目组装）完成。
+
+### Added
+
+- Application 层查询入口 [src/application/mod_assembly_service.py](src/application/mod_assembly_service.py)：
+  - `list_unassociated_assets()`：委托 `FileAssetRepository.list_unassociated()`，返回 `mod_item_id` 为 `NULL` 的 `FileAsset` 列表，供 UI 素材池展示。不复制关联规则到 UI；`ROLE_LIMITS` 仍为唯一规则源。
+- UI model [src/app/pool_model.py](src/app/pool_model.py)（新文件）：
+  - `UnassociatedPoolModel(QAbstractListModel)`：包装未关联 `FileAsset` 列表，显示 `📁 filename` / `📄 filename`，tooltip 显示完整路径；`refresh()` 重置；多选支持。
+  - `ModItemListModel(QAbstractListModel)`：包装 `ModItem` 列表，显示 `display_name` 或"(未命名)"；`refresh()` 重置。
+  - `ROLE_DISPLAY_NAMES` / `ROLE_ORDER`：角色中文显示名与下拉顺序，集中定义；角色数量限制仍由 `ModAssemblyService.ROLE_LIMITS` 强制，UI 不复制规则。
+  - 错误隔离：捕获查询异常，记录日志并降级为空列表。
+  - 测试接口：`asset_at` / `asset_id_at` / `asset_count` / `mod_item_at` / `mod_item_id_at` / `item_count`。
+- UI 文本常量 [src/app/ui_constants.py](src/app/ui_constants.py)：新增素材池、ModItem 列表、详情编辑、成员表格、角色中文名、操作按钮与错误提示常量。
+- 主窗口重写 [src/app/main_window.py](src/app/main_window.py)：
+  - 构造签名新增 `mod_assembly_service` 参数。
+  - 中栏：素材池 `QListView`（ExtendedSelection）+ ModItem 列表 `QListView`（SingleSelection）+ 新建 Mod 条目按钮 + 关联到选中条目按钮。
+  - 右栏：ModItem 详情编辑表单（显示名称 QLineEdit / 说明 QTextEdit / 来源链接 QLineEdit / 标签 QLineEdit + 保存元数据按钮）+ 成员表格 `QTableWidget`（文件名/类型/角色下拉 QComboBox/路径/移除按钮 QPushButton）。
+  - `_on_new_mod()`：QInputDialog 输入名称创建 ModItem，刷新列表并选中新条目。
+  - `_on_associate()`：多选素材以 `UNKNOWN` 角色关联到当前 ModItem，展示错误。
+  - `_on_role_changed(asset_id)`：通过 `self.sender()` 获取 QComboBox，调用 `set_member_role`；展示 `MemberLimitError` / `DuplicateMemberError`。
+  - `_on_remove_member(asset_id)`：调用 `remove_member`，刷新成员表和素材池。
+  - `_on_save_metadata()`：保存名称/说明/URL/标签（中文逗号分隔标签）。
+  - 扫描完成/失败后调用 `_refresh_pool()`，新扫描的未关联素材进入素材池。
+  - 测试接口：`pool_count()` / `mod_list_count()` / `mod_detail_name()` / `members_table_row_count()`。
+- 应用入口 [src/app/main.py](src/app/main.py)：构造 `ModAssemblyService` 注入 `MainWindow`。
+- 单元测试 22 项新增（总计 266 passed, 2 skipped），覆盖：
+  - `test_mod_assembly_service.py`（+3 项）：`list_unassociated_assets` 基础（3 未关联 + 2 已关联）、中文名素材、文件夹型素材。
+  - `test_pool_model.py`（13 项，新文件）：素材池空/显示未关联/关联后消失/解除后重现/中文文件名/文件夹类型/文件 tooltip；ModItem 列表空/显示条目/未命名显示/创建后刷新/中文标签 tooltip。
+  - `test_main_window.py`（+6 项）：素材池初始空、扫描后显示未关联素材、创建 ModItem 并关联、移除成员回到素材池、元数据保存持久化、无选择时关联保护。
+
+### Changed
+
+- [src/app/main_window.py](src/app/main_window.py)：构造签名新增 `mod_assembly_service` 参数；中栏新增素材池与 ModItem 列表；右栏新增 ModItem 详情编辑与成员表格。
+- [src/app/main.py](src/app/main.py)：构造 `ModAssemblyService` 注入 `MainWindow`。
+- [src/app/ui_constants.py](src/app/ui_constants.py)：新增素材池、ModItem 列表、详情编辑、成员表格、角色中文名与错误提示常量。
+- [tests/test_main_window.py](tests/test_main_window.py)：适配新构造签名（注入 `ModAssemblyService`），扩展 6 项 Task 3 测试。
+- [docs/spec.md](docs/spec.md)：新增 §5.5 未归类素材池与人工 Mod 条目组装（15 条行为规范）；更新 §8 UI 结构反映 Task 3 实现。
+- [docs/architecture.md](docs/architecture.md)：新增 §2.4 素材池与 Mod 组装 UI model/view 边界（写入链路、边界约定）；更新 §3 application 层职责；扩展 §11 测试策略。
+- [docs/roadmap.md](docs/roadmap.md)：标记 Task 3 完成；更新验收清单。
+- [docs/open-questions.md](docs/open-questions.md)：更新 Q11 实现现状（不关闭未决部分）；Q19 保持不变。
+- [docs/progress.md](docs/progress.md)：新增 Task 3 完成内容；更新验收清单。
+
+### Fixed（阶段 2 Task 2 验收修复，自 v0.7.0 起）
 
 - **目录树启动崩溃（无限递归）**：`FolderTreeModel._fetch` 在
   [src/app/folder_tree_model.py](src/app/folder_tree_model.py) 中调用
@@ -33,9 +77,6 @@
   open question Q21，本次不调整加载策略，仅缓解递归。
   `persist_scan_result` 不自提交仍为已知遗留问题（v0.6.0 起记录），
   本次仅在 `ScanWorker` 层补提交，不统一 Repository 写操作提交策略。
-
-### Added（测试）
-
 - `test_fetch_does_not_recurse_when_connected_to_view`：model 连接真实
   `QTreeView` 后 `fetchMore` 不触发 `RecursionError`（[tests/test_folder_tree_model.py](tests/test_folder_tree_model.py)）。
 - `test_fetch_empty_children_does_not_emit_rows_inserted`：空子节点
@@ -45,12 +86,49 @@
   确保重入不递归（[tests/test_folder_tree_model.py](tests/test_folder_tree_model.py)）。
 - `test_scan_worker_persists_results_to_db`：扫描完成后用独立连接验证
   `folder_node` 与 `file_asset` 表非空，确保事务已提交（[tests/test_scan_worker.py](tests/test_scan_worker.py)）。
-
-### Changed（测试）
-
 - `test_main_window_tree_refresh_after_scan`：扫描完成后新增验证根节点
   不再显示"未扫描"且可展开有子节点（[tests/test_main_window.py](tests/test_main_window.py)）。
   修复前该测试仅验证 `tree_root_count() == 1`，漏掉了数据未持久化的场景。
+
+### 安全限制
+
+- 本任务严格只读用户文件：不调用 `FileOperationService` 的任何方法。
+- 关联/移除成员只写应用数据库 `file_asset` 表（`mod_item_id` / `role` 字段），不移动、不复制、不删除、不重命名任何用户文件。
+- 不生成缩略图、不读取图片内容、不把用户文件复制进应用数据目录。
+- 素材池数据源严格为 SQLite `file_asset` 表；不在 UI 线程重新扫描文件系统。
+- UI 不直接访问 SQLite connection 或 Repository；所有写操作通过 `ModAssemblyService`。
+- 路径、日志、数据库文本编码为 UTF-8。
+
+### 待确认项
+
+- 本任务未触及新的 open question。
+- Q11（未归类素材如何移出素材池）：更新实现现状（`UnassociatedPoolModel` 列出未关联素材，不实现忽略/删除/移出机制），长期处置策略保留未决。
+- Q19（成员角色数量限制）：保持不变（`MAIN_MOD≤1`、`README≤1`，其他不限），UI 直接展示服务层返回的错误。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 54 files already formatted
+- `python -m pytest` → 266 passed, 2 skipped in 8.64s
+- `python -m app.main` → 主窗口正常启动，三栏布局，可添加目录、扫描、浏览目录树、选中节点查看详情、素材池多选、创建 ModItem、关联素材、编辑角色、移除成员、编辑元数据（人工验证步骤见下方）
+
+### 人工验证步骤
+
+1. 运行 `python -m app.main`，主窗口显示三栏布局：左栏「受管理根目录」+ 按钮、中栏「目录树」+ 素材池 + ModItem 列表 + 按钮、右栏「扫描状态」+ 目录详情 + ModItem 详情编辑 + 成员表格。
+2. 添加并扫描一个包含本体压缩包、汉化压缩包、图片和说明文件的测试目录。
+3. 扫描完成后，中栏素材池应显示所有未关联素材（文件 📄 / 文件夹 📁），tooltip 显示完整路径。
+4. 在素材池多选素材，点击「新建 Mod 条目」，输入名称后创建；新条目自动选中并出现在 ModItem 列表中。
+5. 选中素材后点击「关联到选中条目」，素材从素材池消失，出现在右栏成员表格。
+6. 在成员表格中通过角色下拉框为每个成员指定角色（本体/汉化/预览图/说明/可选文件/未知）；角色超限时展示错误。
+7. 在右栏 ModItem 详情编辑表单中填写显示名称、说明、来源链接、标签（中文逗号分隔），点击「保存元数据」。
+8. 关闭应用后重新运行，确认关联、角色、标签、描述仍存在。
+9. 在成员表格中点击某成员的「移除」按钮，该素材回到素材池；真实文件未被移动或删除。
+10. 中文文件名、中文显示名、中文标签全程正确显示。
+
+### Not in Scope
+
+未实现：封面设置 UI、缩略图生成与图片预览、搜索、AI JSON 导入导出、拖拽移动、真实文件移动、批量下载批次、ModItem.status、忽略/删除/移出素材池机制、压缩包内容解析、自动分组、AI 建议。
+本任务不修改 `FileOperationService` 的行为；不修改 `FileScanner` 同步签名；不修改数据库 schema（沿用 v2）。
 
 ## [0.7.0] - 2026-07-09
 

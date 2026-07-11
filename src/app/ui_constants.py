@@ -48,6 +48,62 @@ DETAIL_CATEGORY_ROOT = "受管理根目录（已扫描）"
 DETAIL_CATEGORY_UNSCANNED = "受管理根目录（未扫描）"
 DETAIL_CATEGORY_FOLDER = "子目录"
 
+# 素材池区域（Task 3）
+POOL_GROUP_TITLE = "未归类素材池"
+POOL_EMPTY_HINT = "暂无未归类素材。扫描受管理根目录后，未关联到任何 Mod 条目的文件将出现在这里。"
+POOL_COL_NAME = "文件名"
+POOL_COL_KIND = "类型"
+
+# ModItem 列表区域（Task 3）
+MOD_LIST_GROUP_TITLE = "Mod 条目列表"
+MOD_LIST_EMPTY_HINT = "暂无 Mod 条目。在素材池中选择素材后点击「新建 Mod 条目」。"
+NEW_MOD_BUTTON = "新建 Mod 条目"
+NEW_MOD_DIALOG_TITLE = "新建 Mod 条目"
+NEW_MOD_DIALOG_LABEL = "条目名称："
+NEW_MOD_DIALOG_DEFAULT_NAME = "新 Mod 条目"
+
+# ModItem 详情区域（Task 3）
+MOD_DETAIL_GROUP_TITLE = "Mod 条目详情"
+MOD_DETAIL_NONE_HINT = "请在左侧选择一个 Mod 条目。"
+MOD_DETAIL_NAME_LABEL = "显示名称"
+MOD_DETAIL_DESC_LABEL = "说明"
+MOD_DETAIL_URL_LABEL = "来源链接"
+MOD_DETAIL_TAGS_LABEL = "标签"
+MOD_DETAIL_SAVE_BUTTON = "保存元数据"
+MOD_DETAIL_SAVED_HINT = "元数据已保存"
+
+# 成员表格区域（Task 3）
+MEMBERS_GROUP_TITLE = "成员列表"
+MEMBERS_EMPTY_HINT = "该 Mod 条目暂无成员。在素材池中选择素材并关联到此条目。"
+MEMBERS_COL_FILENAME = "文件名"
+MEMBERS_COL_KIND = "类型"
+MEMBERS_COL_ROLE = "角色"
+MEMBERS_COL_PATH = "完整路径"
+MEMBERS_COL_ACTION = "操作"
+MEMBERS_REMOVE_BUTTON = "移除"
+
+# 角色中文名（与 pool_model.ROLE_DISPLAY_NAMES 一致，集中定义避免漂移）
+ROLE_MAIN_MOD = "本体"
+ROLE_TRANSLATION = "汉化"
+ROLE_PREVIEW = "预览图"
+ROLE_README = "说明"
+ROLE_OPTIONAL_FILE = "可选文件"
+ROLE_UNKNOWN = "未知"
+
+# 操作按钮（Task 3）
+ASSOCIATE_BUTTON = "关联到选中条目"
+ASSOCIATE_NO_SELECTION = "请先在素材池中选择至少一个素材，并在 Mod 条目列表中选择一个目标条目。"
+ASSOCIATE_SUCCESS = "已关联 {n} 个素材到「{name}」。"
+ASSOCIATE_FAILED = "关联失败"
+
+# 错误（Task 3）
+ERR_NO_MOD_SELECTED = "请先在 Mod 条目列表中选择一个条目。"
+ERR_NO_ASSET_SELECTED = "请先在素材池中选择至少一个素材。"
+ERR_CREATE_MOD_FAILED = "创建 Mod 条目失败"
+ERR_UPDATE_MOD_FAILED = "保存元数据失败"
+ERR_SET_ROLE_FAILED = "设置角色失败"
+ERR_REMOVE_MEMBER_FAILED = "移除成员失败"
+
 # 错误
 ERR_ADD_ROOT_FAILED = "添加目录失败"
 ERR_NO_ROOT_SELECTED = "请先在左侧选择一个受管理根目录。"
