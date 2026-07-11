@@ -24,6 +24,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -57,6 +58,7 @@ from app.pool_model import (
     UnassociatedPoolModel,
 )
 from app.scan_worker import ScanWorker
+from app.thumbnail_worker import ThumbnailWorker
 from application.errors import (
     ApplicationError,
     DuplicateManagedRootError,
@@ -67,7 +69,9 @@ from application.folder_tree_service import FolderTreeService, TreeNode
 from application.managed_root_service import ManagedRootService
 from application.mod_assembly_service import ModAssemblyService
 from application.scan_workflow_service import ScanSummary
+from application.thumbnail_coordinator import ThumbnailCoordinator
 from domain.models import AssetKind, FileRole, ManagedRoot, ModItem
+from infrastructure.thumbnail_generator import ThumbnailStatus
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +83,11 @@ _COL_FILENAME = 0
 _COL_KIND = 1
 _COL_ROLE = 2
 _COL_PATH = 3
-_COL_ACTION = 4
+_COL_COVER = 4
+_COL_ACTION = 5
+
+# 缩略图预览尺寸（详情区封面预览）
+_COVER_PREVIEW_SIZE = 128
 
 
 class MainWindow(QMainWindow):
@@ -95,6 +103,7 @@ class MainWindow(QMainWindow):
         folder_tree_service: FolderTreeService,
         mod_assembly_service: ModAssemblyService,
         db_path: Path,
+        thumbnail_coordinator: ThumbnailCoordinator | None = None,
         commit_callback: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -103,12 +112,16 @@ class MainWindow(QMainWindow):
         self._tree_service = folder_tree_service
         self._mod_service = mod_assembly_service
         self._db_path = db_path
+        self._thumbnail_coord = thumbnail_coordinator
         self._commit_callback = commit_callback
         self._thread: QThread | None = None
         self._worker: ScanWorker | None = None
         self._is_scanning = False
         # 当前选中的 ModItem（供详情编辑与关联操作使用）
         self._current_mod_id: str | None = None
+        # 缩略图后台线程
+        self._thumb_thread: QThread | None = None
+        self._thumb_worker: ThumbnailWorker | None = None
 
         self.setWindowTitle(ui.APP_TITLE)
         self.resize(ui.WINDOW_DEFAULT_WIDTH, ui.WINDOW_DEFAULT_HEIGHT)
@@ -120,7 +133,10 @@ class MainWindow(QMainWindow):
         self._refresh_mod_list()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
-        """关闭窗口前等待后台扫描线程退出，避免 QThread Running 状态析构 CTD。"""
+        """关闭窗口前等待后台线程退出，避免 QThread Running 状态析构 CTD。"""
+        if self._thumb_thread is not None and self._thumb_thread.isRunning():
+            self._thumb_thread.quit()
+            self._thumb_thread.wait(5000)
         if self._thread is not None and self._thread.isRunning():
             self._thread.quit()
             self._thread.wait(5000)
@@ -314,6 +330,17 @@ class MainWindow(QMainWindow):
         self._save_meta_button.setEnabled(False)
         mod_detail_layout.addWidget(self._save_meta_button)
 
+        # 封面预览（Task 4）
+        cover_box = QGroupBox(ui.COVER_PREVIEW_TITLE)
+        cover_layout = QHBoxLayout(cover_box)
+        self._cover_label = QLabel(ui.COVER_PREVIEW_NONE_HINT)
+        self._cover_label.setWordWrap(True)
+        self._cover_label.setAlignment(Qt.AlignCenter)
+        self._cover_label.setMinimumSize(_COVER_PREVIEW_SIZE, _COVER_PREVIEW_SIZE)
+        self._cover_label.setStyleSheet("border: 1px solid #ccc;")
+        cover_layout.addWidget(self._cover_label)
+        mod_detail_layout.addWidget(cover_box)
+
         right_layout.addWidget(self._mod_detail_group, stretch=1)
 
         # 成员列表表格（Task 3）
@@ -323,13 +350,14 @@ class MainWindow(QMainWindow):
         self._members_hint.setWordWrap(True)
         members_layout.addWidget(self._members_hint)
 
-        self._members_table = QTableWidget(0, 5)
+        self._members_table = QTableWidget(0, 6)
         self._members_table.setHorizontalHeaderLabels(
             [
                 ui.MEMBERS_COL_FILENAME,
                 ui.MEMBERS_COL_KIND,
                 ui.MEMBERS_COL_ROLE,
                 ui.MEMBERS_COL_PATH,
+                ui.MEMBERS_COL_COVER,
                 ui.MEMBERS_COL_ACTION,
             ]
         )
@@ -339,6 +367,7 @@ class MainWindow(QMainWindow):
         self._members_table.setColumnWidth(_COL_FILENAME, 180)
         self._members_table.setColumnWidth(_COL_KIND, 60)
         self._members_table.setColumnWidth(_COL_ROLE, 100)
+        self._members_table.setColumnWidth(_COL_COVER, 80)
         self._members_table.setColumnWidth(_COL_ACTION, 80)
         members_layout.addWidget(self._members_table)
 
@@ -649,6 +678,8 @@ class MainWindow(QMainWindow):
                 self._current_mod_id = None
                 self._clear_mod_detail()
         self._update_associate_button()
+        # 刷新封面图标
+        self._refresh_cover_icons()
 
     def pool_count(self) -> int:
         """返回素材池当前素材数（供测试）。"""
@@ -715,6 +746,9 @@ class MainWindow(QMainWindow):
         self._members_table.setRowCount(0)
         self._members_hint.setText(ui.MEMBERS_EMPTY_HINT)
         self._members_hint.show()
+        # 清空封面预览
+        self._cover_label.clear()
+        self._cover_label.setText(ui.COVER_PREVIEW_NONE_HINT)
 
     def _load_mod_detail(self, item: ModItem) -> None:
         """加载 ModItem 元数据到编辑表单。"""
@@ -734,6 +768,9 @@ class MainWindow(QMainWindow):
             self._members_hint.setText(f"加载成员失败：{e}")
             self._members_hint.show()
             return
+
+        mod_item = self._mod_service.get_mod_item(mod_item_id)
+        cover_id = mod_item.cover_asset_id if mod_item else None
 
         self._members_table.setRowCount(len(members))
         for row, asset in enumerate(members):
@@ -765,6 +802,21 @@ class MainWindow(QMainWindow):
             path_item.setToolTip(asset.real_path)
             self._members_table.setItem(row, _COL_PATH, path_item)
 
+            # 封面列：preview 成员显示"设为封面"按钮或"★ 封面"标记
+            if asset.role == FileRole.PREVIEW:
+                if asset.id == cover_id:
+                    cover_label = QLabel(ui.MEMBERS_COVER_MARK)
+                    cover_label.setAlignment(Qt.AlignCenter)
+                    self._members_table.setCellWidget(row, _COL_COVER, cover_label)
+                else:
+                    cover_btn = QPushButton(ui.MEMBERS_SET_COVER_BUTTON)
+                    cover_btn.clicked.connect(
+                        lambda _checked=False, a=asset: self._on_set_cover(a.id)
+                    )
+                    self._members_table.setCellWidget(row, _COL_COVER, cover_btn)
+            else:
+                self._members_table.setCellWidget(row, _COL_COVER, QLabel(""))
+
             # 移除按钮
             remove_btn = QPushButton(ui.MEMBERS_REMOVE_BUTTON)
             remove_btn.clicked.connect(lambda _checked=False, a=asset: self._on_remove_member(a.id))
@@ -775,6 +827,9 @@ class MainWindow(QMainWindow):
         else:
             self._members_hint.setText(ui.MEMBERS_EMPTY_HINT)
             self._members_hint.show()
+
+        # 加载封面预览
+        self._load_cover_preview(mod_item_id)
 
     def _on_role_changed(self, asset_id: str, combo: QComboBox) -> None:
         """成员角色下拉变化时更新角色。"""
@@ -804,6 +859,153 @@ class MainWindow(QMainWindow):
         # 刷新成员表与素材池
         self._load_members(self._current_mod_id)
         self._refresh_pool()
+
+    def _on_set_cover(self, asset_id: str) -> None:
+        """将 preview 成员设为封面。"""
+        if self._current_mod_id is None:
+            return
+        try:
+            self._mod_service.set_cover(self._current_mod_id, asset_id)
+            self._commit()
+        except ValueError as e:
+            # 非 preview 成员被设为封面
+            QMessageBox.warning(self, ui.MEMBERS_SET_COVER_BUTTON, str(e))
+            return
+        except ApplicationError as e:
+            QMessageBox.warning(self, ui.MEMBERS_SET_COVER_BUTTON, str(e))
+            return
+        # 刷新成员表（更新封面标记）与封面预览
+        self._load_members(self._current_mod_id)
+        self._refresh_mod_list()
+
+    def _load_cover_preview(self, mod_item_id: str) -> None:
+        """加载当前 ModItem 的封面缩略图到详情区预览 QLabel。"""
+        if self._thumbnail_coord is None:
+            self._cover_label.clear()
+            self._cover_label.setText(ui.COVER_PREVIEW_NONE_HINT)
+            return
+
+        try:
+            mod_item = self._mod_service.get_mod_item(mod_item_id)
+        except ApplicationError:
+            self._cover_label.clear()
+            self._cover_label.setText(ui.COVER_PREVIEW_NONE_HINT)
+            return
+
+        if mod_item.cover_asset_id is None:
+            self._cover_label.clear()
+            self._cover_label.setText(ui.COVER_PREVIEW_NONE_HINT)
+            return
+
+        # 查询缓存状态
+        info = self._thumbnail_coord.get_thumbnail_info(mod_item.cover_asset_id)
+        if info.valid and info.cache_path is not None:
+            pixmap = QPixmap(str(info.cache_path))
+            if not pixmap.isNull():
+                self._cover_label.setPixmap(
+                    pixmap.scaled(
+                        _COVER_PREVIEW_SIZE,
+                        _COVER_PREVIEW_SIZE,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+            else:
+                self._cover_label.setText(ui.COVER_PREVIEW_ERROR.format(reason="缓存文件损坏"))
+        else:
+            # 缓存无效，触发后台生成
+            self._cover_label.setText(ui.COVER_PREVIEW_LOADING)
+            self._request_thumbnail(mod_item.cover_asset_id)
+
+    def _request_thumbnail(self, asset_id: str) -> None:
+        """请求在后台生成单个缩略图。"""
+        if self._thumbnail_coord is None:
+            return
+        # 若已有线程在运行，跳过（避免并发冲突；简单串行）
+        if self._thumb_thread is not None and self._thumb_thread.isRunning():
+            return
+        self._thumb_thread = QThread()
+        self._thumb_worker = ThumbnailWorker(
+            self._db_path,
+            self._thumbnail_coord.cache_dir,
+            [asset_id],
+        )
+        self._thumb_worker.moveToThread(self._thumb_thread)
+        self._thumb_thread.started.connect(self._thumb_worker.run)
+        self._thumb_worker.thumbnail_ready.connect(self._on_thumbnail_ready)
+        self._thumb_worker.finished.connect(self._thumb_thread.quit)
+        self._thumb_thread.finished.connect(self._thumb_worker.deleteLater)
+        self._thumb_thread.finished.connect(self._thumb_thread.deleteLater)
+        self._thumb_thread.finished.connect(self._on_thumb_thread_finished)
+        self._thumb_thread.start()
+
+    def _on_thumbnail_ready(self, asset_id: str, result) -> None:
+        """后台缩略图生成完成回调。在主线程执行。"""
+        if result.status == ThumbnailStatus.OK and result.cache_path is not None:
+            pixmap = QPixmap(str(result.cache_path))
+            if not pixmap.isNull():
+                # 更新详情区封面预览（仅当当前选中 ModItem 的封面是此 asset）
+                if self._current_mod_id is not None:
+                    try:
+                        mod_item = self._mod_service.get_mod_item(self._current_mod_id)
+                        if mod_item.cover_asset_id == asset_id:
+                            self._cover_label.setPixmap(
+                                pixmap.scaled(
+                                    _COVER_PREVIEW_SIZE,
+                                    _COVER_PREVIEW_SIZE,
+                                    Qt.AspectRatioMode.KeepAspectRatio,
+                                    Qt.TransformationMode.SmoothTransformation,
+                                )
+                            )
+                    except ApplicationError:
+                        pass
+                # 更新列表封面图标
+                self._update_cover_icons_for_asset(asset_id, pixmap)
+        else:
+            # 显示错误占位
+            reason = result.error_message or result.status.value
+            if self._current_mod_id is not None:
+                try:
+                    mod_item = self._mod_service.get_mod_item(self._current_mod_id)
+                    if mod_item.cover_asset_id == asset_id:
+                        self._cover_label.setText(ui.COVER_PREVIEW_ERROR.format(reason=reason))
+                except ApplicationError:
+                    pass
+
+    def _update_cover_icons_for_asset(self, asset_id: str, pixmap: QPixmap) -> None:
+        """当某个缩略图生成完成后，更新所有以该 asset 为封面的 ModItem 列表图标。"""
+        from PySide6.QtGui import QIcon
+
+        icon = QIcon(pixmap)
+        for i in range(self._mod_list_model.item_count()):
+            item = self._mod_list_model.mod_item_at(i)
+            if item is not None and item.cover_asset_id == asset_id:
+                self._mod_list_model.set_cover_icon(item.id, icon)
+
+    def _on_thumb_thread_finished(self) -> None:
+        """缩略图线程退出后清理引用。"""
+        self._thumb_worker = None
+        self._thumb_thread = None
+
+    def _refresh_cover_icons(self) -> None:
+        """刷新所有 ModItem 的封面图标（列表加载时调用）。"""
+        if self._thumbnail_coord is None:
+            return
+        for i in range(self._mod_list_model.item_count()):
+            item = self._mod_list_model.mod_item_at(i)
+            if item is None or item.cover_asset_id is None:
+                continue
+            info = self._thumbnail_coord.get_thumbnail_info(item.cover_asset_id)
+            if info.valid and info.cache_path is not None:
+                from PySide6.QtGui import QIcon
+
+                pixmap = QPixmap(str(info.cache_path))
+                if not pixmap.isNull():
+                    self._mod_list_model.set_cover_icon(item.id, QIcon(pixmap))
+            else:
+                # 缓存无效，后台生成（仅生成第一个，避免并发）
+                self._request_thumbnail(item.cover_asset_id)
+                break
 
     def _on_new_mod(self) -> None:
         """新建 ModItem 对话框，并自动关联素材池中选中的素材。"""

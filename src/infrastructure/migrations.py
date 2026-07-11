@@ -128,9 +128,48 @@ def migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
     logger.info("迁移 v1 → v2 完成")
 
 
+def migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    r"""v2 → v3：新增 thumbnail_cache 表。
+
+    thumbnail_cache 保存缩略图缓存元数据，用于缓存有效性判断。
+    缓存失效策略（Q5 已关闭）：以 asset_id + source_size_bytes + source_modified_at
+    为有效性依据；不一致时重建。
+
+    缓存命名（Q13 已关闭）：以 asset_id 为基础，缓存文件名格式 {asset_id}.png。
+    缓存文件位于应用数据目录 thumbnails\，不写入用户 Mod 目录。
+
+    status 枚举：
+    - ok：缩略图已成功生成，cache_filename 指向有效缓存文件。
+    - missing：源文件不存在。
+    - corrupt：源文件存在但无法解码（损坏图片）。
+    - unsupported：源文件格式不被 Pillow 支持。
+    - error：其他 IO 或处理错误。
+
+    依据 docs/spec.md §10、docs/architecture.md §8、docs/open-questions.md Q5/Q13。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS thumbnail_cache (
+            asset_id TEXT PRIMARY KEY,
+            source_size_bytes INTEGER NOT NULL,
+            source_modified_at TEXT NOT NULL,
+            cache_filename TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'ok','missing','corrupt','unsupported','error'
+            )),
+            error_message TEXT,
+            generated_at TEXT NOT NULL,
+            FOREIGN KEY (asset_id) REFERENCES file_asset(id)
+        );
+        """
+    )
+    logger.info("迁移 v2 → v3 完成")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, migrate_v0_to_v1),
     (2, migrate_v1_to_v2),
+    (3, migrate_v2_to_v3),
 ]

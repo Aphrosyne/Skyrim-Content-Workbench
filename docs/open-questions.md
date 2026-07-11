@@ -36,13 +36,16 @@
 - 预计决定里程碑：阶段 3 启动前。
 - 兼容性约束：导出格式需保留 schema_version 字段以便未来扩展。
 
-## 5. 缩略图缓存失效策略
+## 5. 缩略图缓存失效策略 ✅ 已关闭
 - 问题：原图变更/移动/删除后缩略图如何失效。
 - 背景：arch §8 待确认。
-- 可选方向：基于 mtime / 基于 asset_id 重建 / 全量重建。
-- 不决策原因：阶段 1 不实现缩略图。
-- 预计决定里程碑：阶段 2 缩略图服务实现前。
-- 兼容性约束：缩略图缓存目录在本任务创建但写入逻辑后延。
+- 决策：采用「asset_id + 源文件 size + modified_at」作为缓存有效性依据。
+  - 缩略图缓存记录存储 `source_size_bytes` 与 `source_modified_at`。
+  - 当 FileAsset 记录的 `size_bytes` / `modified_at` 与缓存记录不一致时，缩略图视为过期并重建。
+  - 若源文件不存在或读取失败，缓存记录标记为错误状态（`missing`/`corrupt`/`unsupported`/`error`），不删除用户文件。
+  - 不做后台自动监听；仅在 UI 请求缩略图或用户手动刷新时检查有效性。
+- 决策来源：阶段 2 Task 4 实现。
+- 兼容性约束：`thumbnail_cache` 表新增（schema v3）；缓存目录 `%LOCALAPPDATA%\SkyrimModWorkbench\thumbnails\` 可随时删除并重建。
 
 ## 6. 从 Windows 资源管理器拖入应用
 - 问题：是否实现从资源管理器拖入。
@@ -102,13 +105,12 @@
 - 预计决定里程碑：阶段 3 启动前。
 - 兼容性约束：无。
 
-## 13. 缩略图命名「内容标识」定义
+## 13. 缩略图命名「内容标识」定义 ✅ 已关闭
 - 问题：内容标识是哈希还是其他。
 - 背景：arch §8「以 asset_id 或内容标识命名」。
-- 可选方向：asset_id / 文件哈希 / mtime+size。
-- 不决策原因：阶段 1 不实现缩略图。
-- 预计决定里程碑：阶段 2 缩略图服务实现前。
-- 兼容性约束：未来默认 asset_id。
+- 决策：以 `asset_id` 作为缓存文件名基础（`{asset_id}.png`）。元数据（source_size、source_modified_at、status）存入数据库 `thumbnail_cache` 表，不使用 sidecar JSON。
+- 决策来源：阶段 2 Task 4 实现。
+- 兼容性约束：缓存文件名格式 `{asset_id}.png`；`thumbnail_cache` 表通过 asset_id 主键关联 `file_asset`；缓存目录可清空后由 UI 请求触发重建。
 
 ## 14. OperationLog.undo_payload 内部结构 ✅ 已关闭
 - 问题：字段结构未规定。

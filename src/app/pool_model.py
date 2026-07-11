@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt
+from PySide6.QtGui import QIcon
 
 from application.mod_assembly_service import ModAssemblyService
 from domain.models import AssetKind, FileAsset, FileRole, ModItem
@@ -117,21 +118,33 @@ class ModItemListModel(QAbstractListModel):
     """ModItem 列表模型。
 
     展示全部 ModItem。refresh() 重新加载。
+    支持 cover 图标（Qt.DecorationRole）和成员数显示（DisplayRole）。
     """
 
     def __init__(self, service: ModAssemblyService, parent: Any = None) -> None:
         super().__init__(parent)
         self._service = service
         self._items: list[ModItem] = []
+        self._member_counts: dict[str, int] = {}
+        self._cover_icons: dict[str, QIcon] = {}
 
     def refresh(self) -> None:
         """重新加载 ModItem 列表。"""
         self.beginResetModel()
         try:
             self._items = self._service.list_mod_items()
+            self._member_counts = {}
+            for item in self._items:
+                try:
+                    members = self._service.get_members(item.id)
+                    self._member_counts[item.id] = len(members)
+                except Exception:  # noqa: BLE001
+                    self._member_counts[item.id] = 0
         except Exception:  # noqa: BLE001 - model 边界不能崩溃
             logger.exception("加载 ModItem 列表失败")
             self._items = []
+            self._member_counts = {}
+        self._cover_icons = {}
         self.endResetModel()
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802, B008
@@ -148,12 +161,36 @@ class ModItemListModel(QAbstractListModel):
         item = self._items[row]
         if role == Qt.DisplayRole:
             name = item.display_name or "（未命名）"
-            return name
+            count = self._member_counts.get(item.id, 0)
+            return f"{name}  ({count} 个成员)"
         if role == Qt.ToolTipRole:
             desc = item.description or "（无说明）"
             return desc
+        if role == Qt.DecorationRole:
+            return self._cover_icons.get(item.id)
         if role == _MOD_ITEM_ROLE:
             return item
+        return None
+
+    def set_cover_icon(self, mod_item_id: str, icon: QIcon | None) -> None:
+        """设置 ModItem 的封面图标，并通知 view 刷新。
+
+        icon 为 None 时清除图标。
+        """
+        row = self._find_row(mod_item_id)
+        if row is None:
+            return
+        if icon is None:
+            self._cover_icons.pop(mod_item_id, None)
+        else:
+            self._cover_icons[mod_item_id] = icon
+        idx = self.index(row)
+        self.dataChanged.emit(idx, idx, [Qt.DecorationRole])
+
+    def _find_row(self, mod_item_id: str) -> int | None:
+        for i, item in enumerate(self._items):
+            if item.id == mod_item_id:
+                return i
         return None
 
     def mod_item_at(self, row: int) -> ModItem | None:

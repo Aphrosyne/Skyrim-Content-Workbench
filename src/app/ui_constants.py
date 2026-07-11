@@ -86,8 +86,18 @@ MEMBERS_COL_FILENAME = "文件名"
 MEMBERS_COL_KIND = "类型"
 MEMBERS_COL_ROLE = "角色"
 MEMBERS_COL_PATH = "完整路径"
+MEMBERS_COL_COVER = "封面"
 MEMBERS_COL_ACTION = "操作"
 MEMBERS_REMOVE_BUTTON = "移除"
+MEMBERS_SET_COVER_BUTTON = "设为封面"
+MEMBERS_COVER_MARK = "★ 封面"
+
+# 缩略图与预览（Task 4）
+COVER_PREVIEW_TITLE = "封面预览"
+COVER_PREVIEW_NONE_HINT = "未设置封面。将预览图成员设为封面后显示缩略图。"
+COVER_PREVIEW_LOADING = "正在生成缩略图…"
+COVER_PREVIEW_ERROR = "缩略图不可用：{reason}"
+THUMBNAIL_PLACEHOLDER_TEXT = "无预览图"
 
 # 角色中文名（与 pool_model.ROLE_DISPLAY_NAMES 一致，集中定义避免漂移）
 ROLE_MAIN_MOD = "本体"

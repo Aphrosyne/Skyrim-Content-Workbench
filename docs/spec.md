@@ -278,9 +278,20 @@ Skyrim Mod Workbench 是一个面向 Windows 的、本地优先（local-first）
 * 应用生成的缩略图缓存必须保存到应用数据目录。
 * 不得修改原始图片文件。
 
-阶段 2 范围：仅支持将 PREVIEW 角色成员设为封面，UI 显示文件名或路径；不生成缩略图、不显示图片内容、不实现预览图墙。缩略图生成与预览图墙归阶段 5（预览增强）。
+阶段 2 Task 4 已实现范围：
 
-待确认：第一版是否允许“外部关联图”不复制到应用缓存，只保存原路径。
+* 将 PREVIEW 角色成员设为 ModItem.cover_asset_id（非 PREVIEW 成员被拒绝）。
+* 为已关联的 preview 本地图片生成缩略图，缓存写入 `%LOCALAPPDATA%\SkyrimModWorkbench\thumbnails\`。
+* 缩略图缓存以 `asset_id` 命名（`{asset_id}.png`），元数据存入 `thumbnail_cache` 表（schema v3）。
+* 缓存有效性基于 `asset_id + source_size_bytes + source_modified_at`；不一致时过期重建。
+* ModItem 列表显示封面缩略图图标与成员数；详情区显示封面预览与 preview 成员。
+* 图片不可读、格式不支持、源文件不存在时显示安全占位状态，不崩溃。
+* 缩略图生成在后台线程执行，不卡死 UI；worker 在自身线程内创建独立 SQLite 连接。
+* 只读访问原图；不修改、不转换、不压缩、不覆盖用户原图。
+* 支持中文路径与常见图片格式（JPG/JPEG/PNG/WEBP/GIF/BMP/TIF/TIFF/ICO）。
+
+待确认：第一版是否允许"外部关联图"不复制到应用缓存，只保存原路径。
+未实现（归阶段 5 预览增强）：预览图墙、手动从本地添加多张预览图、Nexus URL 导入预览图、OCR、图像识别。
 
 ## 11. AI JSON 交换
 

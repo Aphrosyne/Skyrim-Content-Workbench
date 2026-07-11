@@ -67,7 +67,8 @@
 | 扫描工作流应用层与后台任务适配 | ✅ | Task 1 完成；ScanWorkflowService + ScanWorker（Qt 后台线程） |
 | 只读目录树视图 | ✅ | Task 2 完成；FolderTreeService + FolderTreeModel + 三栏布局 + 详情区 |
 | 未关联素材池与 ModItem 列表 | ✅ | Task 3 完成；UnassociatedPoolModel + ModItemListModel + 素材池多选 + ModItem 列表 |
-| ModItem 手动组装与编辑 UI | ✅ | Task 3 完成；成员关联/移除、角色编辑、元数据编辑；封面设置待后续 |
+| ModItem 手动组装与编辑 UI | ✅ | Task 3 完成；成员关联/移除、角色编辑、元数据编辑；Task 4 完成；封面设置与缩略图预览 |
+| 本地缩略图缓存与 ModItem 预览图展示 | ✅ | Task 4 完成；ThumbnailGenerator + ThumbnailCoordinator + ThumbnailWorker + schema v3 |
 | 安全移动与撤销确认工作流 UI | ⬜ | 阶段 2 任务 5；预演→确认→执行→撤销 |
 
 **Task 1 完成内容（v0.6.0）**：
@@ -246,12 +247,51 @@
   - `test_main_window.py`（+3 项）：新建按钮无选择时禁用、新建自动关联选中素材、素材池显示完整路径。
 - 文档更新：spec.md §8 UI 结构、architecture.md §2.4 写入链路与边界约定。
 
+**Task 4 完成内容（v0.9.0）**：
+
+- Schema v3 迁移 [src/infrastructure/migrations.py](../src/infrastructure/migrations.py)：
+  - 新增 `migrate_v2_to_v3(conn)`：创建 `thumbnail_cache` 表（`asset_id` PK / `source_size_bytes` / `source_modified_at` / `cache_filename` / `status` CHECK / `error_message` / `generated_at` / FK→file_asset）；幂等（CREATE TABLE IF NOT EXISTS）。
+  - `MIGRATIONS` 注册表新增 `(3, migrate_v2_to_v3)`；`CURRENT_SCHEMA_VERSION` 升至 3（[src/infrastructure/db.py](../src/infrastructure/db.py)）。
+- Repository [src/infrastructure/repositories/thumbnail_cache.py](../src/infrastructure/repositories/thumbnail_cache.py)：
+  - `ThumbnailCacheRecord` dataclass + `ThumbnailCacheRepository`（get_by_asset_id / upsert / delete）；不自提交（遵循现有 Repository 模式）。
+- 缩略图生成器 [src/infrastructure/thumbnail_generator.py](../src/infrastructure/thumbnail_generator.py)：
+  - `ThumbnailStatus(StrEnum)`：`ok` / `missing` / `corrupt` / `unsupported` / `error`。
+  - `ThumbnailResult` dataclass + `ThumbnailGenerator`：延迟导入 Pillow 只读加载源图，生成缩略图写入 `cache_dir`；所有错误转为 ThumbnailResult 返回，不抛异常。
+  - 支持格式：JPG/JPEG/PNG/WEBP/GIF/BMP/TIF/TIFF/ICO。
+  - `cache_dir` property：供 ThumbnailWorker 获取缓存目录。
+- Application 协调层 [src/application/thumbnail_coordinator.py](../src/application/thumbnail_coordinator.py)：
+  - `ThumbnailInfo` DTO（asset_id / status / cache_path / valid / error_message）。
+  - `ThumbnailCoordinator`：`get_thumbnail_info` 检查缓存有效性（source_size + source_modified_at 匹配）；`generate_thumbnail` 调用 generator 后写入 cache_repo；`get_cover_thumbnail_info` 直接使用 FileAsset 对象查询。
+  - `cache_dir` property：透传 generator.cache_dir。
+- UI 后台 worker [src/app/thumbnail_worker.py](../src/app/thumbnail_worker.py)：
+  - `ThumbnailWorker(QObject)`：接收 `db_path` + `cache_dir` + `asset_ids`，在 `run()` 内创建独立 SQLite 连接 + ThumbnailCoordinator（与 ScanWorker 模式一致），逐个生成缩略图。
+  - 信号 `thumbnail_ready(str, object)` + `finished()`；捕获所有异常不崩溃。
+- UI 升级 [src/app/main_window.py](../src/app/main_window.py)：
+  - 构造签名新增 `thumbnail_coordinator` 参数。
+  - 成员表格从 5 列扩展为 6 列（新增封面列）；preview 成员可"设为封面"，非 preview 被拒绝。
+  - 详情区新增封面预览 QGroupBox + QLabel；缓存命中时显示 pixmap，否则触发后台生成。
+  - `_request_thumbnail`：创建 ThumbnailWorker 后台生成，通过信号回传更新 UI。
+  - `_refresh_cover_icons`：列表加载时查询缓存状态，命中则显示封面图标，未命中则后台生成。
+  - `closeEvent`：等待缩略图线程退出。
+- UI model [src/app/pool_model.py](../src/app/pool_model.py)：
+  - `ModItemListModel` 升级：`refresh()` 查询成员数；`data()` 支持 `Qt.DecorationRole`（封面图标）；DisplayRole 显示 `"{name}  ({count} 个成员)"`；新增 `set_cover_icon` 方法。
+- UI 文案 [src/app/ui_constants.py](../src/app/ui_constants.py)：新增 `MEMBERS_SET_COVER_BUTTON` / `MEMBERS_COVER_MARK` / `MEMBERS_COL_COVER` / `COVER_PREVIEW_TITLE` / `COVER_PREVIEW_NONE_HINT` / `COVER_PREVIEW_LOADING` / `COVER_PREVIEW_ERROR` / `THUMBNAIL_PLACEHOLDER_TEXT`。
+- 应用入口 [src/app/main.py](../src/app/main.py)：构造 `ThumbnailCoordinator` 注入 `MainWindow`。
+- 依赖 [pyproject.toml](../pyproject.toml)：新增 `Pillow>=10.0` 正式运行依赖。
+- 测试新增 43 项（总计 335 passed, 2 skipped）：
+  - `test_thumbnail_generator.py`（12 项）：PNG/WEBP/JPG 生成、缓存写入应用目录不写入源目录、源文件不变性、中文路径、缺失文件、损坏图片、不支持格式、缩略图尺寸、缓存路径一致性。
+  - `test_thumbnail_cache.py`（9 项）：表存在、schema 版本=3、v3 迁移幂等、upsert+get、upsert 覆盖、get 缺失、delete、delete 幂等、CHECK 约束。
+  - `test_thumbnail_coordinator.py`（14 项）：无缓存记录、asset 不存在、有效缓存、size 过期、mtime 过期、生成成功、缺失源、损坏、不支持、asset 不存在不写缓存、源文件不变、中文路径、get_cover_thumbnail_info、缓存命中。
+  - `test_thumbnail_ui.py`（9 项）：ThumbnailWorker 异步生成、设为封面更新成员表、非 preview 被拒绝、列表显示成员数、列表支持封面图标、封面预览 QLabel 存在、成员表格 6 列、设为封面后预览显示、不阻塞主线程。
+  - `test_migrations.py`（+1 项，调整 2 项）：MIGRATIONS 列表含 v3、CURRENT_SCHEMA_VERSION==3、init_db 从 v0 迁移到当前版本、幂等。
+- 文档更新：spec.md §10 预览图、architecture.md §8 缩略图架构、roadmap.md 标记 Task 4 完成、open-questions.md Q5/Q13 已关闭。
+
 **验收（来自 roadmap）**：
 
-- [ ] 用户可添加、查看、移除受管理根目录配置（添加/查看已实现；移除未在 Task 1 范围）
+- [x] 用户可添加、查看、移除受管理根目录配置（Task 1 遗漏补完已实现移除）
 - [x] 用户可手动触发扫描，看到扫描结果与错误摘要（未关联素材池已实现）
 - [x] 用户可在目录树中浏览已扫描目录并选中目标分类目录（Task 2 只读浏览；移动入口待 Task 5）
-- [x] 用户可在素材池选择文件创建 ModItem，设置成员角色与元数据（封面设置待后续）
+- [x] 用户可在素材池选择文件创建 ModItem，设置成员角色与元数据（Task 4 完成封面设置与缩略图预览）
 - [ ] 用户可在目录树选择目标分类，发起移动预演并明确确认执行
 - [ ] 用户可看到执行结果，对安全操作发起撤销预演并确认撤销
 - [x] 中文路径、中文显示名和 UTF-8 数据在扫描、目录树浏览与 Mod 组装流程中保持可用

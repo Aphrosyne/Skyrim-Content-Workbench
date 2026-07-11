@@ -23,11 +23,13 @@ def test_migrations_sorted_by_target() -> None:
     assert len(MIGRATIONS) >= 2
     assert MIGRATIONS[0][0] == 1
     assert MIGRATIONS[1][0] == 2
+    assert len(MIGRATIONS) >= 3
+    assert MIGRATIONS[2][0] == 3
 
 
-def test_current_schema_version_is_two() -> None:
-    """当前 schema 版本应为 2。"""
-    assert CURRENT_SCHEMA_VERSION == 2
+def test_current_schema_version_is_three() -> None:
+    """当前 schema 版本应为 3。"""
+    assert CURRENT_SCHEMA_VERSION == 3
 
 
 def test_migrate_v0_to_v1_idempotent() -> None:
@@ -182,12 +184,12 @@ def test_migrate_v1_to_v2_path_key_unique_constraint() -> None:
         conn.close()
 
 
-def test_init_db_migrates_from_v0_to_v2(tmp_path) -> None:
-    """init_db 从空数据库迁移到 v2。"""
+def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
+    """init_db 从空数据库迁移到当前版本。"""
     db_path = tmp_path / "test.db"
     version = init_db(db_path)
     assert version == CURRENT_SCHEMA_VERSION
-    assert version == 2
+    assert version == 3
 
     # 验证 managed_root 表可用
     conn = sqlite3.connect(str(db_path))
@@ -200,9 +202,9 @@ def test_init_db_migrates_from_v0_to_v2(tmp_path) -> None:
         conn.close()
 
 
-def test_init_db_idempotent_at_v2(tmp_path) -> None:
-    """init_db 在已迁移到 v2 的数据库上重复调用应保持 v2，不报错。"""
+def test_init_db_idempotent_at_current(tmp_path) -> None:
+    """init_db 在已迁移到当前版本的数据库上重复调用应保持版本，不报错。"""
     db_path = tmp_path / "test.db"
     version1 = init_db(db_path)
     version2 = init_db(db_path)
-    assert version1 == version2 == 2
+    assert version1 == version2 == CURRENT_SCHEMA_VERSION

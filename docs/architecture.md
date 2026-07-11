@@ -275,13 +275,51 @@ MovePlan 必须包含：
 
 ## 8. 缩略图架构
 
-阶段 2 未实现。缩略图生成与预览图墙归阶段 5（预览增强）。
+阶段 2 Task 4 已实现本地缩略图缓存与 ModItem 预览图展示。
 
-* 原图保持不变。
-* 缩略图以 `asset_id` 或内容标识命名。
+### 8.1 分层与线程边界
+
+```text
+MainWindow / ModItemListModel (UI, 主线程)
+    ↓ 查询缓存状态 / 请求生成
+ThumbnailCoordinator (application, 主线程查询)
+    ↓ get_thumbnail_info / get_cover_thumbnail_info
+ThumbnailCacheRepository (infrastructure, 主线程查询)
+    ↓ 读取
+SQLite thumbnail_cache 表 (schema v3)
+
+ThumbnailWorker (UI, 后台线程)
+    ↓ 在 run() 内创建独立 SQLite 连接 + ThumbnailCoordinator
+ThumbnailCoordinator.generate_thumbnail (application, 后台线程)
+    ↓ 只读加载源图 + 生成缩略图
+ThumbnailGenerator (infrastructure, 后台线程)
+    ↓ Pillow Image.open / thumbnail / save
+应用缓存目录 thumbnails/{asset_id}.png
+```
+
+* 主线程的 `ThumbnailCoordinator` 仅用于查询缓存状态（`get_thumbnail_info` / `get_cover_thumbnail_info`），使用主线程 SQLite 连接。
+* `ThumbnailWorker` 在后台线程内创建独立 SQLite 连接（与 `ScanWorker` 模式一致），不与主线程连接共享。
+* 缩略图生成不在 Qt 主线程同步批量执行；首次只按需生成当前可见项或当前选中项。
+* worker 通过 `thumbnail_ready(str, object)` 信号回传结果到主线程，UI 据此更新界面。
+
+### 8.2 缓存策略
+
+* 缓存目录：`%LOCALAPPDATA%\SkyrimModWorkbench\thumbnails\`，可安全清理后重建。
+* 缓存文件命名：`{asset_id}.png`（Q13 已关闭）。
+* 元数据存储：`thumbnail_cache` 表（schema v3），不使用 sidecar JSON。
+* 缓存有效性（Q5 已关闭）：基于 `asset_id + source_size_bytes + source_modified_at`。
+  * FileAsset 记录的 `size_bytes` / `modified_at` 与缓存记录不一致时，缩略图视为过期并重建。
+  * 源文件不存在或读取失败时，缓存记录标记为错误状态（`missing` / `corrupt` / `unsupported` / `error`），不删除用户文件。
+  * 不做后台自动监听；仅在 UI 请求缩略图或用户手动刷新时检查有效性。
+* 缓存状态枚举：`ok` / `missing` / `corrupt` / `unsupported` / `error`。
+
+### 8.3 安全约束
+
+* 原图保持不变；只读加载，不修改、不转换、不压缩、不覆盖。
+* 缩略图仅写入应用数据目录，不写入用户 Mod 目录。
+* 不联网；不调用 `FileOperationService`；不读取或解压用户压缩包内容。
+* 失败时显示安全占位状态，不尝试"修复"用户文件。
 * 缩略图缓存可随时删除并重建。
-* 卡片优先加载缩略图，不直接加载大图。
-* 待确认：缩略图缓存失效策略。
 
 ## 9. AI JSON 架构
 

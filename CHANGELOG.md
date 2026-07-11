@@ -8,6 +8,97 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.9.0] - 2026-07-11
+
+对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 4（本地缩略图缓存与 ModItem 预览图展示）完成。schema_version 由 2 升至 3。
+
+### Added
+
+- Schema v3 迁移 [src/infrastructure/migrations.py](src/infrastructure/migrations.py)：
+  - 新增 `migrate_v2_to_v3(conn)`：创建 `thumbnail_cache` 表（`asset_id` PK / `source_size_bytes` / `source_modified_at` / `cache_filename` / `status` CHECK / `error_message` / `generated_at` / FK→file_asset）；幂等。
+  - `CURRENT_SCHEMA_VERSION` 升至 3（[src/infrastructure/db.py](src/infrastructure/db.py)）。
+- Repository [src/infrastructure/repositories/thumbnail_cache.py](src/infrastructure/repositories/thumbnail_cache.py)（新文件）：
+  - `ThumbnailCacheRecord` dataclass + `ThumbnailCacheRepository`（get_by_asset_id / upsert / delete）。
+- 缩略图生成器 [src/infrastructure/thumbnail_generator.py](src/infrastructure/thumbnail_generator.py)（新文件）：
+  - `ThumbnailStatus(StrEnum)`：`ok` / `missing` / `corrupt` / `unsupported` / `error`。
+  - `ThumbnailGenerator`：延迟导入 Pillow 只读加载源图，生成缩略图写入 `cache_dir`；所有错误转为 ThumbnailResult 返回，不抛异常。
+  - 支持格式：JPG/JPEG/PNG/WEBP/GIF/BMP/TIF/TIFF/ICO。
+  - `cache_dir` property。
+- Application 协调层 [src/application/thumbnail_coordinator.py](src/application/thumbnail_coordinator.py)（新文件）：
+  - `ThumbnailInfo` DTO + `ThumbnailCoordinator`：`get_thumbnail_info` / `generate_thumbnail` / `get_cover_thumbnail_info`。
+  - 缓存有效性检查（source_size + source_modified_at 匹配）。
+  - `cache_dir` property。
+- UI 后台 worker [src/app/thumbnail_worker.py](src/app/thumbnail_worker.py)（新文件）：
+  - `ThumbnailWorker(QObject)`：在 `run()` 内创建独立 SQLite 连接 + ThumbnailCoordinator，逐个生成缩略图；信号 `thumbnail_ready(str, object)` + `finished()`。
+- UI 升级 [src/app/main_window.py](src/app/main_window.py)：
+  - 构造签名新增 `thumbnail_coordinator` 参数。
+  - 成员表格从 5 列扩展为 6 列（新增封面列）；preview 成员可"设为封面"，非 preview 被拒绝。
+  - 详情区新增封面预览 QGroupBox + QLabel。
+  - `_request_thumbnail` / `_on_thumbnail_ready` / `_refresh_cover_icons` / `_on_set_cover` / `_load_cover_preview`。
+  - `closeEvent` 等待缩略图线程退出。
+- UI model [src/app/pool_model.py](src/app/pool_model.py)：
+  - `ModItemListModel` 升级：`refresh()` 查询成员数；`data()` 支持 `Qt.DecorationRole`；`set_cover_icon` 方法。
+- UI 文案 [src/app/ui_constants.py](src/app/ui_constants.py)：新增封面与缩略图相关常量。
+- 应用入口 [src/app/main.py](src/app/main.py)：构造 `ThumbnailCoordinator` 注入 `MainWindow`。
+- 依赖 [pyproject.toml](pyproject.toml)：新增 `Pillow>=10.0` 正式运行依赖。
+- 单元测试 43 项新增（总计 335 passed, 2 skipped），覆盖：
+  - `test_thumbnail_generator.py`（12 项，新文件）：PNG/WEBP/JPG 生成、缓存目录隔离、源文件不变性、中文路径、缺失文件、损坏图片、不支持格式、缩略图尺寸、缓存路径一致性。
+  - `test_thumbnail_cache.py`（9 项，新文件）：表存在、schema 版本=3、v3 迁移幂等、upsert+get、upsert 覆盖、get 缺失、delete、delete 幂等、CHECK 约束。
+  - `test_thumbnail_coordinator.py`（14 项，新文件）：无缓存记录、asset 不存在、有效缓存、size/mtime 过期、生成成功/缺失/损坏/不支持、源文件不变、中文路径、get_cover_thumbnail_info、缓存命中。
+  - `test_thumbnail_ui.py`（9 项，新文件）：ThumbnailWorker 异步生成、设为封面更新成员表、非 preview 被拒绝、列表显示成员数、列表支持封面图标、封面预览 QLabel 存在、成员表格 6 列、设为封面后预览显示、不阻塞主线程。
+  - `test_migrations.py`（+1 项，调整 2 项）：MIGRATIONS 含 v3、CURRENT_SCHEMA_VERSION==3、init_db 从 v0 迁移到当前版本、幂等。
+
+### Changed
+
+- [src/infrastructure/db.py](src/infrastructure/db.py)：`CURRENT_SCHEMA_VERSION` 由 2 升至 3。
+- [src/infrastructure/migrations.py](src/infrastructure/migrations.py)：`MIGRATIONS` 注册表新增 v2→v3 迁移。
+- [src/app/main_window.py](src/app/main_window.py)：构造签名新增 `thumbnail_coordinator`；成员表格 6 列；新增封面预览区与缩略图后台生成逻辑。
+- [src/app/pool_model.py](src/app/pool_model.py)：`ModItemListModel` 升级（成员数显示、DecorationRole、set_cover_icon）。
+- [src/app/main.py](src/app/main.py)：构造 `ThumbnailCoordinator` 注入 `MainWindow`。
+- [src/app/ui_constants.py](src/app/ui_constants.py)：新增封面与缩略图相关常量。
+- [pyproject.toml](pyproject.toml)：新增 `Pillow>=10.0` 运行依赖。
+- [tests/test_migrations.py](tests/test_migrations.py)：测试名与断言更新为 v3。
+- [docs/spec.md](docs/spec.md)：更新 §10 预览图（阶段 2 Task 4 已实现范围）。
+- [docs/architecture.md](docs/architecture.md)：更新 §8 缩略图架构（分层、缓存策略、安全约束）。
+- [docs/roadmap.md](docs/roadmap.md)：标记 Task 4 完成；更新验收清单。
+- [docs/progress.md](docs/progress.md)：新增 Task 4 完成内容；更新验收清单。
+- [docs/open-questions.md](docs/open-questions.md)：Q5（缓存失效策略）已关闭、Q13（缩略图命名）已关闭。
+
+### 安全限制
+
+- 只读访问用户原图；不修改、不转换、不压缩、不覆盖。
+- 缩略图仅写入 `%LOCALAPPDATA%\SkyrimModWorkbench\thumbnails\`，不写入用户 Mod 目录。
+- 不联网；不调用 `FileOperationService`；不读取或解压用户压缩包内容。
+- 失败时显示安全占位状态，不尝试"修复"用户文件。
+- 缩略图生成在后台线程执行，worker 在自身线程内创建独立 SQLite 连接，不卡死 UI。
+
+### 待确认项
+
+- 关闭 [open-questions.md Q5](docs/open-questions.md)：缩略图缓存失效策略（asset_id + source_size + source_modified_at）。
+- 关闭 [open-questions.md Q13](docs/open-questions.md)：缩略图命名（`{asset_id}.png` + thumbnail_cache 表）。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 62 files already formatted
+- `python -m pytest` → 335 passed, 2 skipped in 9.97s
+- `python -m app.main` → 主窗口正常启动，可设封面、查看缩略图（人工验证步骤见下方）
+
+### 人工验证步骤
+
+1. 扫描含中文路径图片的测试根目录。
+2. 将图片关联为 preview 成员。
+3. 在成员表格点击"设为封面"。
+4. 卡片列表与详情区显示封面缩略图。
+5. 重启应用，确认缓存可复用。
+6. 修改测试图片后重新打开/刷新，确认缓存失效后重建。
+7. 确认原图未变化。
+
+### Not in Scope
+
+未实现：预览图墙、Nexus URL 导入预览图、OCR、图像识别、搜索、AI JSON、拖拽移动、文件监听、增量扫描、压缩包内容解析、自动分组、AI 建议。
+本任务不修改 `FileOperationService` 的行为；不修改 `FileScanner` 同步签名。
+
 ## [0.6.2] - 2026-07-11
 
 对应阶段 2 Task 1 遗漏补完：移除受管理根目录配置。Task 1 验收标准要求"可移除根目录配置；移除配置不删除、不移动、不修改该目录及其中任何用户文件"，但原实现主动跳过了该项。本次作为 Task 1 遗漏的最小补完。
