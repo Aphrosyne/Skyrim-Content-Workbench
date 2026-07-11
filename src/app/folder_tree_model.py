@@ -192,24 +192,33 @@ class FolderTreeModel(QAbstractItemModel):
         self._fetch(parent_node_id)
 
     def _fetch(self, parent_node_id: str) -> None:
-        """实际加载子节点并发出 rowsInserted 信号。"""
+        """实际加载子节点并发出 rowsInserted 信号。
+
+        重入保护：调用方（rowCount / fetchMore）可能在 beginInsertRows
+        同步触发 view 查询时再次进入本方法，因此开头必须检查 _loaded。
+        数据写入与 _loaded 标记必须在 beginInsertRows 之前完成，
+        避免 view 在 rowsAboutToBeInserted 信号中查询 rowCount 时重入。
+        """
+        if parent_node_id in self._loaded:
+            return
+
         try:
             children = self._service.list_children(parent_node_id)
         except Exception:  # noqa: BLE001 - model 边界不能崩溃
             logger.exception("加载子节点失败：%s", parent_node_id)
             children = []
 
-        # 找到父 index 以发出信号
-        parent_index = self._find_index_by_node_id(parent_node_id)
-        if not parent_index.isValid():
-            # 无效父 index：仅更新缓存，不发信号
-            self._children_cache[parent_node_id] = children
-            self._loaded.add(parent_node_id)
-            return
-
-        self.beginInsertRows(parent_index, 0, max(len(children) - 1, 0))
+        # 先更新缓存与 _loaded 标记，再发信号，
+        # 避免 beginInsertRows 同步触发 view 查询 rowCount 时重入 _fetch。
         self._children_cache[parent_node_id] = children
         self._loaded.add(parent_node_id)
+
+        parent_index = self._find_index_by_node_id(parent_node_id)
+        # 空子节点不发 rowsInserted 信号（endInsertRows 要求 first<=last）
+        if not parent_index.isValid() or not children:
+            return
+
+        self.beginInsertRows(parent_index, 0, len(children) - 1)
         self.endInsertRows()
 
     def _find_index_by_node_id(self, node_id: str) -> QModelIndex:

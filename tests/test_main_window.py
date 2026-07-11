@@ -17,6 +17,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QListWidget  # noqa: E402
 
 from app.main_window import MainWindow  # noqa: E402
@@ -312,5 +313,22 @@ def test_main_window_tree_refresh_after_scan(
     assert window._thread is None  # noqa: SLF001
     # 扫描完成后树仍为 1 个顶层节点（根），但根已关联 FolderNode
     assert window.tree_root_count() == 1
+
+    # 回归验证：扫描结果必须已持久化，根节点不再是"未扫描"，
+    # 且可展开有子节点（修复前因事务未提交，根仍为未扫描、无子节点）。
+    from PySide6.QtWidgets import QTreeView
+
+    tree_view = window.findChild(QTreeView)
+    assert tree_view is not None
+    model = tree_view.model()
+    root_idx = model.index(0, 0)
+    assert root_idx.isValid()
+    # 根节点 display name 不应包含"未扫描"
+    root_display = model.data(root_idx, Qt.DisplayRole)
+    assert "未扫描" not in root_display, f"扫描后根目录仍为未扫描：{root_display}"
+    # 可展开有子节点
+    assert model.canFetchMore(root_idx) is True or model.rowCount(root_idx) > 0
+    model.fetchMore(root_idx)
+    assert model.rowCount(root_idx) > 0, "扫描后根目录无可展开的子节点"
 
     conn2.close()

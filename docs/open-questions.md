@@ -181,3 +181,22 @@
   undo_payload 仅记录已成功成员；
   不引入 status=partial 等新枚举值；未来引入自动回滚需扩展 OperationStatus
   并保持向后兼容。
+
+## 21. FolderTreeModel.rowCount 的副作用与加载策略 🟡 技术债
+- 问题：`FolderTreeModel.rowCount` 在未加载时调用 `_fetch` 触发子节点加载，
+  违反 Qt model/view 惯例（`rowCount` 应为纯查询）。
+- 背景：阶段 2 Task 2 实现惰性加载时，`rowCount` 被设计为自动触发 `_fetch`
+  以兼容 view 的布局查询。但 `_fetch` 调用 `beginInsertRows` 会同步触发
+  view 查询 `rowCount`，曾导致无限递归（已在 Task 2 验收修复中通过
+  `_loaded` 顺序调整 + 重入保护缓解）。
+- 当前状态：最小修复后不崩溃，但 `rowCount` 仍有副作用。
+  理想方案：`rowCount` 对未加载节点返回 0，仅由 `canFetchMore`/`fetchMore`
+  驱动加载。这会改变 view 的展开行为与现有测试期望。
+- 决策：本次验收修复不调整 `rowCount` 加载策略，仅记录为技术债。
+  后续如需重构，应：
+  1. `rowCount` 改为纯查询（返回 0 或缓存长度，不触发 `_fetch`）；
+  2. 移除 `rowCount` 中的 `_fetch` 调用；
+  3. 调整 `test_folder_tree_model.py` 中依赖 `rowCount` 触发加载的测试；
+  4. 验证 `QTreeView` 展开/折叠行为不受影响。
+- 影响范围：仅 [src/app/folder_tree_model.py](../src/app/folder_tree_model.py)
+  与对应测试；不涉及数据结构、数据库迁移或 Task 2 既定用户可见行为。

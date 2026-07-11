@@ -79,6 +79,9 @@ class ScanWorker(QObject):
             self.scan_started.emit()
             self.scan_progress.emit("正在扫描…")
             summary = service.scan_root(self._root_id)
+            # persist_scan_result 与 Repository.create 均不自提交事务，
+            # 必须在连接关闭前提交，否则未提交事务被回滚，扫描结果丢失。
+            conn.commit()
             self.scan_finished.emit(summary)
         except Exception as e:  # noqa: BLE001 - worker 边界需捕获所有异常
             logger.exception("后台扫描失败：root_id=%s", self._root_id)

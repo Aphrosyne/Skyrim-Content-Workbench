@@ -245,3 +245,129 @@ def test_chinese_display_name(
         names.append(model.data(child_idx, Qt.DisplayRole))
     assert "护甲" in names
     assert "空目录" in names
+
+
+def test_fetch_does_not_recurse_when_connected_to_view(
+    db_connection: sqlite3.Connection, qapp: QApplication, sample_mod_tree: Path
+) -> None:
+    """model 连接真实 QTreeView 后加载子节点不触发无限递归。
+
+    回归测试：修复前 _fetch 在 beginInsertRows 之后才设置 _loaded，
+    view 响应 rowsAboutToBeInserted 信号查询 rowCount 时重入 _fetch，
+    导致 RecursionError。修复后 _loaded 在 beginInsertRows 之前设置，
+    重入时直接返回。
+    """
+    from PySide6.QtWidgets import QTreeView
+
+    managed_service = ManagedRootService(ManagedRootRepository(db_connection))
+    managed_service.add_root(sample_mod_tree)
+    _scan(db_connection, sample_mod_tree)
+
+    model = FolderTreeModel(_make_tree_service(db_connection))
+    model.refresh()
+
+    view = QTreeView()
+    view.setModel(model)  # view 会订阅 rowsAboutToBeInserted 等信号
+
+    root_idx = model.index(0, 0)
+    assert root_idx.isValid()
+
+    # 触发加载：fetchMore -> _fetch -> beginInsertRows -> view 查询 rowCount
+    model.fetchMore(root_idx)
+
+    # 处理事件循环中可能堆积的信号
+    qapp.processEvents()
+
+    # 未触发 RecursionError 即通过
+    assert model.rowCount(root_idx) == 3
+    view.deleteLater()
+    qapp.processEvents()
+
+
+def test_fetch_empty_children_does_not_emit_rows_inserted(
+    db_connection: sqlite3.Connection, qapp: QApplication, tmp_path: Path
+) -> None:
+    """空子节点不发 rowsInserted 信号。
+
+    回归测试：修复前空子节点调用 beginInsertRows(idx, 0, 0) 会发出
+    '插入 1 行'的信号（max(len-1, 0) 在空列表时为 0），与实际 0 行矛盾。
+    修复后空子节点直接跳过 beginInsertRows/endInsertRows。
+    """
+    from PySide6.QtTest import QSignalSpy
+
+    # 构造一个有子目录、子目录再无孙目录的扫描数据
+    managed_service = ManagedRootService(ManagedRootRepository(db_connection))
+    empty_sub = tmp_path / "Root" / "EmptySub"
+    empty_sub.mkdir(parents=True)
+    root = tmp_path / "Root"
+    managed_service.add_root(root)
+    _scan(db_connection, root)
+
+    model = FolderTreeModel(_make_tree_service(db_connection))
+    model.refresh()
+
+    root_idx = model.index(0, 0)
+    model.fetchMore(root_idx)
+    # 根有 1 个子目录 EmptySub
+    assert model.rowCount(root_idx) == 1
+
+    child_idx = model.index(0, 0, root_idx)
+    assert child_idx.isValid()
+
+    # 监听 EmptySub 的 rowsInserted 信号
+    spy = QSignalSpy(model.rowsInserted)
+    model.fetchMore(child_idx)  # EmptySub 无子节点
+    qapp.processEvents()
+
+    # 不应发出 rowsInserted 信号
+    assert spy.count() == 0
+    assert model.rowCount(child_idx) == 0
+
+
+def test_fetch_sets_loaded_before_begin_insert_rows(
+    db_connection: sqlite3.Connection, qapp: QApplication, sample_mod_tree: Path
+) -> None:
+    """_loaded 在 beginInsertRows 之前设置。
+
+    通过 rowsAboutToBeInserted 信号中查询 rowCount 验证：
+    修复前此时 _loaded 尚未设置，rowCount 会重入 _fetch 触发递归；
+    修复后 _loaded 已设置，rowCount 直接返回缓存长度，不重入。
+    """
+    from PySide6.QtCore import QObject
+    from PySide6.QtTest import QSignalSpy
+
+    managed_service = ManagedRootService(ManagedRootRepository(db_connection))
+    managed_service.add_root(sample_mod_tree)
+    _scan(db_connection, sample_mod_tree)
+
+    model = FolderTreeModel(_make_tree_service(db_connection))
+    model.refresh()
+    root_idx = model.index(0, 0)
+
+    # 在 rowsAboutToBeInserted 信号中查询 rowCount，模拟 view 的重入行为
+    reentry_row_counts: list[int] = []
+
+    class ReentryProbe(QObject):
+        def __init__(self, model: FolderTreeModel, parent_idx) -> None:
+            super().__init__()
+            self._model = model
+            self._parent_idx = parent_idx
+
+        def on_rows_about_to_be_inserted(self, parent, first, last) -> None:
+            # 模拟 view 在信号中查询 rowCount
+            count = self._model.rowCount(parent)
+            reentry_row_counts.append(count)
+
+    probe = ReentryProbe(model, root_idx)
+    model.rowsAboutToBeInserted.connect(probe.on_rows_about_to_be_inserted)
+
+    spy = QSignalSpy(model.rowsAboutToBeInserted)
+    model.fetchMore(root_idx)
+    qapp.processEvents()
+
+    # 信号已发出
+    assert spy.count() == 1
+    # 重入查询 rowCount 未触发递归（若递归会 RecursionError 直接失败）
+    # 此时 rowCount 应返回已缓存的子节点数
+    assert len(reentry_row_counts) == 1
+    assert reentry_row_counts[0] == 3

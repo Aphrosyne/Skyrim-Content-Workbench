@@ -8,6 +8,50 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### Fixed（阶段 2 Task 2 验收修复）
+
+- **目录树启动崩溃（无限递归）**：`FolderTreeModel._fetch` 在
+  [src/app/folder_tree_model.py](src/app/folder_tree_model.py) 中调用
+  `beginInsertRows` **之后**才设置 `_loaded` 标记与 `_children_cache`。
+  `beginInsertRows` 同步触发 view 查询 `rowCount`，而 `rowCount` 检查
+  `_loaded` 未设置又调用 `_fetch`，形成无限递归直至 `RecursionError`。
+  当 `%LOCALAPPDATA%\SkyrimModWorkbench\app.db` 中已有 Task 1 验收时
+  残留的扫描数据时，启动即崩溃。修复（`_fetch` 方法）：
+  - 开头加 `if parent_node_id in self._loaded: return` 重入保护；
+  - `_children_cache` 与 `_loaded` 赋值移到 `beginInsertRows` **之前**；
+  - 空子节点跳过 `beginInsertRows`/`endInsertRows`（避免
+    `beginInsertRows(idx, 0, 0)` 误报"插入 1 行"）。
+- **扫描结果未持久化导致目录树始终"未扫描"**：
+  `ScanWorker.run` 在 [src/app/scan_worker.py](src/app/scan_worker.py) 中
+  调用 `service.scan_root` 后直接 `conn.close()`，未调用 `conn.commit()`。
+  而 `persist_scan_result` 与 `FolderNodeRepository.create` /
+  `FileAssetRepository.create` 均不自提交事务（与 `ManagedRootRepository.create`
+  不同），导致扫描结果在连接关闭时被 SQLite 回滚。修复：
+  在 `scan_root` 返回后、`scan_finished.emit` 前调用 `conn.commit()`。
+  不修改 `ScanWorkflowService`、Repository 接口或事务策略。
+- **技术债记录**：`rowCount` 中的副作用（未加载时调用 `_fetch`）记录为
+  open question Q21，本次不调整加载策略，仅缓解递归。
+  `persist_scan_result` 不自提交仍为已知遗留问题（v0.6.0 起记录），
+  本次仅在 `ScanWorker` 层补提交，不统一 Repository 写操作提交策略。
+
+### Added（测试）
+
+- `test_fetch_does_not_recurse_when_connected_to_view`：model 连接真实
+  `QTreeView` 后 `fetchMore` 不触发 `RecursionError`（[tests/test_folder_tree_model.py](tests/test_folder_tree_model.py)）。
+- `test_fetch_empty_children_does_not_emit_rows_inserted`：空子节点
+  不发 `rowsInserted` 信号（[tests/test_folder_tree_model.py](tests/test_folder_tree_model.py)）。
+- `test_fetch_sets_loaded_before_begin_insert_rows`：通过
+  `rowsAboutToBeInserted` 信号中查询 `rowCount` 验证 `_loaded` 顺序，
+  确保重入不递归（[tests/test_folder_tree_model.py](tests/test_folder_tree_model.py)）。
+- `test_scan_worker_persists_results_to_db`：扫描完成后用独立连接验证
+  `folder_node` 与 `file_asset` 表非空，确保事务已提交（[tests/test_scan_worker.py](tests/test_scan_worker.py)）。
+
+### Changed（测试）
+
+- `test_main_window_tree_refresh_after_scan`：扫描完成后新增验证根节点
+  不再显示"未扫描"且可展开有子节点（[tests/test_main_window.py](tests/test_main_window.py)）。
+  修复前该测试仅验证 `tree_root_count() == 1`，漏掉了数据未持久化的场景。
+
 ## [0.7.0] - 2026-07-09
 
 对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 2（只读目录树视图）完成。

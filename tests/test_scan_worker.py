@@ -184,3 +184,50 @@ def test_scan_worker_creates_independent_connection(
     assert error is None, f"worker 应独立连接 DB：{error}"
     assert summary is not None
     assert summary.scanned_files == 7
+
+
+def test_scan_worker_persists_results_to_db(qapp, db_path: Path, sample_mod_tree: Path) -> None:
+    """扫描完成后数据必须已提交到 DB，用独立连接可查到 folder_node 记录。
+
+    回归测试：修复前 ScanWorker.run 在 conn.close() 前未调用 conn.commit()，
+    persist_scan_result 与 Repository.create 均不自提交，导致未提交事务被
+    回滚，扫描结果丢失，目录树始终显示"未扫描"。
+    """
+    init_db(db_path)
+    conn = get_connection(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        service = ManagedRootService(
+            ManagedRootRepository(conn),
+            now_provider=lambda: "2026-07-07T00:00:00Z",
+            uuid_provider=lambda: "worker-persist",
+        )
+        root = service.add_root(sample_mod_tree)
+        conn.commit()
+        root_id = root.id
+    finally:
+        conn.close()
+
+    summary, error = _run_worker(qapp, db_path, root_id)
+    assert error is None, f"扫描不应失败：{error}"
+    assert summary is not None
+    assert summary.persisted_folders > 0, "应有持久化的目录节点"
+
+    # 用全新独立连接查询——验证事务已提交，不依赖 worker 的连接
+    verify_conn = get_connection(db_path)
+    verify_conn.row_factory = sqlite3.Row
+    try:
+        rows = verify_conn.execute("SELECT COUNT(*) AS n FROM folder_node").fetchone()
+        assert rows["n"] > 0, "扫描后 folder_node 表为空，事务未提交"
+
+        # 验证根节点 is_managed_root=1
+        root_rows = verify_conn.execute(
+            "SELECT COUNT(*) AS n FROM folder_node WHERE is_managed_root = 1"
+        ).fetchone()
+        assert root_rows["n"] >= 1, "未找到 is_managed_root=1 的根节点"
+
+        # 验证文件也持久化
+        file_rows = verify_conn.execute("SELECT COUNT(*) AS n FROM file_asset").fetchone()
+        assert file_rows["n"] > 0, "扫描后 file_asset 表为空，事务未提交"
+    finally:
+        verify_conn.close()

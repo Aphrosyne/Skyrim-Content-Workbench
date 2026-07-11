@@ -137,6 +137,48 @@
   - `test_folder_tree_model.py`（11 项）：空 model、顶层节点、惰性加载、父子关系、深层访问、node_at、node_id_at、refresh 重置、无效 index、中文显示名。
   - `test_main_window.py`（+4 项）：包含树视图、未扫描根目录提示、选中后详情更新、扫描后树刷新。
 
+**Task 2 验收修复（Unreleased）**：
+
+- **根因**：`FolderTreeModel._fetch` 在 `beginInsertRows` 之后才设置 `_loaded` 与
+  `_children_cache`。`beginInsertRows` 同步触发 view 查询 `rowCount`，`rowCount`
+  检查 `_loaded` 未设置又调用 `_fetch`，形成无限递归直至 `RecursionError`。
+  当 `%LOCALAPPDATA%\SkyrimModWorkbench\app.db` 中已有 Task 1 验收时残留的
+  扫描数据时，启动即崩溃（窗口出现但控制台刷屏 `Error calling Python override
+  of QAbstractItemModel::rowCount()`）。
+- **修复**（[src/app/folder_tree_model.py](../src/app/folder_tree_model.py) `_fetch` 方法）：
+  - 开头加 `if parent_node_id in self._loaded: return` 重入保护；
+  - `_children_cache` 与 `_loaded` 赋值移到 `beginInsertRows` 之前；
+  - 空子节点跳过 `beginInsertRows`/`endInsertRows`。
+- **测试新增 3 项**（总计 244 passed, 2 skipped）：
+  - `test_fetch_does_not_recurse_when_connected_to_view`：model 连接真实 `QTreeView`
+    后 `fetchMore` 不触发 `RecursionError`。
+  - `test_fetch_empty_children_does_not_emit_rows_inserted`：空子节点不发
+    `rowsInserted` 信号。
+  - `test_fetch_sets_loaded_before_begin_insert_rows`：通过 `rowsAboutToBeInserted`
+    信号中查询 `rowCount` 验证 `_loaded` 顺序，确保重入不递归。
+- **技术债**：`rowCount` 中的副作用（未加载时调用 `_fetch`）记录为
+  open question Q21，本次不调整加载策略。
+
+**Task 2 验收修复第二轮（Unreleased）**：
+
+- **根因**：`ScanWorker.run` 在 `service.scan_root` 返回后直接 `conn.close()`，
+  未调用 `conn.commit()`。`persist_scan_result` 与 `FolderNodeRepository.create` /
+  `FileAssetRepository.create` 均不自提交事务（与 `ManagedRootRepository.create`
+  不同），导致扫描结果在连接关闭时被 SQLite 回滚。数据库中无 `folder_node` 记录，
+  `FolderTreeService` 无法关联 `ManagedRoot` 与 `FolderNode`，根目录始终显示为
+  "未扫描"，无法展开子目录。此问题自 v0.6.0 起即记录为已知遗留问题。
+- **修复**（[src/app/scan_worker.py](../src/app/scan_worker.py) `run` 方法）：
+  在 `scan_root` 返回后、`scan_finished.emit` 前调用 `conn.commit()`。
+  不修改 `ScanWorkflowService`、Repository 接口或事务策略。
+- **测试新增 1 项 + 调整 1 项**（总计 245 passed, 2 skipped）：
+  - `test_scan_worker_persists_results_to_db`：扫描完成后用独立连接验证
+    `folder_node` 与 `file_asset` 表非空，确保事务已提交。
+  - `test_main_window_tree_refresh_after_scan`（调整）：扫描完成后新增验证
+    根节点不再显示"未扫描"且可展开有子节点。修复前该测试仅验证
+    `tree_root_count() == 1`，漏掉了数据未持久化的场景。
+- **遗留技术债**：`persist_scan_result` 不自提交仍为已知遗留问题，
+  本次仅在 `ScanWorker` 层补提交，不统一 Repository 写操作提交策略。
+
 **验收（来自 roadmap）**：
 
 - [ ] 用户可添加、查看、移除受管理根目录配置（添加/查看已实现；移除未在 Task 1 范围）
