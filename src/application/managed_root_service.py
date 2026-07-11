@@ -8,7 +8,8 @@
 - 路径合法性检查只使用只读文件系统 API（Path.exists / Path.is_dir）。
 - 同一 path_key 不能重复添加（A2 路径标准化）。
 - 不自动扫描；添加根目录不触发扫描。
-- 本任务不实现删除根目录配置（见任务说明）。
+- 移除根目录配置仅删除 managed_root 记录，不清理 folder_node / file_asset
+  扫描记录（清理策略待确认，见 docs/phase-2-plan.md 任务 1 范围外内容）。
 """
 
 from __future__ import annotations
@@ -106,3 +107,18 @@ class ManagedRootService:
         if root is None:
             raise ManagedRootNotFoundError(f"受管理根目录不存在：{root_id}")
         return root
+
+    def remove_root(self, root_id: str) -> None:
+        """移除受管理根目录配置。
+
+        规则（docs/phase-2-plan.md 任务 1 验收标准）：
+        - 仅删除 managed_root 表中的配置记录。
+        - 不删除、不移动、不修改该目录及其中任何用户文件。
+        - 不清理 folder_node / file_asset 等扫描记录（清理策略待确认）。
+        - 实体不存在时抛 ManagedRootNotFoundError。
+        """
+        # 先校验存在性，提供面向用户的错误类型（Repository 的 NotFoundError
+        # 是基础设施层异常，不直接暴露给 UI）。
+        if self._repo.get_by_id(root_id) is None:
+            raise ManagedRootNotFoundError(f"受管理根目录不存在：{root_id}")
+        self._repo.delete(root_id)

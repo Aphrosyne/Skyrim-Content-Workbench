@@ -13,6 +13,7 @@ import sqlite3
 from domain.models import ManagedRoot
 from infrastructure.repositories.errors import (
     ConstraintViolationError,
+    NotFoundError,
     RepositoryError,
 )
 
@@ -86,6 +87,26 @@ class ManagedRootRepository:
         except sqlite3.Error as e:
             raise RepositoryError(f"无法列出 ManagedRoot：{e}") from e
         return [self._row_to_model(r) for r in rows]
+
+    def delete(self, root_id: str) -> None:
+        """按 ID 删除 ManagedRoot 记录。
+
+        仅删除 managed_root 表中的配置记录，不删除、不修改任何用户文件，
+        不清理 folder_node / file_asset 等扫描记录（清理策略待确认，
+        见 docs/phase-2-plan.md 任务 1 范围外内容）。
+
+        实体不存在时抛 NotFoundError。写操作自提交。
+        """
+        try:
+            cur = self._conn.execute(
+                "DELETE FROM managed_root WHERE id = ?",
+                (root_id,),
+            )
+            self._conn.commit()
+        except sqlite3.Error as e:
+            raise RepositoryError(f"无法删除 ManagedRoot：{e}") from e
+        if cur.rowcount == 0:
+            raise NotFoundError(f"ManagedRoot 不存在：{root_id}")
 
     @staticmethod
     def _row_to_model(row: sqlite3.Row) -> ManagedRoot:

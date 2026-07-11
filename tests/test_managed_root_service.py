@@ -220,3 +220,155 @@ def test_add_root_persists_without_explicit_commit(db_path: Path, tmp_path: Path
         assert roots[0].id == "persist-uuid"
     finally:
         conn2.close()
+
+
+# --- remove_root 测试（Task 1 遗漏补完） ---
+
+
+def test_remove_root_deletes_configuration(db_connection, tmp_path: Path) -> None:
+    """remove_root 后该根目录配置不再可查。"""
+    repo = ManagedRootRepository(db_connection)
+    service = ManagedRootService(
+        repo,
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-remove-1",
+    )
+    mods = tmp_path / "Mods"
+    mods.mkdir()
+    created = service.add_root(mods)
+
+    service.remove_root(created.id)
+
+    assert service.list_roots() == []
+
+
+def test_remove_root_missing_raises(db_connection) -> None:
+    """remove_root 不存在时抛 ManagedRootNotFoundError。"""
+    repo = ManagedRootRepository(db_connection)
+    service = ManagedRootService(repo)
+
+    with pytest.raises(ManagedRootNotFoundError):
+        service.remove_root("nonexistent-id")
+
+
+def test_remove_root_preserves_real_directory_and_files(db_connection, tmp_path: Path) -> None:
+    """移除根目录配置后真实目录与文件内容、mtime、size 不变。
+
+    对应 docs/phase-2-plan.md 任务 1 测试要求：
+    "移除根目录后真实目录与文件内容、mtime、size 不变的测试"。
+    """
+    repo = ManagedRootRepository(db_connection)
+    service = ManagedRootService(
+        repo,
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-remove-2",
+    )
+    target = tmp_path / "Mods"
+    target.mkdir()
+    marker = target / "marker.txt"
+    marker.write_text("keep-me", encoding="utf-8")
+
+    created = service.add_root(target)
+
+    # 记录移除前的文件 stat
+    stat_before = marker.stat()
+    mtime_before = stat_before.st_mtime
+    size_before = stat_before.st_size
+
+    service.remove_root(created.id)
+
+    # 文件内容、大小、mtime 不变
+    assert marker.read_text(encoding="utf-8") == "keep-me"
+    stat_after = marker.stat()
+    assert stat_after.st_size == size_before
+    # mtime 应保持不变（未对文件做任何写操作）
+    assert stat_after.st_mtime == mtime_before
+    # 目录仍存在
+    assert target.exists()
+    assert target.is_dir()
+    # 目录下文件仍存在
+    assert (target / "marker.txt").exists()
+
+
+def test_remove_root_does_not_clean_scan_records(db_connection, tmp_path: Path) -> None:
+    """移除根目录配置不清理 folder_node / file_asset 扫描记录。
+
+    依据 docs/phase-2-plan.md 任务 1：
+    "该任务不要求删除对应 FolderNode 扫描记录；其清理策略保持待确认。"
+    """
+    from infrastructure.path_utils import make_path_key
+
+    repo = ManagedRootRepository(db_connection)
+    service = ManagedRootService(
+        repo,
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-remove-3",
+    )
+    target = tmp_path / "Mods"
+    target.mkdir()
+    created = service.add_root(target)
+
+    # 模拟扫描结果
+    db_connection.execute(
+        "INSERT INTO folder_node (id, real_path, path_key, parent_id, display_name, "
+        "is_managed_root, created_at, updated_at) VALUES "
+        "('fn-1', ?, ?, NULL, 'Mods', 1, '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
+        (str(target), make_path_key(target)),
+    )
+    db_connection.execute(
+        "INSERT INTO file_asset (id, mod_item_id, real_path, path_key, filename, extension, "
+        "asset_kind, role, size_bytes, modified_at, imported_at) VALUES "
+        "('fa-1', NULL, ?, ?, 'file.txt', '.txt', 'file', 'unknown', 10, "
+        "'2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
+        (str(target / "file.txt"), make_path_key(target / "file.txt")),
+    )
+    db_connection.commit()
+
+    service.remove_root(created.id)
+
+    # managed_root 已删除
+    assert repo.get_by_id(created.id) is None
+    # folder_node 仍存在
+    fn_count = db_connection.execute(
+        "SELECT COUNT(*) FROM folder_node WHERE id = 'fn-1'"
+    ).fetchone()
+    assert fn_count[0] == 1
+    # file_asset 仍存在
+    fa_count = db_connection.execute("SELECT COUNT(*) FROM file_asset WHERE id = 'fa-1'").fetchone()
+    assert fa_count[0] == 1
+
+
+def test_remove_root_persists_without_explicit_commit(db_path: Path, tmp_path: Path) -> None:
+    """remove_root 应通过 Repository 自提交持久化，无需调用方显式 commit。
+
+    回归测试：模拟生产路径——UI 调用 service.remove_root() 后不显式 commit，
+    关闭并重开数据库应仍确认该根目录已删除。
+    """
+    from infrastructure.db import get_connection, init_db
+
+    init_db(db_path)
+    target = tmp_path / "PersistedRemove"
+    target.mkdir()
+
+    # 第一次连接：添加后移除，不显式 commit
+    conn1 = get_connection(db_path)
+    conn1.row_factory = __import__("sqlite3").Row
+    try:
+        service = ManagedRootService(
+            ManagedRootRepository(conn1),
+            now_provider=lambda: "2026-07-07T00:00:00Z",
+            uuid_provider=lambda: "persist-remove-uuid",
+        )
+        created = service.add_root(target)
+        service.remove_root(created.id)
+    finally:
+        conn1.close()
+
+    # 第二次连接：应确认已删除
+    conn2 = get_connection(db_path)
+    conn2.row_factory = __import__("sqlite3").Row
+    try:
+        service2 = ManagedRootService(ManagedRootRepository(conn2))
+        assert service2.list_roots() == []
+    finally:
+        conn2.close()

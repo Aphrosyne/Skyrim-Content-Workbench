@@ -348,6 +348,219 @@ def test_main_window_tree_refresh_after_scan(
     conn2.close()
 
 
+# === 移除受管理根目录配置测试（Task 1 遗漏补完） ===
+
+
+def test_main_window_remove_button_disabled_without_selection(
+    qapp: QApplication, db_connection, db_path: Path, tmp_path: Path
+) -> None:
+    """有根目录但未选中时，移除按钮应禁用。"""
+    service = ManagedRootService(
+        ManagedRootRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-1",
+    )
+    mods = tmp_path / "Mods"
+    mods.mkdir()
+    service.add_root(mods)
+
+    window = _make_window(db_connection, db_path)
+    assert window.root_count() == 1
+    # 默认未选中
+    assert window.is_remove_button_enabled() is False
+
+
+def test_main_window_remove_button_enabled_with_selection(
+    qapp: QApplication, db_connection, db_path: Path, tmp_path: Path
+) -> None:
+    """选中根目录后移除按钮应可用。"""
+    service = ManagedRootService(
+        ManagedRootRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-1",
+    )
+    mods = tmp_path / "Mods"
+    mods.mkdir()
+    service.add_root(mods)
+
+    window = _make_window(db_connection, db_path)
+    list_widget = window.findChild(QListWidget)
+    assert list_widget is not None
+    list_widget.setCurrentRow(0)
+
+    assert window.is_remove_button_enabled() is True
+
+
+def test_main_window_remove_button_disabled_on_init(
+    qapp: QApplication, db_connection, db_path: Path
+) -> None:
+    """初始无根目录时移除按钮应禁用。"""
+    window = _make_window(db_connection, db_path)
+    assert window.is_remove_button_enabled() is False
+
+
+def test_main_window_remove_root_removes_from_list(
+    qapp: QApplication, db_connection, db_path: Path, tmp_path: Path
+) -> None:
+    """点击移除并确认后，根目录从列表消失。"""
+    from PySide6.QtWidgets import QMessageBox
+
+    service = ManagedRootService(
+        ManagedRootRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-remove",
+    )
+    mods = tmp_path / "Mods"
+    mods.mkdir()
+    service.add_root(mods)
+
+    window = _make_window(db_connection, db_path)
+    assert window.root_count() == 1
+
+    # 选中并模拟用户点击"是"
+    list_widget = window.findChild(QListWidget)
+    assert list_widget is not None
+    list_widget.setCurrentRow(0)
+
+    # Monkey-patch QMessageBox.question 直接返回 Yes，避免真实弹窗
+    original = QMessageBox.question
+    QMessageBox.question = staticmethod(  # type: ignore[assignment]
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes
+    )
+    try:
+        window._on_remove_root()  # noqa: SLF001
+    finally:
+        QMessageBox.question = original  # type: ignore[assignment]
+
+    assert window.root_count() == 0
+    # 真实目录仍存在（未删除用户文件）
+    assert mods.exists()
+    assert mods.is_dir()
+
+
+def test_main_window_remove_root_cancelled_keeps_list(
+    qapp: QApplication, db_connection, db_path: Path, tmp_path: Path
+) -> None:
+    """用户在确认对话框点击"否"时，根目录保留。"""
+    from PySide6.QtWidgets import QMessageBox
+
+    service = ManagedRootService(
+        ManagedRootRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-cancel",
+    )
+    mods = tmp_path / "Mods"
+    mods.mkdir()
+    service.add_root(mods)
+
+    window = _make_window(db_connection, db_path)
+    list_widget = window.findChild(QListWidget)
+    assert list_widget is not None
+    list_widget.setCurrentRow(0)
+
+    original = QMessageBox.question
+    QMessageBox.question = staticmethod(  # type: ignore[assignment]
+        lambda *args, **kwargs: QMessageBox.StandardButton.No
+    )
+    try:
+        window._on_remove_root()  # noqa: SLF001
+    finally:
+        QMessageBox.question = original  # type: ignore[assignment]
+
+    assert window.root_count() == 1
+
+
+def test_main_window_remove_root_preserves_real_directory(
+    qapp: QApplication, db_connection, db_path: Path, tmp_path: Path
+) -> None:
+    """移除根目录配置后真实目录与文件不变。"""
+    from PySide6.QtWidgets import QMessageBox
+
+    service = ManagedRootService(
+        ManagedRootRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-preserve",
+    )
+    mods = tmp_path / "Mods"
+    mods.mkdir()
+    marker = mods / "keep.txt"
+    marker.write_text("keep-me", encoding="utf-8")
+
+    service.add_root(mods)
+
+    window = _make_window(db_connection, db_path)
+    list_widget = window.findChild(QListWidget)
+    assert list_widget is not None
+    list_widget.setCurrentRow(0)
+
+    original = QMessageBox.question
+    QMessageBox.question = staticmethod(  # type: ignore[assignment]
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes
+    )
+    try:
+        window._on_remove_root()  # noqa: SLF001
+    finally:
+        QMessageBox.question = original  # type: ignore[assignment]
+
+    # 真实目录与文件内容不变
+    assert mods.exists()
+    assert marker.read_text(encoding="utf-8") == "keep-me"
+
+
+def test_main_window_remove_root_disabled_during_scan(
+    qapp: QApplication, db_path: Path, sample_mod_tree: Path
+) -> None:
+    """扫描期间移除按钮应禁用，扫描完成后恢复。"""
+    from infrastructure.db import get_connection, init_db
+
+    init_db(db_path)
+    conn = get_connection(db_path)
+    conn.row_factory = __import__("sqlite3").Row
+    try:
+        service = ManagedRootService(
+            ManagedRootRepository(conn),
+            now_provider=lambda: "2026-07-07T00:00:00Z",
+            uuid_provider=lambda: "scan-remove-test",
+        )
+        service.add_root(sample_mod_tree)
+        conn.commit()
+    finally:
+        conn.close()
+
+    conn2 = get_connection(db_path)
+    conn2.row_factory = __import__("sqlite3").Row
+    service2 = ManagedRootService(ManagedRootRepository(conn2))
+    tree_service2 = FolderTreeService(ManagedRootRepository(conn2), FolderNodeRepository(conn2))
+    mod_service2 = ModAssemblyService(ModItemRepository(conn2), FileAssetRepository(conn2))
+    window = MainWindow(
+        service2, tree_service2, mod_service2, db_path, commit_callback=conn2.commit
+    )
+
+    list_widget = window.findChild(QListWidget)
+    assert list_widget is not None
+    list_widget.setCurrentRow(0)
+    assert window.is_remove_button_enabled() is True
+
+    window._on_scan()  # noqa: SLF001
+    assert window._is_scanning is True  # noqa: SLF001
+    # 扫描期间移除按钮禁用
+    assert window.is_remove_button_enabled() is False
+
+    # 等待扫描完成
+    import time
+
+    deadline = time.monotonic() + 30.0
+    while window._thread is not None and time.monotonic() < deadline:  # noqa: SLF001
+        qapp.processEvents()
+        time.sleep(0.05)
+
+    assert window._thread is None  # noqa: SLF001
+    # 扫描完成后移除按钮恢复
+    assert window.is_remove_button_enabled() is True
+
+    conn2.close()
+
+
 # === Task 3：素材池与 Mod 组装 UI 测试 ===
 
 

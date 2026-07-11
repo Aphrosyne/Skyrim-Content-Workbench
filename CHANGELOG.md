@@ -8,6 +8,37 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.6.2] - 2026-07-11
+
+对应阶段 2 Task 1 遗漏补完：移除受管理根目录配置。Task 1 验收标准要求"可移除根目录配置；移除配置不删除、不移动、不修改该目录及其中任何用户文件"，但原实现主动跳过了该项。本次作为 Task 1 遗漏的最小补完。
+
+### Added
+
+- `ManagedRootRepository.delete(root_id)`：按 ID 删除 `managed_root` 记录，实体不存在抛 `NotFoundError`，写操作自提交（与 `create` 一致）。
+- `ManagedRootService.remove_root(root_id)`：先校验存在性（抛 `ManagedRootNotFoundError`），再调用 `repo.delete`。
+- `MainWindow._on_remove_root()`：左栏「移除选中目录」按钮，弹出确认对话框，用户确认后调用 `service.remove_root` 并刷新列表。
+- 按钮状态联动：`_on_selection_changed` / `_begin_scanning` / `_end_scanning` 同步禁用/恢复移除按钮；扫描期间禁用。
+- `MainWindow.is_remove_button_enabled()`：测试接口。
+- UI 文案：`REMOVE_ROOT_BUTTON` / `REMOVE_ROOT_CONFIRM_TITLE` / `REMOVE_ROOT_CONFIRM_TEXT` / `ERR_REMOVE_ROOT_FAILED`。
+
+### Changed
+
+- [src/application/managed_root_service.py](src/application/managed_root_service.py)：移除模块注释中"本任务不实现删除根目录配置"说明，改为说明移除配置不清理扫描记录。
+- [src/infrastructure/repositories/managed_root.py](src/infrastructure/repositories/managed_root.py)：新增 `NotFoundError` 导入。
+
+### Tests
+
+- `test_managed_root_repository.py`（+5 项）：delete 删除记录、delete 自提交、delete 不存在抛 NotFoundError、delete 不影响其他根目录、delete 保留 folder_node/file_asset。
+- `test_managed_root_service.py`（+5 项）：remove_root 删除配置、remove_root 不存在抛错、remove_root 保留真实目录与文件（mtime/size 不变）、remove_root 不清理扫描记录、remove_root 自提交。
+- `test_main_window.py`（+6 项）：移除按钮无选择禁用、选中启用、初始禁用、确认后从列表消失且真实目录保留、取消确认保留列表、移除后真实目录文件不变、扫描期间禁用。
+- 总计 291 passed, 2 skipped（原 266 项，新增 25 项）。
+
+### Constraints
+
+- 仅删除 `managed_root` 记录，不删除、不移动、不修改任何用户文件。
+- 不清理 `folder_node` / `file_asset` 扫描记录（清理策略待确认，见 docs/phase-2-plan.md 任务 1 范围外内容）。
+- 不修改数据库 schema，不引入新的设计或决策。
+
 ## [0.8.1] - 2026-07-11
 
 对应阶段 2 Task 3 缺口修复（素材池布局调整、显示字段补全、新建自动关联、按钮状态联动）。

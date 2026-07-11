@@ -17,7 +17,7 @@ import pytest
 from domain.models import ManagedRoot
 from infrastructure.db import get_connection, init_db
 from infrastructure.path_utils import make_path_key
-from infrastructure.repositories.errors import ConstraintViolationError
+from infrastructure.repositories.errors import ConstraintViolationError, NotFoundError
 from infrastructure.repositories.managed_root import ManagedRootRepository
 
 
@@ -188,3 +188,115 @@ def test_create_commits_transaction_without_explicit_commit(db_path: Path, tmp_p
         assert fetched.real_path == str(path)
     finally:
         conn2.close()
+
+
+# --- delete 测试（Task 1 遗漏补完） ---
+
+
+def test_delete_removes_record(db_connection: sqlite3.Connection, tmp_path: Path) -> None:
+    """delete 后记录不再可查。"""
+    repo = ManagedRootRepository(db_connection)
+    path = tmp_path / "Mods"
+    path.mkdir()
+    repo.create(_make_root(path, root_id="del-1"))
+
+    repo.delete("del-1")
+
+    assert repo.get_by_id("del-1") is None
+
+
+def test_delete_commits_without_explicit_commit(db_path: Path, tmp_path: Path) -> None:
+    """delete 应自提交事务，跨连接可见。
+
+    回归测试：与 create 保持一致的事务策略。
+    """
+    init_db(db_path)
+    path = tmp_path / "AutoCommitDelete"
+    path.mkdir()
+
+    # 第一次连接：写入并删除，但不显式 commit
+    conn1 = get_connection(db_path)
+    conn1.row_factory = sqlite3.Row
+    try:
+        repo1 = ManagedRootRepository(conn1)
+        repo1.create(_make_root(path, root_id="del-autocommit"))
+        repo1.delete("del-autocommit")
+    finally:
+        conn1.close()
+
+    # 第二次连接：应已删除（证明 delete 自提交）
+    conn2 = get_connection(db_path)
+    conn2.row_factory = sqlite3.Row
+    try:
+        repo2 = ManagedRootRepository(conn2)
+        assert repo2.get_by_id("del-autocommit") is None
+    finally:
+        conn2.close()
+
+
+def test_delete_missing_raises_not_found_error(db_connection: sqlite3.Connection) -> None:
+    """删除不存在的 id 抛 NotFoundError。"""
+    repo = ManagedRootRepository(db_connection)
+    with pytest.raises(NotFoundError):
+        repo.delete("nonexistent")
+
+
+def test_delete_does_not_affect_other_roots(
+    db_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """删除一个根目录不影响其他根目录。"""
+    repo = ManagedRootRepository(db_connection)
+    p1 = tmp_path / "alpha"
+    p1.mkdir()
+    p2 = tmp_path / "beta"
+    p2.mkdir()
+
+    repo.create(_make_root(p1, root_id="a"))
+    repo.create(_make_root(p2, root_id="b"))
+
+    repo.delete("a")
+
+    assert repo.get_by_id("a") is None
+    assert repo.get_by_id("b") is not None
+    roots = repo.list_all()
+    assert [r.id for r in roots] == ["b"]
+
+
+def test_delete_preserves_folder_node_and_file_asset(
+    db_connection: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """删除 managed_root 记录不清理 folder_node / file_asset 扫描记录。
+
+    依据 docs/phase-2-plan.md 任务 1：不要求删除对应 FolderNode 扫描记录。
+    """
+    repo = ManagedRootRepository(db_connection)
+    path = tmp_path / "Mods"
+    path.mkdir()
+    repo.create(_make_root(path, root_id="del-2"))
+
+    # 模拟扫描结果存在（直接插入 folder_node 与 file_asset）
+    db_connection.execute(
+        "INSERT INTO folder_node (id, real_path, path_key, parent_id, display_name, "
+        "is_managed_root, created_at, updated_at) VALUES "
+        "('fn-1', ?, ?, NULL, 'Mods', 1, '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
+        (str(path), make_path_key(path)),
+    )
+    db_connection.execute(
+        "INSERT INTO file_asset (id, mod_item_id, real_path, path_key, filename, extension, "
+        "asset_kind, role, size_bytes, modified_at, imported_at) VALUES "
+        "('fa-1', NULL, ?, ?, 'file.txt', '.txt', 'file', 'unknown', 10, "
+        "'2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
+        (str(path / "file.txt"), make_path_key(path / "file.txt")),
+    )
+    db_connection.commit()
+
+    repo.delete("del-2")
+
+    # managed_root 已删除
+    assert repo.get_by_id("del-2") is None
+    # folder_node 仍存在
+    fn_row = db_connection.execute("SELECT id FROM folder_node WHERE id = 'fn-1'").fetchone()
+    assert fn_row is not None
+    # file_asset 仍存在
+    fa_row = db_connection.execute("SELECT id FROM file_asset WHERE id = 'fa-1'").fetchone()
+    assert fa_row is not None

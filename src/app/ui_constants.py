@@ -15,6 +15,13 @@ WINDOW_DEFAULT_HEIGHT = 720
 ROOTS_GROUP_TITLE = "受管理根目录"
 ROOTS_EMPTY_HINT = "尚未配置任何受管理根目录。点击「添加目录」开始。"
 ADD_ROOT_BUTTON = "添加目录"
+REMOVE_ROOT_BUTTON = "移除选中目录"
+REMOVE_ROOT_CONFIRM_TITLE = "确认移除"
+REMOVE_ROOT_CONFIRM_TEXT = (
+    "将移除受管理根目录配置：\n{path}\n\n"
+    "此操作仅删除应用内的配置记录，不会删除或修改磁盘上的任何文件，"
+    "也不会清理已扫描的目录树记录。"
+)
 SCAN_BUTTON = "扫描选中目录"
 SCAN_BUTTON_SCANNING = "扫描中…"
 
@@ -109,6 +116,7 @@ ERR_ADD_ROOT_FAILED = "添加目录失败"
 ERR_NO_ROOT_SELECTED = "请先在左侧选择一个受管理根目录。"
 ERR_DUPLICATE_ROOT = "该目录已添加。"
 ERR_INVALID_ROOT = "路径不存在或不是目录。"
+ERR_REMOVE_ROOT_FAILED = "移除目录配置失败"
 
 # 摘要
 SUMMARY_TEMPLATE = (

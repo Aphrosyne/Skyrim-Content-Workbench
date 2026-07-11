@@ -61,6 +61,7 @@ from application.errors import (
     ApplicationError,
     DuplicateManagedRootError,
     InvalidRootPathError,
+    ManagedRootNotFoundError,
 )
 from application.folder_tree_service import FolderTreeService, TreeNode
 from application.managed_root_service import ManagedRootService
@@ -164,6 +165,11 @@ class MainWindow(QMainWindow):
         self._add_button = QPushButton(ui.ADD_ROOT_BUTTON)
         self._add_button.clicked.connect(self._on_add_root)
         roots_layout.addWidget(self._add_button)
+
+        self._remove_button = QPushButton(ui.REMOVE_ROOT_BUTTON)
+        self._remove_button.clicked.connect(self._on_remove_root)
+        self._remove_button.setEnabled(False)
+        roots_layout.addWidget(self._remove_button)
 
         self._scan_button = QPushButton(ui.SCAN_BUTTON)
         self._scan_button.clicked.connect(self._on_scan)
@@ -374,6 +380,7 @@ class MainWindow(QMainWindow):
     def _on_selection_changed(self) -> None:
         has_selection = self._selected_root_id() is not None
         self._scan_button.setEnabled(has_selection and not self._is_scanning)
+        self._remove_button.setEnabled(has_selection and not self._is_scanning)
 
     # --- 目录树 ---
 
@@ -459,6 +466,54 @@ class MainWindow(QMainWindow):
             return
         self._refresh_root_list()
 
+    # --- 移除根目录配置 ---
+
+    def _on_remove_root(self) -> None:
+        """移除选中的受管理根目录配置。
+
+        仅删除应用数据库中的 managed_root 记录；不删除、不移动、不修改
+        磁盘上的任何用户文件；不清理 folder_node / file_asset 扫描记录。
+        """
+        if self._is_scanning:
+            return
+        root_id = self._selected_root_id()
+        if root_id is None:
+            self._set_status(ui.ERR_NO_ROOT_SELECTED)
+            return
+
+        # 取出 real_path 用于确认对话框展示
+        try:
+            root = self._service.get_root(root_id)
+        except ManagedRootNotFoundError:
+            self._refresh_root_list()
+            return
+
+        confirm_text = ui.REMOVE_ROOT_CONFIRM_TEXT.format(path=root.real_path)
+        reply = QMessageBox.question(
+            self,
+            ui.REMOVE_ROOT_CONFIRM_TITLE,
+            confirm_text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            self._service.remove_root(root_id)
+        except ManagedRootNotFoundError:
+            # 可能已被其他路径移除，刷新列表即可
+            self._refresh_root_list()
+            return
+        except Exception as e:  # noqa: BLE001 - UI 边界需捕获所有异常
+            logger.exception("移除根目录配置失败")
+            QMessageBox.critical(
+                self, ui.ERR_REMOVE_ROOT_FAILED, f"{ui.ERR_REMOVE_ROOT_FAILED}：{e}"
+            )
+            return
+
+        self._refresh_root_list()
+
     # --- 扫描 ---
 
     def _on_scan(self) -> None:
@@ -494,6 +549,7 @@ class MainWindow(QMainWindow):
         self._scan_button.setText(ui.SCAN_BUTTON_SCANNING)
         self._scan_button.setEnabled(False)
         self._add_button.setEnabled(False)
+        self._remove_button.setEnabled(False)
         self._set_status(ui.STATUS_SCANNING)
 
     def _end_scanning(self) -> None:
@@ -506,6 +562,7 @@ class MainWindow(QMainWindow):
         self._add_button.setEnabled(True)
         has_selection = self._selected_root_id() is not None
         self._scan_button.setEnabled(has_selection)
+        self._remove_button.setEnabled(has_selection)
 
     def _on_thread_finished(self) -> None:
         """QThread 真正退出后清理 Python 引用，让 deleteLater 生效。"""
@@ -562,6 +619,10 @@ class MainWindow(QMainWindow):
     def is_scan_button_enabled(self) -> bool:
         """返回扫描按钮是否可用（供测试）。"""
         return self._scan_button.isEnabled()
+
+    def is_remove_button_enabled(self) -> bool:
+        """返回移除按钮是否可用（供测试）。"""
+        return self._remove_button.isEnabled()
 
     # === Task 3：素材池 / ModItem 组装 ===
 

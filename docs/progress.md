@@ -108,6 +108,24 @@
 - `test_main_window_scan_completes_without_crash`：扫描完成线程安全退出回归。
 - `test_main_window_close_event_safe_when_idle`：closeEvent 空闲路径。
 
+**Task 1 遗漏补完：移除受管理根目录配置（v0.6.2）**：
+
+阶段 2 Task 1 验收标准要求"可移除根目录配置；移除配置不删除、不移动、不修改该目录及其中任何用户文件"，但原实现主动跳过了该项。本次作为 Task 1 遗漏补完实现：
+
+- Repository 层 [src/infrastructure/repositories/managed_root.py](../src/infrastructure/repositories/managed_root.py)：新增 `delete(root_id)`，DELETE FROM managed_root WHERE id=?；实体不存在抛 `NotFoundError`；写操作自提交（与 `create` 一致）。
+- Service 层 [src/application/managed_root_service.py](../src/application/managed_root_service.py)：新增 `remove_root(root_id)`；先校验存在性（抛 `ManagedRootNotFoundError`），再调用 `repo.delete`。移除模块注释中"本任务不实现删除根目录配置"说明。
+- UI 层 [src/app/main_window.py](../src/app/main_window.py)：
+  - 左栏新增「移除选中目录」按钮（`_remove_button`）。
+  - `_on_remove_root`：弹出确认对话框（QMessageBox.question），用户确认后调用 `service.remove_root` 并刷新列表。
+  - 按钮状态联动：`_on_selection_changed` / `_begin_scanning` / `_end_scanning` 同步禁用/恢复移除按钮；扫描期间禁用。
+  - 新增 `is_remove_button_enabled()` 测试接口。
+- UI 文案 [src/app/ui_constants.py](../src/app/ui_constants.py)：新增 `REMOVE_ROOT_BUTTON` / `REMOVE_ROOT_CONFIRM_TITLE` / `REMOVE_ROOT_CONFIRM_TEXT` / `ERR_REMOVE_ROOT_FAILED`。
+- 边界：仅删除 `managed_root` 记录，不删除、不移动、不修改任何用户文件；不清理 `folder_node` / `file_asset` 扫描记录（清理策略待确认）。
+- 测试新增 11 项（总计 291 passed, 2 skipped）：
+  - `test_managed_root_repository.py`（+5 项）：delete 删除记录、delete 自提交、delete 不存在抛 NotFoundError、delete 不影响其他根目录、delete 保留 folder_node/file_asset。
+  - `test_managed_root_service.py`（+5 项）：remove_root 删除配置、remove_root 不存在抛错、remove_root 保留真实目录与文件（mtime/size 不变）、remove_root 不清理扫描记录、remove_root 自提交。
+  - `test_main_window.py`（+6 项）：移除按钮无选择禁用、选中启用、初始禁用、确认后从列表消失且真实目录保留、取消确认保留列表、移除后真实目录文件不变、扫描期间禁用。
+
 **Task 2 完成内容（v0.7.0）**：
 
 - Repository 扩展 [src/infrastructure/repositories/folder_node.py](../src/infrastructure/repositories/folder_node.py)：
