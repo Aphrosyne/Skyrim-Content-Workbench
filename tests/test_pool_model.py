@@ -214,6 +214,55 @@ def test_pool_model_file_kind_tooltip(
     assert "文件" in tooltip
 
 
+def test_pool_model_display_includes_type_and_path(
+    db_connection: sqlite3.Connection, qapp: QApplication
+) -> None:
+    """素材池显示文本包含文件名、类型和完整路径（Task 3 缺口修复）。"""
+    repo = FileAssetRepository(db_connection)
+    service = _make_service(db_connection)
+
+    _insert_asset(
+        repo,
+        real_path="D:/Mods/寒霜之心.7z",
+        filename="寒霜之心.7z",
+    )
+    db_connection.commit()
+
+    model = UnassociatedPoolModel(service)
+    model.refresh()
+    display = model.data(model.index(0), Qt.DisplayRole)
+    # 文件名
+    assert "寒霜之心.7z" in display
+    # 类型文字
+    assert "文件" in display
+    # 完整路径
+    assert "D:/Mods/寒霜之心.7z" in display
+
+
+def test_pool_model_display_folder_includes_type_and_path(
+    db_connection: sqlite3.Connection, qapp: QApplication
+) -> None:
+    """文件夹型素材显示文本同样包含类型和完整路径。"""
+    repo = FileAssetRepository(db_connection)
+    service = _make_service(db_connection)
+
+    _insert_asset(
+        repo,
+        real_path="D:/Mods/护甲包",
+        filename="护甲包",
+        extension="",
+        asset_kind=AssetKind.FOLDER,
+    )
+    db_connection.commit()
+
+    model = UnassociatedPoolModel(service)
+    model.refresh()
+    display = model.data(model.index(0), Qt.DisplayRole)
+    assert "护甲包" in display
+    assert "文件夹" in display
+    assert "D:/Mods/护甲包" in display
+
+
 def test_mod_item_list_model_empty(db_connection: sqlite3.Connection, qapp: QApplication) -> None:
     """无 ModItem 时列表为空。"""
     service = _make_service(db_connection)

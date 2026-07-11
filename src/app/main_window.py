@@ -1,9 +1,9 @@
 """主窗口。阶段 2 Task 1/Task 2/Task 3：工作台骨架、根目录扫描、只读目录树、素材池与 Mod 组装。
 
 布局（三栏骨架）：
-- 左栏：受管理根目录列表 + 添加目录 + 扫描选中目录按钮。
-- 中栏：受管理目录树（Task 2）+ 未归类素材池（Task 3）+ Mod 条目列表（Task 3）。
-- 右栏：扫描状态 + 选中目录信息（Task 2）+ Mod 条目详情与成员编辑（Task 3）。
+- 左栏：受管理根目录列表 + 添加目录/扫描按钮 + 扫描状态 + 受管理目录树 + 选中目录详情。
+- 中栏：未归类素材池 + Mod 条目列表 + 新建/关联按钮。
+- 右栏：Mod 条目详情编辑（元数据）+ 成员列表表格（角色/移除）。
 
 约束（AGENTS 规则 3）：
 - UI 不直接调用 shutil / Path.rename / Path.unlink 等文件写 API。
@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread
@@ -93,6 +94,7 @@ class MainWindow(QMainWindow):
         folder_tree_service: FolderTreeService,
         mod_assembly_service: ModAssemblyService,
         db_path: Path,
+        commit_callback: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -100,6 +102,7 @@ class MainWindow(QMainWindow):
         self._tree_service = folder_tree_service
         self._mod_service = mod_assembly_service
         self._db_path = db_path
+        self._commit_callback = commit_callback
         self._thread: QThread | None = None
         self._worker: ScanWorker | None = None
         self._is_scanning = False
@@ -122,12 +125,30 @@ class MainWindow(QMainWindow):
             self._thread.wait(5000)
         super().closeEvent(event)
 
+    def _commit(self) -> None:
+        """提交当前数据库事务。
+
+        UI 层是用户操作的天然事务边界：每次写操作（创建/关联/角色/移除/元数据）
+        完成后调用，确保数据持久化。service/repository 不自提交，以保持分层与
+        多操作事务的原子性。
+        """
+        if self._commit_callback is not None:
+            try:
+                self._commit_callback()
+            except Exception:  # noqa: BLE001
+                logger.exception("数据库提交失败")
+
     # --- UI 构建 ---
 
     def _setup_ui(self) -> None:
         splitter = QSplitter(Qt.Horizontal)
 
-        # 左栏：受管理根目录
+        # === 左栏：受管理根目录 + 扫描状态 + 目录树 + 目录详情 ===
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 受管理根目录
         self._roots_group = QGroupBox(ui.ROOTS_GROUP_TITLE)
         roots_layout = QVBoxLayout(self._roots_group)
 
@@ -148,13 +169,15 @@ class MainWindow(QMainWindow):
         self._scan_button.clicked.connect(self._on_scan)
         self._scan_button.setEnabled(False)
         roots_layout.addWidget(self._scan_button)
+        left_layout.addWidget(self._roots_group)
 
-        splitter.addWidget(self._roots_group)
-
-        # 中栏：目录树 + 素材池占位
-        center = QWidget()
-        center_layout = QVBoxLayout(center)
-        center_layout.setContentsMargins(0, 0, 0, 0)
+        # 扫描状态
+        status_box = QGroupBox("扫描状态")
+        status_layout = QVBoxLayout(status_box)
+        self._status_label = QLabel(ui.STATUS_IDLE)
+        self._status_label.setWordWrap(True)
+        status_layout.addWidget(self._status_label)
+        left_layout.addWidget(status_box)
 
         # 目录树
         self._tree_group = QGroupBox(ui.TREE_GROUP_TITLE)
@@ -176,7 +199,23 @@ class MainWindow(QMainWindow):
         self._tree_hint = QLabel(ui.TREE_EMPTY_HINT)
         self._tree_hint.setWordWrap(True)
         tree_layout.addWidget(self._tree_hint)
-        center_layout.addWidget(self._tree_group, stretch=3)
+        left_layout.addWidget(self._tree_group, stretch=1)
+
+        # 选中目录详情区域
+        self._detail_group = QGroupBox(ui.DETAIL_GROUP_TITLE)
+        detail_layout = QVBoxLayout(self._detail_group)
+        self._detail_label = QLabel(ui.DETAIL_NONE_HINT)
+        self._detail_label.setWordWrap(True)
+        self._detail_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        detail_layout.addWidget(self._detail_label)
+        left_layout.addWidget(self._detail_group)
+
+        splitter.addWidget(left)
+
+        # === 中栏：素材池 + ModItem 列表 ===
+        center = QWidget()
+        center_layout = QVBoxLayout(center)
+        center_layout.setContentsMargins(0, 0, 0, 0)
 
         # 素材池
         self._pool_group = QGroupBox(ui.POOL_GROUP_TITLE)
@@ -185,11 +224,13 @@ class MainWindow(QMainWindow):
         self._pool_view = QListView()
         self._pool_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._pool_view.setModel(self._pool_model)
+        self._pool_view.selectionModel().selectionChanged.connect(self._on_pool_selection_changed)
         pool_layout.addWidget(self._pool_view)
 
         self._pool_hint = QLabel(ui.POOL_EMPTY_HINT)
         self._pool_hint.setWordWrap(True)
         pool_layout.addWidget(self._pool_hint)
+        center_layout.addWidget(self._pool_group, stretch=3)
 
         # Mod 条目列表 + 操作按钮
         mod_list_box = QGroupBox(ui.MOD_LIST_GROUP_TITLE)
@@ -211,6 +252,7 @@ class MainWindow(QMainWindow):
         action_row = QHBoxLayout()
         self._new_mod_button = QPushButton(ui.NEW_MOD_BUTTON)
         self._new_mod_button.clicked.connect(self._on_new_mod)
+        self._new_mod_button.setEnabled(False)
         action_row.addWidget(self._new_mod_button)
 
         self._associate_button = QPushButton(ui.ASSOCIATE_BUTTON)
@@ -223,27 +265,10 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(center)
 
-        # 右栏：扫描状态 + 选中目录详情
+        # === 右栏：ModItem 详情编辑 + 成员列表 ===
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
-
-        # 扫描状态区域
-        status_box = QGroupBox("扫描状态")
-        status_layout = QVBoxLayout(status_box)
-        self._status_label = QLabel(ui.STATUS_IDLE)
-        self._status_label.setWordWrap(True)
-        status_layout.addWidget(self._status_label)
-        right_layout.addWidget(status_box)
-
-        # 选中目录详情区域
-        self._detail_group = QGroupBox(ui.DETAIL_GROUP_TITLE)
-        detail_layout = QVBoxLayout(self._detail_group)
-        self._detail_label = QLabel(ui.DETAIL_NONE_HINT)
-        self._detail_label.setWordWrap(True)
-        self._detail_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        detail_layout.addWidget(self._detail_label)
-        right_layout.addWidget(self._detail_group, stretch=1)
 
         # Mod 条目详情编辑区域（Task 3）
         self._mod_detail_group = QGroupBox(ui.MOD_DETAIL_GROUP_TITLE)
@@ -283,7 +308,7 @@ class MainWindow(QMainWindow):
         self._save_meta_button.setEnabled(False)
         mod_detail_layout.addWidget(self._save_meta_button)
 
-        right_layout.addWidget(self._mod_detail_group, stretch=2)
+        right_layout.addWidget(self._mod_detail_group, stretch=1)
 
         # 成员列表表格（Task 3）
         self._members_group = QGroupBox(ui.MEMBERS_GROUP_TITLE)
@@ -546,6 +571,7 @@ class MainWindow(QMainWindow):
         count = self._pool_model.asset_count()
         self._pool_hint.setVisible(count == 0)
         self._update_associate_button()
+        self._update_new_mod_button()
 
     def _refresh_mod_list(self) -> None:
         """重新加载 ModItem 列表。"""
@@ -586,6 +612,16 @@ class MainWindow(QMainWindow):
         has_assets = len(self._selected_asset_ids()) > 0
         has_mod = self._current_mod_id is not None
         self._associate_button.setEnabled(has_assets and has_mod)
+
+    def _update_new_mod_button(self) -> None:
+        """根据素材池选择状态更新新建按钮。"""
+        has_assets = len(self._selected_asset_ids()) > 0
+        self._new_mod_button.setEnabled(has_assets and not self._is_scanning)
+
+    def _on_pool_selection_changed(self, *args) -> None:  # noqa: ARG002
+        """素材池选择变化时更新按钮状态。"""
+        self._update_associate_button()
+        self._update_new_mod_button()
 
     def _on_mod_selection_changed(self, *args) -> None:  # noqa: ARG002
         """ModItem 列表选中变化时加载详情与成员。"""
@@ -658,7 +694,9 @@ class MainWindow(QMainWindow):
                 ROLE_ORDER.index(asset.role) if asset.role in ROLE_ORDER else len(ROLE_ORDER) - 1
             )
             combo.setCurrentIndex(current_idx)
-            combo.currentIndexChanged.connect(lambda _idx, a=asset: self._on_role_changed(a.id))
+            combo.currentIndexChanged.connect(
+                lambda _idx, a=asset, c=combo: self._on_role_changed(a.id, c)
+            )
             self._members_table.setCellWidget(row, _COL_ROLE, combo)
 
             # 完整路径
@@ -677,19 +715,16 @@ class MainWindow(QMainWindow):
             self._members_hint.setText(ui.MEMBERS_EMPTY_HINT)
             self._members_hint.show()
 
-    def _on_role_changed(self, asset_id: str) -> None:
+    def _on_role_changed(self, asset_id: str, combo: QComboBox) -> None:
         """成员角色下拉变化时更新角色。"""
         if self._current_mod_id is None:
             return
-        # 找到对应的 combo 获取新角色
-        sender = self.sender()
-        if not isinstance(sender, QComboBox):
-            return
-        role = sender.currentData()
+        role = combo.currentData()
         if not isinstance(role, FileRole):
             return
         try:
             self._mod_service.set_member_role(self._current_mod_id, asset_id, role)
+            self._commit()
         except ApplicationError as e:
             QMessageBox.warning(self, ui.ERR_SET_ROLE_FAILED, str(e))
             # 回滚 UI：重新加载成员
@@ -701,6 +736,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self._mod_service.remove_member(self._current_mod_id, asset_id)
+            self._commit()
         except ApplicationError as e:
             QMessageBox.warning(self, ui.ERR_REMOVE_MEMBER_FAILED, str(e))
             return
@@ -709,8 +745,11 @@ class MainWindow(QMainWindow):
         self._refresh_pool()
 
     def _on_new_mod(self) -> None:
-        """新建 ModItem 对话框。"""
+        """新建 ModItem 对话框，并自动关联素材池中选中的素材。"""
         if self._is_scanning:
+            return
+        asset_ids = self._selected_asset_ids()
+        if not asset_ids:
             return
         name, ok = QInputDialog.getText(
             self,
@@ -732,13 +771,39 @@ class MainWindow(QMainWindow):
             logger.exception("创建 ModItem 失败")
             QMessageBox.critical(self, ui.ERR_CREATE_MOD_FAILED, str(e))
             return
+
+        # 自动将选中的素材关联到新 ModItem（默认 unknown 角色）
+        success = 0
+        errors: list[str] = []
+        for asset_id in asset_ids:
+            try:
+                self._mod_service.add_member(new_item.id, asset_id, FileRole.UNKNOWN)
+                success += 1
+            except ApplicationError as e:
+                errors.append(str(e))
+
+        self._commit()
+
+        # 刷新列表并选中新创建的条目
         self._refresh_mod_list()
-        # 选中新创建的条目
+        self._refresh_pool()
         for i in range(self._mod_list_model.item_count()):
             if self._mod_list_model.mod_item_id_at(i) == new_item.id:
                 idx = self._mod_list_model.index(i)
                 self._mod_list_view.setCurrentIndex(idx)
                 break
+
+        if errors:
+            detail = "\n".join(errors[:5])
+            if len(errors) > 5:
+                detail += f"\n…（共 {len(errors)} 个错误）"
+            QMessageBox.warning(
+                self,
+                ui.ASSOCIATE_FAILED,
+                f"成功 {success} 个，失败 {len(errors)} 个：\n{detail}",
+            )
+        elif success > 0:
+            self._set_status(ui.ASSOCIATE_SUCCESS.format(n=success, name=name))
 
     def _on_associate(self) -> None:
         """将素材池选中的素材关联到当前 ModItem。"""
@@ -761,6 +826,8 @@ class MainWindow(QMainWindow):
                 success += 1
             except ApplicationError as e:
                 errors.append(str(e))
+
+        self._commit()
 
         # 刷新成员表与素材池
         self._load_members(self._current_mod_id)
@@ -796,6 +863,7 @@ class MainWindow(QMainWindow):
                 source_url=url,
                 tags=tags,
             )
+            self._commit()
         except ApplicationError as e:
             QMessageBox.warning(self, ui.ERR_UPDATE_MOD_FAILED, str(e))
             return

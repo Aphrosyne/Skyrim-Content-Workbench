@@ -107,9 +107,10 @@ class UnassociatedPoolModel(QAbstractListModel):
 
     @staticmethod
     def _format_display(asset: FileAsset) -> str:
-        """格式化素材池显示文本：filename [类型提示]。"""
+        """格式化素材池显示文本：文件名、类型、完整路径。"""
         kind_mark = "📁" if asset.asset_kind == AssetKind.FOLDER else "📄"
-        return f"{kind_mark} {asset.filename}"
+        kind_text = "文件夹" if asset.asset_kind == AssetKind.FOLDER else "文件"
+        return f"{kind_mark} {asset.filename}  ({kind_text})  {asset.real_path}"
 
 
 class ModItemListModel(QAbstractListModel):

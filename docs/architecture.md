@@ -113,7 +113,7 @@ SQLite file_asset / mod_item 表
 
 写入链路（UI 不直接组合 Repository 写操作）：
 
-* `MainWindow._on_new_mod()` → `ModAssemblyService.create_mod_item()` → `ModItemRepository.create()`：创建空 ModItem。
+* `MainWindow._on_new_mod()` → `ModAssemblyService.create_mod_item()` → `ModItemRepository.create()` + `ModAssemblyService.add_member(new_id, asset_id, UNKNOWN)` → `FileAssetRepository.update()`：创建 ModItem 后自动将素材池中选中的素材以 `UNKNOWN` 角色关联到新条目。
 * `MainWindow._on_associate()` → `ModAssemblyService.add_member(mod_id, asset_id, UNKNOWN)` → `FileAssetRepository.update()`：将选中素材以 `UNKNOWN` 角色关联到当前 ModItem。UI 不直接调用 `FileAssetRepository.update()`。
 * `MainWindow._on_role_changed(asset_id)` → `ModAssemblyService.set_member_role(mod_id, asset_id, role)` → `FileAssetRepository.update()`：角色下拉变更后通过 service 写入。UI 不复制 `ROLE_LIMITS` 规则，直接展示服务层返回的 `MemberLimitError` / `DuplicateMemberError`。
 * `MainWindow._on_remove_member(asset_id)` → `ModAssemblyService.remove_member(mod_id, asset_id)` → `FileAssetRepository.update()`：解除关联（`mod_item_id=None`, `role=UNKNOWN`），不删除、不移动真实文件。
@@ -121,11 +121,13 @@ SQLite file_asset / mod_item 表
 
 边界约定：
 
-* `UnassociatedPoolModel`（[src/app/pool_model.py](../src/app/pool_model.py)）继承 `QAbstractListModel`，包装 `ModAssemblyService.list_unassociated_assets()` 返回的 `FileAsset` 列表，不访问文件系统、不写数据库。
+* `UnassociatedPoolModel`（[src/app/pool_model.py](../src/app/pool_model.py)）继承 `QAbstractListModel`，包装 `ModAssemblyService.list_unassociated_assets()` 返回的 `FileAsset` 列表，不访问文件系统、不写数据库。每行显示文件名、类型（文件/文件夹）和完整路径。
 * `ModItemListModel`（同文件）继承 `QAbstractListModel`，包装 `ModAssemblyService.list_mod_items()` 返回的 `ModItem` 列表。
 * `ROLE_DISPLAY_NAMES` / `ROLE_ORDER` 集中定义在 [src/app/pool_model.py](../src/app/pool_model.py)，UI 层角色下拉顺序与中文显示名从此处导出，不散落 widget 代码；角色数量限制仍由 `ModAssemblyService.ROLE_LIMITS` 强制，UI 不复制规则。
 * 成员表格使用 `QTableWidget`，每行内嵌 `QComboBox`（角色编辑）和 `QPushButton`（移除按钮）；角色变更通过 `self.sender()` 获取发送者后调用 service。
-* 素材池刷新时机：扫描完成（`_on_scan_finished` / `_on_scan_failed`）、关联素材（`_on_associate`）、移除成员（`_on_remove_member`）后调用 `_refresh_pool()`。
+* 按钮状态联动：「新建 Mod 条目」按钮在素材池无选择时禁用（`_update_new_mod_button`）；「关联到选中条目」按钮在无素材选择或无 ModItem 选中时禁用（`_update_associate_button`）。素材池选择变化通过 `_on_pool_selection_changed` 触发两个按钮的状态更新。
+* 素材池刷新时机：扫描完成（`_on_scan_finished` / `_on_scan_failed`）、新建条目并关联（`_on_new_mod`）、关联素材（`_on_associate`）、移除成员（`_on_remove_member`）后调用 `_refresh_pool()`。
+* 三栏布局：左栏=根目录列表+扫描状态+目录树+目录详情；中栏=素材池+ModItem 列表+新建/关联按钮；右栏=ModItem 详情编辑+成员表格。
 * 错误展示：service 层抛出的 `ApplicationError` 子类由 UI 捕获并通过 `QMessageBox` 或状态栏展示给用户；中文文案集中在 [src/app/ui_constants.py](../src/app/ui_constants.py)，不写进 domain/application 层异常逻辑。
 * 线程边界：`UnassociatedPoolModel` / `ModItemListModel` 与 `MainWindow` 在 UI 主线程构造与访问，使用主线程 SQLite 连接，不创建后台线程。
 * 数据源严格为 SQLite `file_asset` / `mod_item` 表；不在 UI 线程重新扫描文件系统。
@@ -137,10 +139,10 @@ SQLite file_asset / mod_item 表
 负责：
 
 * 主窗口
-* 三栏布局
+* 三栏布局（左栏：根目录列表 + 扫描状态 + 目录树 + 目录详情；中栏：素材池 + ModItem 列表 + 新建/关联按钮；右栏：ModItem 详情编辑 + 成员表格）
 * 目录树
-* 素材池和 Mod 卡片
-* 详情编辑
+* 素材池（未关联 FileAsset 列表，显示文件名/类型/完整路径，支持多选）
+* ModItem 列表与详情编辑（元数据 + 成员角色）
 * 预演确认对话框
 * 操作日志与撤销入口
 

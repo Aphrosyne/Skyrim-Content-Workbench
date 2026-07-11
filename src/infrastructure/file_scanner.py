@@ -322,7 +322,7 @@ def persist_scan_result(
         except ConstraintViolationError as e:
             outcome.skipped_folders.append((entry.real_path, str(e)))
 
-    # 持久化 FileAsset
+    # 持久化 FileAsset（文件型）
     for entry in scan_result.files:
         path_key = make_path_key(entry.real_path)
         asset = FileAsset(
@@ -333,6 +333,32 @@ def persist_scan_result(
             filename=entry.real_path.name,
             extension=entry.extension,
             asset_kind=AssetKind.FOLDER if entry.is_dir else AssetKind.FILE,
+            role=FileRole.UNKNOWN,
+            size_bytes=entry.size_bytes,
+            modified_at=entry.modified_at,
+            imported_at=now,
+        )
+
+        try:
+            inserted = file_repo.create(asset)
+            outcome.inserted_files.append(inserted)
+        except ConstraintViolationError as e:
+            outcome.skipped_files.append((entry.real_path, str(e)))
+
+    # 持久化 FileAsset（文件夹型）：除根目录本身外，子文件夹也作为可关联素材。
+    # 根目录是受管理根目录，不作为待整理素材。
+    for entry in scan_result.folders:
+        if entry.real_path == scan_result.root_path:
+            continue
+        path_key = make_path_key(entry.real_path)
+        asset = FileAsset(
+            id=new_uuid(),
+            mod_item_id=None,
+            real_path=str(entry.real_path),
+            path_key=path_key,
+            filename=entry.real_path.name,
+            extension="",
+            asset_kind=AssetKind.FOLDER,
             role=FileRole.UNKNOWN,
             size_bytes=entry.size_bytes,
             modified_at=entry.modified_at,

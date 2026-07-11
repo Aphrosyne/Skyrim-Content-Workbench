@@ -207,6 +207,27 @@
   - `test_pool_model.py`（13 项）：素材池空/显示未关联/关联后消失/解除后重现/中文文件名/文件夹类型/文件 tooltip；ModItem 列表空/显示条目/未命名显示/创建后刷新/中文标签 tooltip。
   - `test_main_window.py`（+6 项）：素材池初始空、扫描后显示未关联素材、创建 ModItem 并关联、移除成员回到素材池、元数据保存持久化、无选择时关联保护。
 
+**Task 3 缺口修复内容（v0.8.1）**：
+
+- 布局调整 [src/app/main_window.py](../src/app/main_window.py)：
+  - 目录树从中栏移至左栏（与受管理根目录列表、扫描状态、目录详情同栏）。
+  - 中栏改为：素材池（上）+ ModItem 列表 + 新建/关联按钮（下）。
+  - 右栏改为：ModItem 详情编辑（元数据）+ 成员表格。
+- 素材池显示字段补全 [src/app/pool_model.py](../src/app/pool_model.py)：
+  - `_format_display` 从仅显示 `📁 filename` 改为 `📁 filename  (类型)  完整路径`，满足"文件名、类型、完整路径"三项可见字段要求。
+- 新建 Mod 条目自动关联 [src/app/main_window.py](../src/app/main_window.py)：
+  - `_on_new_mod()` 创建 ModItem 后自动将素材池中选中的素材以 `UNKNOWN` 角色关联到新条目。
+  - 关联失败时收集错误并通过 `QMessageBox` 展示。
+  - 成功后刷新素材池、ModItem 列表，选中新条目并加载成员。
+- 按钮状态联动 [src/app/main_window.py](../src/app/main_window.py)：
+  - 新增 `_update_new_mod_button()`：素材池无选择时「新建 Mod 条目」禁用。
+  - 新增 `_on_pool_selection_changed()`：素材池选择变化时同步更新「新建」和「关联」按钮状态。
+  - `_new_mod_button` 初始 `setEnabled(False)`。
+- 测试新增 5 项（总计 271 passed, 2 skipped）：
+  - `test_pool_model.py`（+2 项）：素材池显示包含类型和完整路径（文件型 + 文件夹型）。
+  - `test_main_window.py`（+3 项）：新建按钮无选择时禁用、新建自动关联选中素材、素材池显示完整路径。
+- 文档更新：spec.md §8 UI 结构、architecture.md §2.4 写入链路与边界约定。
+
 **验收（来自 roadmap）**：
 
 - [ ] 用户可添加、查看、移除受管理根目录配置（添加/查看已实现；移除未在 Task 1 范围）

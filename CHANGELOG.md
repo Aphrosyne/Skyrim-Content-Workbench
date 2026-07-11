@@ -8,6 +8,33 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.8.1] - 2026-07-11
+
+对应阶段 2 Task 3 缺口修复（素材池布局调整、显示字段补全、新建自动关联、按钮状态联动）。
+
+### Fixed
+
+- **布局调整**：目录树从中栏移至左栏（与受管理根目录列表、扫描状态、目录详情同栏）。中栏改为素材池 + ModItem 列表 + 新建/关联按钮。右栏改为 ModItem 详情编辑 + 成员表格。修复前目录树占据中栏主要空间，素材池可视区域过小。
+- **素材池显示字段补全**：`UnassociatedPoolModel._format_display` 从仅显示 `📁 filename` 改为 `📁 filename  (类型)  完整路径`，满足"文件名、类型、完整路径"三项可见字段要求。
+- **新建 Mod 条目自动关联**：`_on_new_mod()` 创建 ModItem 后自动将素材池中选中的素材以 `UNKNOWN` 角色关联到新条目。修复前创建 ModItem 后不关联任何素材，用户需额外手动关联。
+- **新建按钮状态联动**：新增 `_update_new_mod_button()` 和 `_on_pool_selection_changed()`。「新建 Mod 条目」按钮在素材池无选择时禁用；素材池选择变化时同步更新「新建」和「关联」按钮状态。修复前「新建」按钮始终启用。
+
+### Added
+
+- `test_pool_model_display_includes_type_and_path`：文件型素材显示包含类型和完整路径。
+- `test_pool_model_display_folder_includes_type_and_path`：文件夹型素材显示包含类型和完整路径。
+- `test_main_window_new_mod_button_disabled_without_pool_selection`：素材池无选择时「新建」按钮禁用，选中后启用。
+- `test_main_window_new_mod_auto_associates_selected_assets`：新建 ModItem 自动关联选中素材。
+- `test_main_window_pool_display_shows_full_path`：素材池显示文本包含完整路径。
+
+### Changed
+
+- [src/app/main_window.py](src/app/main_window.py)：`_setup_ui` 重构三栏布局；新增 `_update_new_mod_button` / `_on_pool_selection_changed`；`_on_new_mod` 增加自动关联逻辑；`_refresh_pool` 增加新建按钮状态更新。
+- [src/app/pool_model.py](src/app/pool_model.py)：`_format_display` 增加类型和完整路径。
+- [docs/spec.md](docs/spec.md)：更新 §8 UI 结构描述。
+- [docs/architecture.md](docs/architecture.md)：更新 §2.4 写入链路与边界约定。
+- [docs/progress.md](docs/progress.md)：新增 Task 3 缺口修复内容。
+
 ## [0.8.0] - 2026-07-11
 
 对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 3（未归类素材池与人工 Mod 条目组装）完成。

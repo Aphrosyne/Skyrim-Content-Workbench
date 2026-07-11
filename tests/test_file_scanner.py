@@ -20,6 +20,7 @@ from infrastructure.file_scanner import (
     FileScanner,
     persist_scan_result,
 )
+from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.file_asset import FileAssetRepository
 from infrastructure.repositories.folder_node import FolderNodeRepository
 
@@ -304,9 +305,9 @@ def test_persist_writes_folders_and_files(sample_mod_tree: Path, db_connection) 
         uuid_provider=_sequential_uuid,
     )
 
-    # 4 folders, 7 files
+    # 4 folders (FolderNode), 10 FileAsset (7 files + 3 subfolder 素材)
     assert len(outcome.inserted_folders) == 4
-    assert len(outcome.inserted_files) == 7
+    assert len(outcome.inserted_files) == 10
     assert len(outcome.skipped_folders) == 0
     assert len(outcome.skipped_files) == 0
 
@@ -317,7 +318,42 @@ def test_persist_writes_folders_and_files(sample_mod_tree: Path, db_connection) 
     assert roots[0].real_path == str(sample_mod_tree)
 
     all_files = file_repo.list_unassociated()
-    assert len(all_files) == 7
+    assert len(all_files) == 10
+
+
+def test_persist_includes_folders_as_file_assets(sample_mod_tree: Path, db_connection) -> None:
+    """子文件夹也被持久化为 FileAsset（asset_kind=FOLDER），根目录除外。
+
+    Task 3 缺口修复：素材池需同时显示文件型和文件夹型素材。
+    """
+    folder_repo = FolderNodeRepository(db_connection)
+    file_repo = FileAssetRepository(db_connection)
+    scanner = FileScanner(now_provider=_fixed_now)
+
+    result = scanner.scan(sample_mod_tree)
+    outcome = persist_scan_result(
+        result,
+        folder_repo,
+        file_repo,
+        now_provider=_fixed_now,
+        uuid_provider=_sequential_uuid,
+    )
+
+    # 文件夹型 FileAsset
+    folder_assets = [f for f in outcome.inserted_files if f.asset_kind == AssetKind.FOLDER]
+    # sample_mod_tree 有 3 个子文件夹（护甲、Weapons、空目录），根目录本身被排除
+    assert len(folder_assets) == 3
+    folder_names = {f.filename for f in folder_assets}
+    assert folder_names == {"护甲", "Weapons", "空目录"}
+
+    # 文件型 FileAsset 仍为 7 个
+    file_assets = [f for f in outcome.inserted_files if f.asset_kind == AssetKind.FILE]
+    assert len(file_assets) == 7
+
+    # 根目录本身不应出现在 FileAsset 中
+    root_path_key = make_path_key(sample_mod_tree)
+    all_assets = file_repo.list_unassociated()
+    assert not any(a.path_key == root_path_key for a in all_assets)
 
 
 def test_persist_root_is_managed_root(sample_mod_tree: Path, db_connection) -> None:
@@ -450,7 +486,7 @@ def test_persist_overlapping_roots_dedup(sample_mod_tree: Path, db_connection) -
         uuid_provider=_sequential_uuid,
     )
     assert len(outcome_a.inserted_folders) == 4
-    assert len(outcome_a.inserted_files) == 7
+    assert len(outcome_a.inserted_files) == 10
 
     # 持久化第二次（根 B，与根 A 重叠）
     outcome_b = persist_scan_result(
@@ -464,6 +500,7 @@ def test_persist_overlapping_roots_dedup(sample_mod_tree: Path, db_connection) -
     assert len(outcome_b.inserted_folders) == 0
     assert len(outcome_b.skipped_folders) == 1
     # 护甲下的 3 个文件也已被根 A 插入 → 跳过
+    # （护甲无子文件夹，不产生文件夹型 FileAsset）
     assert len(outcome_b.inserted_files) == 0
     assert len(outcome_b.skipped_files) == 3
 
@@ -484,7 +521,7 @@ def test_persist_idempotent(sample_mod_tree: Path, db_connection) -> None:
         uuid_provider=_sequential_uuid,
     )
     assert len(outcome1.inserted_folders) == 4
-    assert len(outcome1.inserted_files) == 7
+    assert len(outcome1.inserted_files) == 10
 
     outcome2 = persist_scan_result(
         result,
@@ -496,7 +533,7 @@ def test_persist_idempotent(sample_mod_tree: Path, db_connection) -> None:
     assert len(outcome2.inserted_folders) == 0
     assert len(outcome2.inserted_files) == 0
     assert len(outcome2.skipped_folders) == 4
-    assert len(outcome2.skipped_files) == 7
+    assert len(outcome2.skipped_files) == 10
 
 
 def test_persist_multiple_managed_roots(tmp_path: Path, db_connection) -> None:

@@ -45,7 +45,9 @@ def _make_window(db_connection, db_path: Path) -> MainWindow:
     mod_service = ModAssemblyService(
         ModItemRepository(db_connection), FileAssetRepository(db_connection)
     )
-    return MainWindow(service, tree_service, mod_service, db_path)
+    return MainWindow(
+        service, tree_service, mod_service, db_path, commit_callback=db_connection.commit
+    )
 
 
 def test_main_window_constructs(qapp: QApplication, db_connection, db_path: Path) -> None:
@@ -156,7 +158,9 @@ def test_main_window_scan_completes_without_crash(
     service2 = ManagedRootService(ManagedRootRepository(conn2))
     tree_service2 = FolderTreeService(ManagedRootRepository(conn2), FolderNodeRepository(conn2))
     mod_service2 = ModAssemblyService(ModItemRepository(conn2), FileAssetRepository(conn2))
-    window = MainWindow(service2, tree_service2, mod_service2, db_path)
+    window = MainWindow(
+        service2, tree_service2, mod_service2, db_path, commit_callback=conn2.commit
+    )
     assert window.root_count() == 1
 
     # 选中根目录并触发扫描
@@ -301,7 +305,9 @@ def test_main_window_tree_refresh_after_scan(
     service2 = ManagedRootService(ManagedRootRepository(conn2))
     tree_service2 = FolderTreeService(ManagedRootRepository(conn2), FolderNodeRepository(conn2))
     mod_service2 = ModAssemblyService(ModItemRepository(conn2), FileAssetRepository(conn2))
-    window = MainWindow(service2, tree_service2, mod_service2, db_path)
+    window = MainWindow(
+        service2, tree_service2, mod_service2, db_path, commit_callback=conn2.commit
+    )
     assert window.tree_root_count() == 1
 
     # 选中并扫描
@@ -375,8 +381,8 @@ def test_main_window_pool_shows_unassociated_after_scan(
     db_connection.commit()
 
     window = _make_window(db_connection, db_path)
-    # sample_mod_tree 含 7 个文件，全部未关联
-    assert window.pool_count() == 7
+    # sample_mod_tree 含 7 个文件 + 3 个子文件夹 = 10 个 FileAsset，全部未关联
+    assert window.pool_count() == 10
     assert window.mod_list_count() == 0
 
 
@@ -403,7 +409,7 @@ def test_main_window_associate_assets_to_new_mod(
     db_connection.commit()
 
     window = _make_window(db_connection, db_path)
-    assert window.pool_count() == 7
+    assert window.pool_count() == 10
 
     # 创建 ModItem
     mod_service = ModAssemblyService(
@@ -437,10 +443,9 @@ def test_main_window_associate_assets_to_new_mod(
 
     # 关联
     window._on_associate()  # noqa: SLF001
-    db_connection.commit()
 
     # 素材池减少 3 个
-    assert window.pool_count() == 4
+    assert window.pool_count() == 7
     # 成员表增加 3 个
     assert window.members_table_row_count() == 3
 
@@ -482,7 +487,7 @@ def test_main_window_remove_member_returns_to_pool(
 
     window = _make_window(db_connection, db_path)
     # 素材池少 1 个
-    assert window.pool_count() == 6
+    assert window.pool_count() == 9
 
     # 选中 ModItem
     model = window._mod_list_model  # noqa: SLF001
@@ -494,10 +499,9 @@ def test_main_window_remove_member_returns_to_pool(
 
     # 移除成员
     window._on_remove_member(first_asset.id)  # noqa: SLF001
-    db_connection.commit()
 
     # 素材池恢复
-    assert window.pool_count() == 7
+    assert window.pool_count() == 10
     assert window.members_table_row_count() == 0
 
 
@@ -523,9 +527,8 @@ def test_main_window_save_metadata_persists(
     window._desc_edit.setPlainText("测试说明")  # noqa: SLF001
     window._tags_edit.setText("护甲，魔法")  # noqa: SLF001
     window._on_save_metadata()  # noqa: SLF001
-    db_connection.commit()
 
-    # 重新从 DB 查询验证
+    # 重新从 DB 查询验证（commit_callback 已提交，无需手动 commit）
     repo = ModItemRepository(db_connection)
     loaded = repo.get_by_id(mod_item.id)
     assert loaded is not None
@@ -540,3 +543,228 @@ def test_main_window_associate_no_selection_protected(
     """无选中素材或 ModItem 时关联按钮禁用。"""
     window = _make_window(db_connection, db_path)
     assert window._associate_button.isEnabled() is False  # noqa: SLF001
+
+
+def test_main_window_new_mod_button_disabled_without_pool_selection(
+    qapp: QApplication, db_connection, db_path: Path, sample_mod_tree: Path
+) -> None:
+    """素材池无选择时「新建 Mod 条目」按钮禁用。"""
+    from infrastructure.file_scanner import FileScanner, persist_scan_result
+    from infrastructure.repositories.file_asset import FileAssetRepository
+
+    service = ManagedRootService(
+        ManagedRootRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-newmod-btn",
+    )
+    service.add_root(sample_mod_tree)
+    scanner = FileScanner()
+    result = scanner.scan(sample_mod_tree)
+    persist_scan_result(
+        result,
+        FolderNodeRepository(db_connection),
+        FileAssetRepository(db_connection),
+    )
+    db_connection.commit()
+
+    window = _make_window(db_connection, db_path)
+    # 素材池有数据但未选择
+    assert window.pool_count() == 10
+    assert window._new_mod_button.isEnabled() is False  # noqa: SLF001
+
+    # 选中一个素材后按钮启用
+    pool_model = window._pool_model  # noqa: SLF001
+    from PySide6.QtCore import QItemSelectionModel
+
+    idx = pool_model.index(0)
+    window._pool_view.selectionModel().select(  # noqa: SLF001
+        idx, QItemSelectionModel.SelectionFlag.Select
+    )
+    qapp.processEvents()
+    assert window._new_mod_button.isEnabled() is True  # noqa: SLF001
+
+
+def test_main_window_new_mod_auto_associates_selected_assets(
+    qapp: QApplication, db_connection, db_path: Path, sample_mod_tree: Path
+) -> None:
+    """「新建 Mod 条目」自动将选中素材关联到新条目。"""
+    from infrastructure.file_scanner import FileScanner, persist_scan_result
+    from infrastructure.repositories.file_asset import FileAssetRepository
+
+    service = ManagedRootService(
+        ManagedRootRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-auto-assoc",
+    )
+    service.add_root(sample_mod_tree)
+    scanner = FileScanner()
+    result = scanner.scan(sample_mod_tree)
+    persist_scan_result(
+        result,
+        FolderNodeRepository(db_connection),
+        FileAssetRepository(db_connection),
+    )
+    db_connection.commit()
+
+    window = _make_window(db_connection, db_path)
+    assert window.pool_count() == 10
+
+    # 选中素材池前 2 个素材
+    pool_model = window._pool_model  # noqa: SLF001
+    from PySide6.QtCore import QItemSelectionModel
+
+    for i in range(2):
+        idx = pool_model.index(i)
+        window._pool_view.selectionModel().select(  # noqa: SLF001
+            idx, QItemSelectionModel.SelectionFlag.Select
+        )
+    qapp.processEvents()
+
+    # Mock QInputDialog 返回名称
+    from unittest.mock import patch
+
+    with patch("app.main_window.QInputDialog.getText", return_value=("自动关联测试", True)):
+        window._on_new_mod()  # noqa: SLF001
+
+    # 素材池减少 2 个
+    assert window.pool_count() == 8
+    # ModItem 列表有 1 个
+    assert window.mod_list_count() == 1
+    # 成员表有 2 个
+    assert window.members_table_row_count() == 2
+
+
+def test_main_window_pool_display_shows_full_path(
+    qapp: QApplication, db_connection, db_path: Path, sample_mod_tree: Path
+) -> None:
+    """素材池显示文本包含文件名、类型和完整路径。"""
+    from infrastructure.file_scanner import FileScanner, persist_scan_result
+    from infrastructure.repositories.file_asset import FileAssetRepository
+
+    service = ManagedRootService(
+        ManagedRootRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-path",
+    )
+    service.add_root(sample_mod_tree)
+    scanner = FileScanner()
+    result = scanner.scan(sample_mod_tree)
+    persist_scan_result(
+        result,
+        FolderNodeRepository(db_connection),
+        FileAssetRepository(db_connection),
+    )
+    db_connection.commit()
+
+    window = _make_window(db_connection, db_path)
+    pool_model = window._pool_model  # noqa: SLF001
+    from PySide6.QtCore import Qt
+
+    display = pool_model.data(pool_model.index(0), Qt.DisplayRole)
+    # 显示文本应包含类型标记（文件或文件夹）
+    assert "文件" in display
+    # 显示文本应包含完整路径的一部分（sample_mod_tree 的路径）
+    assert str(sample_mod_tree) in display or sample_mod_tree.name in display
+
+
+def test_main_window_pool_shows_folders_after_scan(
+    qapp: QApplication, db_connection, db_path: Path, sample_mod_tree: Path
+) -> None:
+    """素材池同时显示文件型和文件夹型 FileAsset（Task 3 缺口修复）。"""
+    from infrastructure.file_scanner import FileScanner, persist_scan_result
+    from infrastructure.repositories.file_asset import FileAssetRepository
+
+    service = ManagedRootService(
+        ManagedRootRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-folders",
+    )
+    service.add_root(sample_mod_tree)
+    scanner = FileScanner()
+    result = scanner.scan(sample_mod_tree)
+    persist_scan_result(
+        result,
+        FolderNodeRepository(db_connection),
+        FileAssetRepository(db_connection),
+    )
+    db_connection.commit()
+
+    window = _make_window(db_connection, db_path)
+    # 7 文件 + 3 子文件夹 = 10
+    assert window.pool_count() == 10
+
+    # 验证素材池中同时存在文件和文件夹
+    pool_model = window._pool_model  # noqa: SLF001
+    from PySide6.QtCore import Qt
+
+    has_file = False
+    has_folder = False
+    for i in range(pool_model.asset_count()):
+        display = pool_model.data(pool_model.index(i), Qt.DisplayRole)
+        if "文件夹" in display:
+            has_folder = True
+        if "文件" in display and "文件夹" not in display:
+            has_file = True
+    assert has_file, "素材池中未找到文件型素材"
+    assert has_folder, "素材池中未找到文件夹型素材"
+
+
+def test_main_window_role_change_persists_without_manual_commit(
+    qapp: QApplication, db_connection, db_path: Path, sample_mod_tree: Path
+) -> None:
+    """成员角色修改后无需手动 commit 即持久化（Task 3 缺口修复）。"""
+    from infrastructure.file_scanner import FileScanner, persist_scan_result
+    from infrastructure.repositories.file_asset import FileAssetRepository
+
+    service = ManagedRootService(
+        ManagedRootRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-role-persist",
+    )
+    service.add_root(sample_mod_tree)
+    scanner = FileScanner()
+    result = scanner.scan(sample_mod_tree)
+    persist_scan_result(
+        result,
+        FolderNodeRepository(db_connection),
+        FileAssetRepository(db_connection),
+    )
+    db_connection.commit()
+
+    # 通过 service 创建 ModItem 并关联一个素材
+    mod_service = ModAssemblyService(
+        ModItemRepository(db_connection), FileAssetRepository(db_connection)
+    )
+    mod_item = mod_service.create_mod_item(display_name="角色持久化测试")
+    unassociated = mod_service.list_unassociated_assets()
+    first_asset = unassociated[0]
+    from domain.models import FileRole
+
+    mod_service.add_member(mod_item.id, first_asset.id, FileRole.UNKNOWN)
+    db_connection.commit()
+
+    window = _make_window(db_connection, db_path)
+    # 选中 ModItem
+    model = window._mod_list_model  # noqa: SLF001
+    idx = model.index(0)
+    window._mod_list_view.setCurrentIndex(idx)  # noqa: SLF001
+    qapp.processEvents()
+
+    assert window.members_table_row_count() == 1
+
+    # 通过 UI 修改角色为 main_mod
+    combo = window._members_table.cellWidget(0, 2)  # noqa: SLF001
+    assert combo is not None
+
+    role_index = combo.findData(FileRole.MAIN_MOD)
+    assert role_index >= 0
+    combo.setCurrentIndex(role_index)
+    qapp.processEvents()
+
+    # 不手动 commit —— commit_callback 应已提交
+
+    # 直接从 repository 查询验证持久化
+    repo = FileAssetRepository(db_connection)
+    loaded = repo.get_by_id(first_asset.id)
+    assert loaded is not None
+    assert loaded.role == FileRole.MAIN_MOD

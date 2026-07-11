@@ -62,7 +62,13 @@ def main() -> int:
     mod_assembly_service = ModAssemblyService(ModItemRepository(conn), FileAssetRepository(conn))
 
     app = QApplication(sys.argv)
-    window = MainWindow(managed_root_service, folder_tree_service, mod_assembly_service, db_path)
+    window = MainWindow(
+        managed_root_service,
+        folder_tree_service,
+        mod_assembly_service,
+        db_path,
+        commit_callback=conn.commit,
+    )
     window.show()
     exit_code = app.exec()
     conn.close()
