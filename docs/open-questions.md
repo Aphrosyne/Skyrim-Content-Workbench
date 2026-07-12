@@ -1,205 +1,113 @@
-# 待确认问题清单（Open Questions）
+# 待确认问题清单
 
-本文件记录 Skyrim Mod Workbench 项目中尚未明确的产品/工程决策。
-任何一项在实现中被触发前，必须先在此处更新决策结果，再进入实现。
-未决策前，实现不得把任何一种选择写死。
+> 本文档为方向 C 确认后的重写版。旧版已归档至 `archive/`。
+>
+> 旧版 Q1-Q21 中的大多数已在方向 C 的设计中定案，不再重复列出。
+> 以下仅保留仍待决策或实现中可能遇到的具体问题。
 
-来源标注：spec=docs/spec.md, arch=docs/architecture.md, roadmap=docs/roadmap.md, agents=AGENTS.md。
+---
 
-## 1. ModItem.status 字段是否实现 ✅ 已关闭
-- 问题：第一版是否需要独立 status 字段（如 draft/ready/archived）。
-- 背景：spec §6.1 列出 status 但标注待确认。
-- 决策：阶段 2 不引入独立 status 字段。列表展示与可操作性由是否有关联成员、是否设置分类目录、是否有封面等现有字段表达。
-- 决策来源：[docs/phase-2-plan.md](phase-2-plan.md) §3 D5。
-- 兼容性约束：ModItem 表暂不建 status 列；未来引入须 ALTER TABLE 迁移，不破坏现有数据。
+## 1. 标签系统的初始预制库
 
-## 2. FileAsset.batch_id 是否实现（下载批次概念）
-- 问题：是否在阶段 1 引入「下载批次」概念。
-- 背景：spec §6.2 标注待确认。
-- 可选方向：不实现 / 实现简单 batch 表 / 仅存 batch_id 字符串。
-- 不决策原因：阶段 1 无批量导入场景。
-- 预计决定里程碑：阶段 3（AI JSON 导入可能涉及批量）启动前。
-- 兼容性约束：FileAsset 表暂不建 batch_id 列。
+- **问题**：第一批预制标签的具体内容（分类名称、各分类下的标签列表）。
+- **背景**：spec §10.2 确定使用"预制 + 自定义"策略，但预制库的具体内容未枚举。
+- **当前设想**：
+  - 服装护甲：重甲、轻甲、法袍、现代、幻想
+  - 武器：单手剑、双手剑、弓、法杖
+  - 作者：Kirax、NINI、3HY 等
+  - 来源：N 网、群友分享、自购
+  - 状态：已测试、已汉化、待测试、推荐
+  - 部位：身体、头部、腿部
+- **预计决定里程碑**：阶段 4 Task 1 实施前。
 
-## 3. 卡片拖入目录树 vs「移动到…」按钮 ✅ 阶段 2 部分关闭
-- 问题：第一版移动入口是单一拖拽还是拖拽+按钮并存。
-- 背景：spec §8 待确认。
-- 决策：阶段 2 仅提供按钮式「移动到选中目录」入口，不实现拖拽。
-- 决策来源：[docs/phase-2-plan.md](phase-2-plan.md) §3 D2。
-- 兼容性约束：application 层移动 API（plan_move/execute_move）与入口方式解耦，UI 层选择不影响服务层。拖拽为后续阶段待确认项，若未来仍要讨论可拆成新问题。
+---
 
-## 4. 预览图缩略图联系表是否导出给 AI
-- 问题：AI JSON 导出是否包含缩略图联系表。
-- 背景：spec §11 待确认。
-- 可选方向：仅文本元数据 / 文本+缩略图联系表。
-- 不决策原因：阶段 1 不涉及 AI JSON。
-- 预计决定里程碑：阶段 3 启动前。
-- 兼容性约束：导出格式需保留 schema_version 字段以便未来扩展。
+## 2. 搜索索引技术选型
 
-## 5. 缩略图缓存失效策略 ✅ 已关闭
-- 问题：原图变更/移动/删除后缩略图如何失效。
-- 背景：arch §8 待确认。
-- 决策：采用「asset_id + 源文件 size + modified_at」作为缓存有效性依据。
-  - 缩略图缓存记录存储 `source_size_bytes` 与 `source_modified_at`。
-  - 当 FileAsset 记录的 `size_bytes` / `modified_at` 与缓存记录不一致时，缩略图视为过期并重建。
-  - 若源文件不存在或读取失败，缓存记录标记为错误状态（`missing`/`corrupt`/`unsupported`/`error`），不删除用户文件。
-  - 不做后台自动监听；仅在 UI 请求缩略图或用户手动刷新时检查有效性。
-- 决策来源：阶段 2 Task 4 实现。
-- 兼容性约束：`thumbnail_cache` 表新增（schema v3）；缓存目录 `%LOCALAPPDATA%\SkyrimModWorkbench\thumbnails\` 可随时删除并重建。
+- **问题**：搜索使用 SQLite FTS5 还是直接 LIKE 查询。
+- **背景**：新 spec §8 定义搜索范围为内容单元标题 + 标签名 + 备注，第一阶段数据量有限。
+- **可选方向**：
+  - A) 直接 `LIKE` 查询（简单，满足第一阶段需求）
+  - B) SQLite FTS5 全文索引（更高性能，但增加 schema 复杂度）
+- **预计决定里程碑**：阶段 5 Task 5 实施前。
 
-## 6. 从 Windows 资源管理器拖入应用
-- 问题：是否实现从资源管理器拖入。
-- 背景：roadmap 阶段 4 待确认。
-- 可选方向：实现 / 不实现。
-- 不决策原因：阶段 1 无 UI。
-- 预计决定里程碑：阶段 4。
-- 兼容性约束：无。
+---
 
-## 7. 导入预览图方式
-- 问题：官方接口 / 网页解析 / 手动下载关联。
-- 背景：roadmap 阶段 5 待确认；实施前必须核对相关网站规则。
-- 可选方向：三种之一或组合。
-- 不决策原因：阶段 1 不涉及。
-- 预计决定里程碑：阶段 5 启动前。
-- 兼容性约束：无。
+## 3. 导入预览图方式
 
-## 8. 开源许可证
-- 问题：是否继续维持 MIT 许可证。
-- 背景：roadmap 阶段 6 待确认；仓库已含 MIT LICENSE（Copyright 2026 Aphrosyne）。
-- 可选方向：维持 MIT / 改为 GPL-3.0 / 其他。
-- 不决策原因：阶段 1-2 不发布；正式开源发布前需复核。
-- 预计决定里程碑：阶段 6。
-- 兼容性约束：源文件头暂不添加 license header；现有 LICENSE 文件为 MIT。
+- **问题**：从 Nexus Mods 导入预览图时使用官方接口还是网页解析。
+- **背景**：roadmap 阶段 5 涉及的功能，当前不迫切。
+- **可选方向**：官方 API / 网页解析 / 仅支持手动下载关联。
+- **预计决定里程碑**：阶段 5 启动前。实施前必须核对相关网站规则。
 
-## 9. 是否需要英文国际化
-- 问题：UI 是否需要英文国际化。
-- 背景：agents 代码质量待确认。
-- 可选方向：仅中文 / 中文+英文 / i18n 框架。
-- 不决策原因：阶段 1 无 UI 文本内容。
-- 预计决定里程碑：阶段 2 UI 文本量确定后。
-- 兼容性约束：UI 字符串集中在 ui 层常量，不散布；不硬编码到业务层。
+---
 
-## 10. 候选成员关系生成机制
-- 问题：由谁、何时、如何生成本体/汉化/预览图的候选关系。
-- 背景：agents 规则 7 提到「只能提供候选或人工操作」，但 spec/arch 未定义机制。
-- 可选方向：手动 / AI 建议 / 启发式规则。
-- 不决策原因：阶段 1 仅人工关联。
-- 预计决定里程碑：阶段 3 AI 建议流程设计时。
-- 兼容性约束：ModItem-FileAsset 关联完全由 application 层显式 API 接收，不内建候选生成。
+## 4. AI JSON Schema 格式
 
-## 11. 未归类素材如何移出素材池
-- 问题：未归类素材无 ModItem 时的长期处置策略。
-- 背景：spec §7.13 不提供删除；处置未定义。
-- 阶段 2 决策：仅展示未关联素材，不提供忽略状态、不移动、不删除。用户可把素材关联到 ModItem；未关联内容继续保留在素材池。
-- 决策来源：[docs/phase-2-plan.md](phase-2-plan.md) §3 D3。
-- Task 3 实现现状：`UnassociatedPoolModel` 列出 `mod_item_id` 为 `NULL` 的 `FileAsset`；关联后素材从素材池消失，解除关联后重新出现。不实现忽略/删除/移出素材池机制。
-- 未决部分：长期处置策略（永久保留 / 标记忽略 / 移到已忽略目录）保留未决。
-- 预计决定里程碑：后续阶段素材池管理需求明确时。
-- 兼容性约束：扫描结果全部留在 FileAsset 表，不删除；阶段 2 不引入忽略状态字段。
+- **问题**：AI JSON 导入导出的具体字段和结构。
+- **背景**：roadmap 阶段 6 涉及的功能。
+- **当前设想**：
+  - 导出：内容单元路径、文件名、大小、当前标签、候选标签
+  - 导入：建议标题、建议标签、建议分类路径、置信度
+- **预计决定里程碑**：阶段 6 Task 1 实施前。
 
-## 12. 搜索索引更新时机
-- 问题：FTS5 索引在扫描后/移动后/编辑后哪个时机刷新。
-- 背景：arch §7 未明确。
-- 可选方向：实时 / 批量 / 手动触发。
-- 不决策原因：阶段 1 不实现搜索。
-- 预计决定里程碑：阶段 3 启动前。
-- 兼容性约束：无。
+---
 
-## 13. 缩略图命名「内容标识」定义 ✅ 已关闭
-- 问题：内容标识是哈希还是其他。
-- 背景：arch §8「以 asset_id 或内容标识命名」。
-- 决策：以 `asset_id` 作为缓存文件名基础（`{asset_id}.png`）。元数据（source_size、source_modified_at、status）存入数据库 `thumbnail_cache` 表，不使用 sidecar JSON。
-- 决策来源：阶段 2 Task 4 实现。
-- 兼容性约束：缓存文件名格式 `{asset_id}.png`；`thumbnail_cache` 表通过 asset_id 主键关联 `file_asset`；缓存目录可清空后由 UI 请求触发重建。
+## 5. 开源许可证
 
-## 14. OperationLog.undo_payload 内部结构 ✅ 已关闭
-- 问题：字段结构未规定。
-- 背景：spec §6.4。
-- 决策：Task 5 已定义固定结构：`{version:1, members:[{asset_id, src_path, dst_path, size_bytes, mtime_iso}]}`，写入代码注释与 schema 注释。
-- 决策来源：Task 5 实现（[src/infrastructure/file_operation_service.py](../src/infrastructure/file_operation_service.py)）。
-- 兼容性约束：undo_payload 为 JSON 字符串，version=1；未来扩展需保持 version 字段并向后兼容。
+- **问题**：选择 MIT 还是 GPL-3.0（或其它）。
+- **背景**：仓库已有 MIT LICENSE 文件（Copyright 2026 Aphrosyne），但正式发布前可复核。
+- **可选方向**：维持 MIT / 改为 GPL-3.0 / 其他。
+- **预计决定里程碑**：阶段 6 发布前。
 
-## 15. AI JSON Schema 文件
-- 问题：仓库未提供 schema 文件；字段为描述性。
-- 背景：spec §5.2, §11。
-- 可选方向：JSON Schema / Pydantic 模型 / dataclass。
-- 不决策原因：阶段 1 不涉及。
-- 预计决定里程碑：阶段 3 启动前。
-- 兼容性约束：阶段 3 启动前需先产出 schema 文件并评审。
+---
 
-## 16. OperationType 完整值集 ✅ 已关闭
-- 问题：spec §6.4 列出 operation_type 字段但未枚举完整值集。
-- 背景：Task 2 实现领域模型时引入 OperationType 枚举，仅定义 MOVE 与 UNDO；
-  DB 不加 CHECK 约束以避免限制未来扩展。
-- 决策：Task 5 未引入新值，保持 `{move, undo}`。
-- 决策来源：Task 5 实现。
-- 兼容性约束：DB operation_log.operation_type 列为 TEXT 无 CHECK；
-  代码层 OperationType 枚举仅定义已知值，新增值需同步更新枚举与文档；
-  读取未知值时 Repository 抛 ValueError（不静默吞掉）。
+## 6. 扫描取消机制
 
-## 17. 增量扫描与变更检测策略
-- 问题：是否需要增量扫描、文件监听、变更检测。
-- 背景：Task 3 实现全量扫描器；spec §4 明确「不实现完整文件监听」，
-  但增量更新策略未定义。
-- 阶段 2 决策：使用手动全量扫描，不做文件监听或增量扫描。
-- 决策来源：[docs/phase-2-plan.md](phase-2-plan.md) §3 D4、§2 明确不做。
-- 未决部分：长期增量扫描与文件监听策略保留未决。
-- 预计决定里程碑：后续阶段实时性需求明确时。
-- 兼容性约束：FileScanner.scan / scan_many 为全量扫描，不维护状态；
-  未来增量扫描需新模块，不修改现有 FileScanner 接口。
+- **问题**：扫描一旦开始无法中断，是否需要取消功能。
+- **背景**：当前设计使用 Qt 后台线程包裹同步扫描，没有取消入口。
+- **可选方向**：
+  - A) 不做取消（扫描通常很快，增量扫描更短）
+  - B) 实现取消机制（需要 ScanWorker 层支持中断信号）
+- **预计决定里程碑**：阶段 3 或阶段 5（取决于用户实际使用体验反馈）。
 
-## 18. 扫描并发与取消模型 ✅ 已关闭（阶段 2 部分决策）
-- 问题：扫描是否需要线程池、进度回调、取消机制。
-- 背景：Task 3 为同步阻塞实现；阶段 2 UI 需要非阻塞扫描与进度显示。
-- 阶段 2 决策：使用 Qt 后台线程包裹同步 `FileScanner.scan()`，提供进度文本与完成/失败状态；不承诺取消功能。
-- 决策来源：[docs/phase-2-plan.md](phase-2-plan.md) §3 D4；阶段 2 Task 1 已实现 [src/app/scan_worker.py](../src/app/scan_worker.py) `ScanWorker`（QObject + QThread）。
-- 已实现行为：
-  - `ScanWorker` 在自身线程内创建独立 SQLite 连接，不与主线程 UI 查询连接共享。
-  - 通过 `scan_started` / `scan_progress(str)` / `scan_finished(ScanSummary)` / `scan_failed(str)` 信号回传状态至主线程。
-  - 扫描期间 UI 禁用「扫描选中目录」与「添加目录」按钮，避免重复扫描与并发写库。
-  - `FileScanner` 保持同步签名不变，无 UI 依赖。
-- 未决部分：取消机制保留未决；当前扫描一旦开始无法中断，由 `FileScanner.scan()` 同步执行至完成后回传摘要。
-- 预计决定里程碑：阶段 4（交互优化）或后续阶段。
-- 兼容性约束：`FileScanner` 接口为同步；并发层包裹 `FileScanner`，不修改其同步签名；未来取消机制需在 `ScanWorker` 层实现，不下沉到 `FileScanner`。
+---
 
-## 19. 成员角色数量限制 ✅ 已关闭
-- 问题：FileAsset 各角色（main_mod/translation/preview/readme/optional_file/unknown）
-  的数量上限。
-- 背景：spec §6.2 列出 6 种角色但未定义数量限制。Task 4 实现最小约束：
-  MAIN_MOD≤1、README≤1；其他角色不限制。
-- 决策：阶段 2 保持当前 `MAIN_MOD≤1`、`README≤1`、其余不限的实现，不改动。UI 只需把服务层返回的限制错误展示给用户。
-- 决策来源：[docs/phase-2-plan.md](phase-2-plan.md) §3 D6。
-- 兼容性约束：ROLE_LIMITS 字典在 application/mod_assembly_service.py 中定义，
-  可独立调整；schema 无 CHECK 约束依赖角色数量；
-  修改 ROLE_LIMITS 不影响已有关联数据。
+## 7. FolderTreeModel 惰性加载的技术债
 
-## 20. 部分失败时的回滚策略 ✅ 已关闭
-- 问题：移动操作中部分成员成功、部分失败时，已成功移动的成员是否需要回滚。
-- 背景：spec §7.12 仅要求「不得将整个 Mod 条目标记为完全成功」，
-  未定义已成功成员的处置。
-- 决策：阶段 2 保持不自动回滚。执行结果必须明确列出成功成员、失败成员和可撤销范围；用户可对已成功部分执行撤销预演。
-- 决策来源：[docs/phase-2-plan.md](phase-2-plan.md) §3 D7。
-- 兼容性约束：FileOperationService.execute_move 单成员失败不中断其他成员；
-  失败时 OperationLog.status=failed 但已成功成员的真实文件已被移动，
-  undo_payload 仅记录已成功成员；
-  不引入 status=partial 等新枚举值；未来引入自动回滚需扩展 OperationStatus
-  并保持向后兼容。
+- **问题**：`FolderTreeModel.rowCount` 在未加载时自动触发 `_fetch`，违反 Qt model/view 惯例。
+- **背景**：旧版实现中存在此问题（曾导致无限递归崩溃），通过重入保护缓解但未根治。
+- **当前状态**：在新架构的目录树实现中，建议在新 `FolderTreeModel` 中直接修复。
+  - `rowCount` 改为纯查询（返回 0 或缓存长度，不触发 `_fetch`）
+  - 加载仅由 `canFetchMore` / `fetchMore` 驱动
+- **预计决定里程碑**：阶段 2 Task 3（目录树浏览）实现时。
 
-## 21. FolderTreeModel.rowCount 的副作用与加载策略 🟡 技术债
-- 问题：`FolderTreeModel.rowCount` 在未加载时调用 `_fetch` 触发子节点加载，
-  违反 Qt model/view 惯例（`rowCount` 应为纯查询）。
-- 背景：阶段 2 Task 2 实现惰性加载时，`rowCount` 被设计为自动触发 `_fetch`
-  以兼容 view 的布局查询。但 `_fetch` 调用 `beginInsertRows` 会同步触发
-  view 查询 `rowCount`，曾导致无限递归（已在 Task 2 验收修复中通过
-  `_loaded` 顺序调整 + 重入保护缓解）。
-- 当前状态：最小修复后不崩溃，但 `rowCount` 仍有副作用。
-  理想方案：`rowCount` 对未加载节点返回 0，仅由 `canFetchMore`/`fetchMore`
-  驱动加载。这会改变 view 的展开行为与现有测试期望。
-- 决策：本次验收修复不调整 `rowCount` 加载策略，仅记录为技术债。
-  后续如需重构，应：
-  1. `rowCount` 改为纯查询（返回 0 或缓存长度，不触发 `_fetch`）；
-  2. 移除 `rowCount` 中的 `_fetch` 调用；
-  3. 调整 `test_folder_tree_model.py` 中依赖 `rowCount` 触发加载的测试；
-  4. 验证 `QTreeView` 展开/折叠行为不受影响。
-- 影响范围：仅 [src/app/folder_tree_model.py](../src/app/folder_tree_model.py)
-  与对应测试；不涉及数据结构、数据库迁移或 Task 2 既定用户可见行为。
+---
+
+## 已决策索引
+
+以下旧版 open questions 已在方向 C 的设计中定案，不再跟踪：
+
+| 编号 | 主题 | 状态 | 新架构中的对应 |
+|------|------|------|---------------|
+| Q1 | ModItem.status | ✅ 关闭 | 由 ContentUnit.status 替代 |
+| Q2 | FileAsset.batch_id | ✅ 关闭 | FileAsset 概念已移除 |
+| Q3 | 拖入目录树 vs 按钮 | ✅ 关闭 | 拖拽 + 快速插入按钮并存 |
+| Q4 | 缩略图联系表给 AI | ✅ 关闭 | 阶段 6 决定 |
+| Q5 | 缩略图缓存失效 | ✅ 关闭 | 保留现有策略 |
+| Q6 | 资源管理器拖入 | ✅ 关闭 | 第一版不做 |
+| Q7 | 导入预览图方式 | → 新 Q3 | 移至新文档 |
+| Q8 | 开源许可证 | → 新 Q5 | 移至新文档 |
+| Q9 | 英文国际化 | ✅ 关闭 | UI 确认仅中文 |
+| Q10 | 候选成员关系 | ✅ 关闭 | ModItem 概念已移除 |
+| Q11 | 素材池处置 | ✅ 关闭 | 由暂存区方案替代 |
+| Q12 | 搜索索引更新 | → 新 Q2 | 移至新文档 |
+| Q13 | 缩略图命名 | ✅ 关闭 | 保留现有策略 |
+| Q14 | undo_payload 结构 | ✅ 关闭 | 旧版 OperationLog 已废弃 |
+| Q15 | AI JSON Schema | → 新 Q4 | 移至新文档 |
+| Q16 | OperationType 值集 | ✅ 关闭 | 旧版枚举已废弃 |
+| Q17 | 增量扫描 | ✅ 关闭 | 已在新扫描策略中确定 |
+| Q18 | 扫描并发与取消 | → 新 Q6 | 移至新文档 |
+| Q19 | 成员角色限制 | ✅ 关闭 | 角色系统已移除 |
+| Q20 | 部分失败回滚 | ✅ 关闭 | 旧版批量移动已废弃 |
+| Q21 | FolderTreeModel 技术债 | → 新 Q7 | 移至新文档 |
