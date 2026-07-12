@@ -135,7 +135,7 @@ def migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     缓存失效策略（Q5 已关闭）：以 asset_id + source_size_bytes + source_modified_at
     为有效性依据；不一致时重建。
 
-    缓存命名（Q13 已关闭）：以 asset_id 为基础，缓存文件名格式 {asset_id}.png。
+    缓存命名（Q13 已关闭）：缓存文件名格式 {asset_id}.png。
     缓存文件位于应用数据目录 thumbnails\，不写入用户 Mod 目录。
 
     status 枚举：
@@ -166,10 +166,115 @@ def migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     logger.info("迁移 v2 → v3 完成")
 
 
+def migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """v3 → v4：方向 C 重建——建立 ContentUnit 体系，移除旧表，重建 thumbnail_cache。
+
+    依据 docs/spec.md §4 / §11、docs/architecture.md §6、docs/roadmap.md 阶段 2 Task 1。
+
+    变更内容：
+    1. 新建 6 张表：content_unit / tag_category / tag / content_unit_tag /
+       operation_history / folder_cache（均 IF NOT EXISTS，幂等）。
+    2. 重建 thumbnail_cache：列名 asset_id → content_unit_id，FK 由 file_asset(id)
+       改为 content_unit(id)。drop + create（旧记录因 file_asset 已被 drop 成为孤儿，
+       保留无意义）。缓存 PNG 文件按需重新生成（旧文件名按 asset_id 命名，自然失效）。
+    3. 移除旧表：operation_log / file_asset / folder_node / mod_item。
+       drop 顺序遵循 FK 依赖：thumbnail_cache（旧版）→ operation_log → file_asset
+       → mod_item → folder_node。
+
+    不迁移旧数据（roadmap 明确）。保留表 managed_root 数据不受影响。
+    """
+    conn.executescript(
+        """
+        -- 1. 创建新表（幂等）
+        CREATE TABLE IF NOT EXISTS content_unit (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            title TEXT,
+            content_type TEXT NOT NULL DEFAULT 'mod',
+            source_url TEXT,
+            rating INTEGER,
+            cover_path TEXT,
+            status TEXT NOT NULL DEFAULT 'unorganized',
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS tag_category (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            color_hue INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS tag (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            category_id TEXT NOT NULL REFERENCES tag_category(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS content_unit_tag (
+            content_unit_id TEXT NOT NULL REFERENCES content_unit(id),
+            tag_id TEXT NOT NULL REFERENCES tag(id),
+            PRIMARY KEY (content_unit_id, tag_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS operation_history (
+            id TEXT PRIMARY KEY,
+            operation_type TEXT NOT NULL CHECK(operation_type IN (
+                'move','delete','rename','new_folder'
+            )),
+            source_path TEXT NOT NULL,
+            target_path TEXT,
+            created_at TEXT NOT NULL,
+            can_undo INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS folder_cache (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            parent_id TEXT REFERENCES folder_cache(id),
+            last_scanned_mtime REAL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_content_unit_status ON content_unit(status);
+        CREATE INDEX IF NOT EXISTS idx_content_unit_path ON content_unit(path);
+        CREATE INDEX IF NOT EXISTS idx_tag_category_id ON tag(category_id);
+        CREATE INDEX IF NOT EXISTS idx_content_unit_tag_cu ON content_unit_tag(content_unit_id);
+        CREATE INDEX IF NOT EXISTS idx_content_unit_tag_tag ON content_unit_tag(tag_id);
+        CREATE INDEX IF NOT EXISTS idx_operation_history_created ON operation_history(created_at);
+        CREATE INDEX IF NOT EXISTS idx_folder_cache_parent ON folder_cache(parent_id);
+        CREATE INDEX IF NOT EXISTS idx_folder_cache_path ON folder_cache(path);
+
+        -- 2. 重建 thumbnail_cache（FK 由 file_asset 改为 content_unit）
+        DROP TABLE IF EXISTS thumbnail_cache;
+        CREATE TABLE thumbnail_cache (
+            content_unit_id TEXT PRIMARY KEY REFERENCES content_unit(id),
+            source_size_bytes INTEGER NOT NULL,
+            source_modified_at TEXT NOT NULL,
+            cache_filename TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'ok','missing','corrupt','unsupported','error'
+            )),
+            error_message TEXT,
+            generated_at TEXT NOT NULL
+        );
+
+        -- 3. 移除旧表（顺序遵循 FK 依赖）
+        DROP TABLE IF EXISTS operation_log;
+        DROP TABLE IF EXISTS file_asset;
+        DROP TABLE IF EXISTS mod_item;
+        DROP TABLE IF EXISTS folder_node;
+        """
+    )
+    logger.info("迁移 v3 → v4 完成")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, migrate_v0_to_v1),
     (2, migrate_v1_to_v2),
     (3, migrate_v2_to_v3),
+    (4, migrate_v3_to_v4),
 ]

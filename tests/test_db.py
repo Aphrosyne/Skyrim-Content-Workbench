@@ -23,17 +23,35 @@ def test_init_db_fresh_upgrades_to_current(temp_app_data: Path) -> None:
 
 
 def test_init_db_creates_business_tables(temp_app_data: Path) -> None:
-    """v1 应包含四张业务表。"""
+    """v4 应包含方向 C 重建后的业务表，且旧表应不存在。"""
     db_path = temp_app_data / "app.db"
     init_db(db_path)
 
     with get_connection(db_path) as conn:
-        for table in ("mod_item", "file_asset", "folder_node", "operation_log"):
+        # v4 新表应存在
+        for table in (
+            "content_unit",
+            "tag_category",
+            "tag",
+            "content_unit_tag",
+            "operation_history",
+            "folder_cache",
+            "thumbnail_cache",
+            "managed_root",
+        ):
             row = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
                 (table,),
             ).fetchone()
             assert row is not None, f"表 {table} 应存在"
+
+        # v3 旧表应已移除
+        for table in ("mod_item", "file_asset", "folder_node", "operation_log"):
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            assert row is None, f"旧表 {table} 应被移除"
 
 
 def test_init_db_idempotent(temp_app_data: Path) -> None:
@@ -54,8 +72,8 @@ def test_init_db_idempotent(temp_app_data: Path) -> None:
 
 
 def test_init_db_upgrades_from_v0_baseline(temp_app_data: Path) -> None:
-    """模拟 Task 1 的 v0 DB（仅 schema_version 表，无业务表），
-    运行 init_db 后应迁移到 v1。"""
+    """模拟 v0 DB（仅 schema_version 表，无业务表），
+    运行 init_db 后应迁移到当前版本（v4）。"""
     db_path = temp_app_data / "app.db"
     # 手动构造 v0 状态
     with get_connection(db_path) as conn:
@@ -69,25 +87,25 @@ def test_init_db_upgrades_from_v0_baseline(temp_app_data: Path) -> None:
         )
         conn.execute("INSERT INTO schema_version (version) VALUES (0)")
 
-    # 运行 init_db 应执行 v0→v1 迁移
+    # 运行 init_db 应执行 v0→current 全部迁移
     version = init_db(db_path)
     assert version == CURRENT_SCHEMA_VERSION
 
     with get_connection(db_path) as conn:
-        # 业务表应已创建
+        # v4 业务表应已创建
         row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='mod_item'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='content_unit'"
         ).fetchone()
         assert row is not None
-        # schema_version 应记录从 v0 到 v1 的版本轨迹
+        # schema_version 应记录从 v0 到 current 的版本轨迹
         rows = conn.execute("SELECT version FROM schema_version ORDER BY version").fetchall()
         versions = [int(r[0]) for r in rows]
         assert 0 in versions
         assert CURRENT_SCHEMA_VERSION in versions
 
 
-def test_init_db_with_v1_db_skips_migration(temp_app_data: Path) -> None:
-    """已是 v1 的 DB 再次 init_db 不应重复迁移。"""
+def test_init_db_at_current_version_skips_migration(temp_app_data: Path) -> None:
+    """已是当前版本的 DB 再次 init_db 不应重复迁移。"""
     db_path = temp_app_data / "app.db"
     init_db(db_path)
 

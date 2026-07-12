@@ -125,8 +125,8 @@ def test_add_root_does_not_modify_target_directory(db_connection, tmp_path: Path
 
     # 文件内容、目录结构未变
     assert (target / "marker.txt").read_text(encoding="utf-8") == "keep-me"
-    # 应用数据库未扫描用户文件（file_asset 表应为空）
-    rows = db_connection.execute("SELECT COUNT(*) FROM file_asset").fetchone()
+    # 应用数据库未扫描用户文件（content_unit 表应为空）
+    rows = db_connection.execute("SELECT COUNT(*) FROM content_unit").fetchone()
     assert rows[0] == 0
 
 
@@ -291,13 +291,11 @@ def test_remove_root_preserves_real_directory_and_files(db_connection, tmp_path:
 
 
 def test_remove_root_does_not_clean_scan_records(db_connection, tmp_path: Path) -> None:
-    """移除根目录配置不清理 folder_node / file_asset 扫描记录。
+    """移除根目录配置不清理 content_unit / folder_cache 扫描记录。
 
-    依据 docs/phase-2-plan.md 任务 1：
-    "该任务不要求删除对应 FolderNode 扫描记录；其清理策略保持待确认。"
+    方向 C 重建后（v4），扫描记录存储于 content_unit 与 folder_cache 表。
+    ManagedRootService.remove_root 仅删除 managed_root 记录，不触碰其他表。
     """
-    from infrastructure.path_utils import make_path_key
-
     repo = ManagedRootRepository(db_connection)
     service = ManagedRootService(
         repo,
@@ -308,19 +306,17 @@ def test_remove_root_does_not_clean_scan_records(db_connection, tmp_path: Path) 
     target.mkdir()
     created = service.add_root(target)
 
-    # 模拟扫描结果
+    # 模拟扫描结果（直接插入 content_unit 与 folder_cache）
     db_connection.execute(
-        "INSERT INTO folder_node (id, real_path, path_key, parent_id, display_name, "
-        "is_managed_root, created_at, updated_at) VALUES "
-        "('fn-1', ?, ?, NULL, 'Mods', 1, '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
-        (str(target), make_path_key(target)),
+        "INSERT INTO content_unit (id, path, title, content_type, status, "
+        "created_at, updated_at) VALUES "
+        "('cu-1', ?, 'Mods', 'mod', 'unorganized', '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
+        (str(target),),
     )
     db_connection.execute(
-        "INSERT INTO file_asset (id, mod_item_id, real_path, path_key, filename, extension, "
-        "asset_kind, role, size_bytes, modified_at, imported_at) VALUES "
-        "('fa-1', NULL, ?, ?, 'file.txt', '.txt', 'file', 'unknown', 10, "
-        "'2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
-        (str(target / "file.txt"), make_path_key(target / "file.txt")),
+        "INSERT INTO folder_cache (id, path, created_at) VALUES "
+        "('fc-1', ?, '2026-07-07T00:00:00Z')",
+        (str(target),),
     )
     db_connection.commit()
 
@@ -328,14 +324,16 @@ def test_remove_root_does_not_clean_scan_records(db_connection, tmp_path: Path) 
 
     # managed_root 已删除
     assert repo.get_by_id(created.id) is None
-    # folder_node 仍存在
-    fn_count = db_connection.execute(
-        "SELECT COUNT(*) FROM folder_node WHERE id = 'fn-1'"
+    # content_unit 仍存在
+    cu_count = db_connection.execute(
+        "SELECT COUNT(*) FROM content_unit WHERE id = 'cu-1'"
     ).fetchone()
-    assert fn_count[0] == 1
-    # file_asset 仍存在
-    fa_count = db_connection.execute("SELECT COUNT(*) FROM file_asset WHERE id = 'fa-1'").fetchone()
-    assert fa_count[0] == 1
+    assert cu_count[0] == 1
+    # folder_cache 仍存在
+    fc_count = db_connection.execute(
+        "SELECT COUNT(*) FROM folder_cache WHERE id = 'fc-1'"
+    ).fetchone()
+    assert fc_count[0] == 1
 
 
 def test_remove_root_persists_without_explicit_commit(db_path: Path, tmp_path: Path) -> None:

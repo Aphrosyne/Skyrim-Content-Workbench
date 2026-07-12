@@ -1,6 +1,6 @@
 r"""应用数据目录管理。
 
-所有应用数据位于 %LOCALAPPDATA%\SkyrimModWorkbench\ 下。
+所有应用数据位于 %LOCALAPPDATA%\SkyrimContentWorkbench\ 下。
 本模块不复制、不修改用户 Mod 文件；仅管理应用自身数据目录。
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-APP_DATA_DIR_NAME = "SkyrimModWorkbench"
+APP_DATA_DIR_NAME = "SkyrimContentWorkbench"
 
 
 def get_app_data_root() -> Path:

@@ -46,20 +46,23 @@
 
 目标：建立新数据库模型，实现增量扫描和基础目录浏览。
 
-### Task 1：新数据库 Schema + 迁移
+### Task 1：新数据库 Schema + 迁移 ✅
+
+> 完成于 2026-07-12，版本 v0.10.0。schema_version 由 3 升至 4。
 
 - 创建新表：`content_unit`、`tag_category`、`tag`、`content_unit_tag`、`operation_history`、`folder_cache`
-- 保留表：`managed_root`、`thumbnail_cache`
-- 移除旧表：`mod_item`、`file_asset`、`operation_log`
+- 保留表：`managed_root`、`thumbnail_cache`（FK 由 `asset_id`→`file_asset` 改为 `content_unit_id`→`content_unit`）
+- 移除旧表：`mod_item`、`file_asset`、`folder_node`、`operation_log`
 - v3→v4 迁移函数，幂等
-- 数据库位置：`%LOCALAPPDATA%\SkyrimContentWorkbench\app.db`
+- 数据库位置：`%LOCALAPPDATA%\SkyrimContentWorkbench\app.db`（旧名 `SkyrimModWorkbench` 已废弃）
+- 应用数据目录改名：`SkyrimModWorkbench` → `SkyrimContentWorkbench`
 
 **验收：**
-- [ ] v3→v4 迁移创建全部新表且幂等
-- [ ] 旧表（mod_item、file_asset、operation_log）已被移除
-- [ ] 保留表（managed_root、thumbnail_cache）数据不受影响
-- [ ] 所有新表支持 Unicode 和中文路径
-- [ ] 迁移函数可重复执行（幂等）
+- [x] v3→v4 迁移创建全部新表且幂等
+- [x] 旧表（mod_item、file_asset、folder_node、operation_log）已被移除
+- [x] 保留表（managed_root）数据不受影响；thumbnail_cache 重建（FK 改为 content_unit_id）
+- [x] 所有新表支持 Unicode 和中文路径
+- [x] 迁移函数可重复执行（幂等）
 
 ### Task 2：新扫描器
 

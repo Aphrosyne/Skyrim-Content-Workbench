@@ -20,7 +20,7 @@ from infrastructure.db import get_connection, init_db
 def temp_app_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """将 LOCALAPPDATA 指向临时目录，返回临时应用数据根目录的父目录。
 
-    测试中 app_paths.get_app_data_root() 将返回 <temp_app_data>/SkyrimModWorkbench。
+    测试中 app_paths.get_app_data_root() 将返回 <temp_app_data>/SkyrimContentWorkbench。
     """
     root = tmp_path / "appdata"
     root.mkdir(parents=True, exist_ok=True)

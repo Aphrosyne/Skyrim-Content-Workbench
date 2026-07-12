@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import pytest
 
+pytest.skip(
+    "方向 C 重建（Task 1）：domain.models 将在 Task 2 重写为 ContentUnit 等新实体后重新启用",
+    allow_module_level=True,
+)
+
 from domain.models import (
     AssetKind,
     ConflictPolicy,

@@ -8,6 +8,90 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.10.0] - 2026-07-12
+
+对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 1（方向 C 重建：新数据库 Schema + 迁移）完成。schema_version 由 3 升至 4。
+
+### Added
+
+- Schema v4 迁移 [src/infrastructure/migrations.py](src/infrastructure/migrations.py)：
+  - 新增 `migrate_v3_to_v4(conn)`：方向 C 重建——建立 ContentUnit 体系，移除旧表，重建 thumbnail_cache。
+  - 新建 6 张表：`content_unit` / `tag_category` / `tag` / `content_unit_tag` / `operation_history` / `folder_cache`（均 IF NOT EXISTS，幂等）。
+  - 新建 8 个索引（content_unit status/path、tag category_id、content_unit_tag 双向、operation_history created_at、folder_cache parent/path）。
+  - 重建 `thumbnail_cache`：列名 `asset_id` → `content_unit_id`，FK 由 `file_asset(id)` 改为 `content_unit(id)`（drop + create）。
+  - 移除旧表：`operation_log` / `file_asset` / `mod_item` / `folder_node`（drop 顺序遵循 FK 依赖）。
+  - 保留 `managed_root` 表与数据不受影响。
+  - `CURRENT_SCHEMA_VERSION` 升至 4（[src/infrastructure/db.py](src/infrastructure/db.py)）。
+- 应用数据目录改名 [src/app/app_paths.py](src/app/app_paths.py)：
+  - `APP_DATA_DIR_NAME` 由 `SkyrimModWorkbench` 改为 `SkyrimContentWorkbench`。
+  - docstring 同步更新。
+- 单元测试 10 项新增（v4 迁移覆盖）+ 既有测试调整：
+  - `test_migrate_v3_to_v4_creates_new_tables`：6 张新表 + 8 个索引。
+  - `test_migrate_v3_to_v4_drops_old_tables`：mod_item/file_asset/folder_node/operation_log 移除。
+  - `test_migrate_v3_to_v4_idempotent`：连续两次调用幂等。
+  - `test_migrate_v3_to_v4_preserves_managed_root_data`：managed_root 数据保留。
+  - `test_migrate_v3_to_v4_thumbnail_cache_uses_content_unit_id`：列名 + FK 验证。
+  - `test_migrate_v3_to_v4_check_constraints`：operation_type/status CHECK 约束。
+  - `test_migrate_v3_to_v4_unicode_support`：中文路径与标签。
+  - `test_migrate_v3_to_v4_folder_cache_self_reference_ok`：parent_id 自引用。
+  - `test_init_db_migrates_v3_db_to_v4`：完整 v3→v4 升级场景（含 managed_root 中文路径数据保留）。
+  - `test_current_schema_version_is_four`：版本断言。
+  - 调整：`test_migrations_sorted_by_target` 增加 v4 断言；`test_init_db_migrates_from_v0_to_current` 增加 v4 表存在性断言。
+
+### Changed
+
+- [src/infrastructure/db.py](src/infrastructure/db.py)：`CURRENT_SCHEMA_VERSION` 由 3 升至 4。
+- [src/infrastructure/migrations.py](src/infrastructure/migrations.py)：`MIGRATIONS` 注册表新增 v3→v4 迁移。
+- [src/app/app_paths.py](src/app/app_paths.py)：`APP_DATA_DIR_NAME` 改为 `SkyrimContentWorkbench`。
+- [tests/test_db.py](tests/test_db.py)：`test_init_db_creates_business_tables` 改为断言 v4 新表存在且旧表已移除；`test_init_db_upgrades_from_v0_baseline` 改为断言 `content_unit` 表；`test_init_db_with_v1_db_skips_migration` 重命名为 `test_init_db_at_current_version_skips_migration`。
+- [tests/test_app_paths.py](tests/test_app_paths.py)：新增 `APP_DATA_DIR_NAME == "SkyrimContentWorkbench"` 断言。
+- [tests/conftest.py](tests/conftest.py)：`temp_app_data` fixture 注释更新为 `SkyrimContentWorkbench`。
+- [tests/test_managed_root_repository.py](tests/test_managed_root_repository.py)：`test_delete_preserves_folder_node_and_file_asset` 重写为 `test_delete_preserves_content_unit_and_folder_cache`（引用 v4 新表）。
+- [tests/test_managed_root_service.py](tests/test_managed_root_service.py)：`test_add_root_does_not_modify_target_directory` 与 `test_remove_root_does_not_clean_scan_records` 改为引用 `content_unit` / `folder_cache` 表。
+- [docs/roadmap.md](docs/roadmap.md)：标记阶段 2 Task 1 完成；更新验收清单。
+
+### Removed
+
+- 删除 9 个纯废弃模块测试文件（依赖已移除的旧表/旧服务，Task 2+ 不再保留）：
+  - `tests/test_mod_item_repository.py`
+  - `tests/test_file_asset_repository.py`
+  - `tests/test_folder_node_repository.py`
+  - `tests/test_operation_log_repository.py`
+  - `tests/test_mod_assembly_service.py`
+  - `tests/test_pool_model.py`
+  - `tests/test_main_window.py`
+  - `tests/test_file_operation_service.py`
+  - `tests/test_thumbnail_ui.py`
+
+### Skipped
+
+- 标记 9 个重写模块测试文件为 module-level skip（Task 2+ 重写后重新启用）：
+  - `tests/test_domain_models.py`：domain.models 将在 Task 2 重写为 ContentUnit 等新实体。
+  - `tests/test_file_scanner.py` / `test_scan_worker.py` / `test_scan_workflow_service.py`：扫描器将在 Task 2 重写。
+  - `tests/test_folder_tree_model.py` / `test_folder_tree_service.py`：目录树将在 Task 3 重写。
+  - `tests/test_thumbnail_coordinator.py` / `test_thumbnail_generator.py` / `test_thumbnail_cache.py`：缩略图模块将在 Task 4+ 适配新 schema。
+
+### 安全限制
+
+- 迁移函数仅执行 DDL（CREATE/DROP），不读取或修改用户文件。
+- `managed_root` 用户配置数据在迁移中保留；其余旧业务表数据不迁移（roadmap 明确，用户已知）。
+- 应用数据目录改名后，旧目录 `%LOCALAPPDATA%\SkyrimModWorkbench\` 下的 app.db 与缩略图缓存不再使用（用户手动删除）。
+- 不联网；不读写压缩包内容；不修改用户原始图片。
+
+### Not in Scope
+
+- Domain 模型重写（ContentUnit / Tag / TagCategory 等 dataclass）——Task 2。
+- 新 Repository / Service / UI 实现——Task 2+。
+- 旧 Repository / Service / UI 源文件删除——Task 2（本次仅处理测试文件）。
+- 新扫描器实现——Task 2。
+- `python -m app.main` 在 Task 1 完成后仍会失败（因 main.py 仍依赖废弃 Service），属预期，Task 2+ 修复。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 53 files already formatted
+- `python -m pytest` → 77 passed, 9 skipped in 2.23s
+
 ## [0.9.0] - 2026-07-11
 
 对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 4（本地缩略图缓存与 ModItem 预览图展示）完成。schema_version 由 2 升至 3。

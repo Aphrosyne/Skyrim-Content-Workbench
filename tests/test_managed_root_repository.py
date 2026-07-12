@@ -262,31 +262,30 @@ def test_delete_does_not_affect_other_roots(
     assert [r.id for r in roots] == ["b"]
 
 
-def test_delete_preserves_folder_node_and_file_asset(
+def test_delete_preserves_content_unit_and_folder_cache(
     db_connection: sqlite3.Connection, tmp_path: Path
 ) -> None:
-    """删除 managed_root 记录不清理 folder_node / file_asset 扫描记录。
+    """删除 managed_root 记录不清理 content_unit / folder_cache 扫描记录。
 
-    依据 docs/phase-2-plan.md 任务 1：不要求删除对应 FolderNode 扫描记录。
+    方向 C 重建后（v4），扫描记录存储于 content_unit 与 folder_cache 表。
+    ManagedRootRepository.delete 仅删除 managed_root 记录，不触碰其他表。
     """
     repo = ManagedRootRepository(db_connection)
     path = tmp_path / "Mods"
     path.mkdir()
     repo.create(_make_root(path, root_id="del-2"))
 
-    # 模拟扫描结果存在（直接插入 folder_node 与 file_asset）
+    # 模拟扫描结果存在（直接插入 content_unit 与 folder_cache）
     db_connection.execute(
-        "INSERT INTO folder_node (id, real_path, path_key, parent_id, display_name, "
-        "is_managed_root, created_at, updated_at) VALUES "
-        "('fn-1', ?, ?, NULL, 'Mods', 1, '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
-        (str(path), make_path_key(path)),
+        "INSERT INTO content_unit (id, path, title, content_type, status, "
+        "created_at, updated_at) VALUES "
+        "('cu-1', ?, 'Mods', 'mod', 'unorganized', '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
+        (str(path),),
     )
     db_connection.execute(
-        "INSERT INTO file_asset (id, mod_item_id, real_path, path_key, filename, extension, "
-        "asset_kind, role, size_bytes, modified_at, imported_at) VALUES "
-        "('fa-1', NULL, ?, ?, 'file.txt', '.txt', 'file', 'unknown', 10, "
-        "'2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
-        (str(path / "file.txt"), make_path_key(path / "file.txt")),
+        "INSERT INTO folder_cache (id, path, created_at) VALUES "
+        "('fc-1', ?, '2026-07-07T00:00:00Z')",
+        (str(path),),
     )
     db_connection.commit()
 
@@ -294,9 +293,9 @@ def test_delete_preserves_folder_node_and_file_asset(
 
     # managed_root 已删除
     assert repo.get_by_id("del-2") is None
-    # folder_node 仍存在
-    fn_row = db_connection.execute("SELECT id FROM folder_node WHERE id = 'fn-1'").fetchone()
-    assert fn_row is not None
-    # file_asset 仍存在
-    fa_row = db_connection.execute("SELECT id FROM file_asset WHERE id = 'fa-1'").fetchone()
-    assert fa_row is not None
+    # content_unit 仍存在
+    cu_row = db_connection.execute("SELECT id FROM content_unit WHERE id = 'cu-1'").fetchone()
+    assert cu_row is not None
+    # folder_cache 仍存在
+    fc_row = db_connection.execute("SELECT id FROM folder_cache WHERE id = 'fc-1'").fetchone()
+    assert fc_row is not None
