@@ -1,17 +1,16 @@
 """扫描后台 worker。
 
-依据 docs/phase-2-plan.md 任务 2、docs/architecture.md §2 UI 分层规则。
-依据 D4 决策：Qt 后台线程包裹同步 FileScanner；本任务不提供取消。
+依据 architecture §2 UI 分层规则、D4 决策：Qt 后台线程包裹同步扫描器。
 
 线程边界：
 - SQLite 连接不能跨线程共享。worker 在 run() 内创建并使用独立连接，
   与主线程的 UI 查询连接隔离。
-- worker 仅调用 ScanWorkflowService（同步），不访问 UI。
-- worker 不写用户文件；仅通过 FileScanner 只读 API + persist_scan_result 写应用数据库。
+- worker 仅调用 ScanService（同步），不访问 UI。
+- worker 不写用户文件；仅通过 FileScanner 只读 API + Repository 写应用数据库。
 
 使用方式（在 MainWindow 中）：
     thread = QThread()
-    worker = ScanWorker(db_path, root_id)
+    worker = ScanWorker(db_path, root_id, incremental=True)
     worker.moveToThread(thread)
     thread.started.connect(worker.run)
     worker.scan_finished.connect(...)
@@ -29,11 +28,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-from application.scan_workflow_service import ScanWorkflowService
+from application.scan_service import ScanService, ScanSummary
 from infrastructure.db import get_connection
-from infrastructure.file_scanner import FileScanner
-from infrastructure.repositories.file_asset import FileAssetRepository
-from infrastructure.repositories.folder_node import FolderNodeRepository
+from infrastructure.repositories.content_unit import ContentUnitRepository
+from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
 
 logger = logging.getLogger(__name__)
@@ -54,10 +52,11 @@ class ScanWorker(QObject):
     scan_finished = Signal(object)  # ScanSummary
     scan_failed = Signal(str)  # 用户可读错误消息
 
-    def __init__(self, db_path: Path, root_id: str) -> None:
+    def __init__(self, db_path: Path, root_id: str, incremental: bool = True) -> None:
         super().__init__()
         self._db_path = db_path
         self._root_id = root_id
+        self._incremental = incremental
 
     def run(self) -> None:
         """执行扫描。在 worker 所在线程内同步运行。
@@ -71,16 +70,18 @@ class ScanWorker(QObject):
             conn.row_factory = sqlite3.Row
 
             managed_root_repo = ManagedRootRepository(conn)
-            folder_repo = FolderNodeRepository(conn)
-            file_repo = FileAssetRepository(conn)
-            scanner = FileScanner()
-            service = ScanWorkflowService(scanner, managed_root_repo, folder_repo, file_repo)
+            folder_cache_repo = FolderCacheRepository(conn)
+            content_unit_repo = ContentUnitRepository(conn)
+            service = ScanService(
+                managed_root_repo=managed_root_repo,
+                folder_cache_repo=folder_cache_repo,
+                content_unit_repo=content_unit_repo,
+            )
 
             self.scan_started.emit()
             self.scan_progress.emit("正在扫描…")
-            summary = service.scan_root(self._root_id)
-            # persist_scan_result 与 Repository.create 均不自提交事务，
-            # 必须在连接关闭前提交，否则未提交事务被回滚，扫描结果丢失。
+            summary: ScanSummary = service.scan_root(self._root_id, incremental=self._incremental)
+            # Repository 写操作均不自提交事务，必须在连接关闭前提交。
             conn.commit()
             self.scan_finished.emit(summary)
         except Exception as e:  # noqa: BLE001 - worker 边界需捕获所有异常

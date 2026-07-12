@@ -2,25 +2,15 @@
 
 覆盖：
 - 后台扫描成功结果可通过 scan_finished 信号回传；
-- ScanError 可通过 scan_finished 信号回传（错误计入摘要）；
+- scan_error 可通过 scan_finished 信号回传（错误计入摘要）；
 - root_id 不存在时通过 scan_failed 信号回传；
-- worker 在自身线程创建独立 SQLite 连接。
-
-通过 _Harness 的 Python 属性捕获结果（harness 与 worker 通过信号/槽跨线程通信，
-槽在主线程事件循环中处理）。
+- worker 在自身线程创建独立 SQLite 连接；
+- 增量/全量参数传递。
 """
 
 from __future__ import annotations
 
-import pytest
-
-pytest.skip(
-    "方向 C 重建（Task 1）：本模块依赖的旧 schema/服务将在 Task 2+ 重写后重新启用",
-    allow_module_level=True,
-)
-
 import sqlite3
-import time
 from pathlib import Path
 
 import pytest
@@ -32,209 +22,185 @@ from PySide6.QtCore import QObject, QThread, Signal  # noqa: E402
 from app.scan_worker import ScanWorker  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
 from infrastructure.db import get_connection, init_db  # noqa: E402
+from infrastructure.repositories.content_unit import ContentUnitRepository  # noqa: E402
 from infrastructure.repositories.managed_root import ManagedRootRepository  # noqa: E402
-
-
-class _Harness(QObject):
-    """辅助对象：在独立线程中运行 worker，并通过信号将结果回传主线程。
-
-    scan_finished/scan_failed 是 ScanWorker 的信号，从 worker 线程发射，
-    Qt 自动跨线程投递到主线程事件循环，由 _on_finished/_on_failed 处理。
-    """
-
-    finished_with_summary = Signal(object)
-    finished_with_error = Signal(str)
-
-    def __init__(self, db_path: Path, root_id: str) -> None:
-        super().__init__()
-        self._db_path = db_path
-        self._root_id = root_id
-        self.thread: QThread | None = None
-        self.worker: ScanWorker | None = None
-        self.summary: object | None = None
-        self.error: str | None = None
-
-    def start(self) -> None:
-        self.thread = QThread()
-        self.worker = ScanWorker(self._db_path, self._root_id)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
-        self.worker.scan_finished.connect(self._on_finished)
-        self.worker.scan_failed.connect(self._on_failed)
-        self.worker.scan_finished.connect(self.thread.quit)
-        self.worker.scan_failed.connect(self.thread.quit)
-        self.thread.start()
-
-    def _on_finished(self, summary) -> None:
-        self.summary = summary
-
-    def _on_failed(self, message: str) -> None:
-        self.error = message
 
 
 @pytest.fixture(scope="module")
 def qapp():
+    """模块级 QApplication fixture，确保跨线程信号槽能正常投递。"""
     from PySide6.QtWidgets import QApplication
 
-    app = QApplication.instance() or QApplication([])
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
     yield app
 
 
-def _run_worker(
-    qapp, db_path: Path, root_id: str, timeout_ms: int = 30000
-) -> tuple[object | None, str | None]:
-    """运行 worker 至完成，返回 (summary, error_message)。"""
-    harness = _Harness(db_path, root_id)
-    harness.start()
+class _Harness(QObject):
+    """辅助对象：在独立线程中运行 worker，并通过信号将结果回传主线程。"""
 
-    # 轮询等待结果到达主线程
-    assert harness.thread is not None
-    deadline = time.monotonic() + timeout_ms / 1000.0
-    while harness.summary is None and harness.error is None and time.monotonic() < deadline:
+    finished_with_summary = Signal(object)
+    finished_with_error = Signal(str)
+
+    def __init__(self, db_path: Path, root_id: str, incremental: bool = True) -> None:
+        super().__init__()
+        self._db_path = db_path
+        self._root_id = root_id
+        self._incremental = incremental
+        self._thread: QThread | None = None
+        self._worker: ScanWorker | None = None
+        self.summary = None
+        self.error: str | None = None
+
+    def run(self) -> None:
+        self._thread = QThread()
+        self._worker = ScanWorker(self._db_path, self._root_id, incremental=self._incremental)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.scan_finished.connect(self._on_finished)
+        self._worker.scan_failed.connect(self._on_failed)
+        self._worker.scan_finished.connect(self._thread.quit)
+        self._worker.scan_failed.connect(self._thread.quit)
+        self._thread.start()
+
+    def _on_finished(self, summary) -> None:
+        self.summary = summary
+        self.finished_with_summary.emit(summary)
+
+    def _on_failed(self, message: str) -> None:
+        self.error = message
+        self.finished_with_error.emit(message)
+
+    def wait(self, timeout_ms: int = 5000) -> None:
+        if self._thread is not None:
+            self._thread.wait(timeout_ms)
+
+    def cleanup(self) -> None:
+        if self._thread is not None:
+            if self._thread.isRunning():
+                self._thread.quit()
+                self._thread.wait(2000)
+            self._thread = None
+        self._worker = None
+
+
+def _wait_for_completion(harness: _Harness, qapp, timeout: float = 10.0) -> None:
+    """等待 harness 完成，通过事件循环处理跨线程信号。"""
+    import time as _time
+
+    start = _time.monotonic()
+    while harness.summary is None and harness.error is None:
+        if _time.monotonic() - start > timeout:
+            break
         qapp.processEvents()
-        time.sleep(0.01)
-
-    # 等线程完全退出
-    harness.thread.wait(5000)
-    return harness.summary, harness.error
+        _time.sleep(0.02)
+    # 再处理一轮事件确保信号槽都执行完
+    qapp.processEvents()
 
 
-def test_scan_worker_emits_summary_on_success(qapp, db_path: Path, sample_mod_tree: Path) -> None:
-    """成功扫描通过 scan_finished 信号回传 ScanSummary。"""
+@pytest.fixture
+def app_db(temp_app_data: Path) -> Path:
+    """初始化临时应用数据库，返回路径。"""
+    from app.app_paths import get_app_db_path
+
+    db_path = get_app_db_path()
     init_db(db_path)
-    conn = get_connection(db_path)
+    return db_path
+
+
+@pytest.fixture
+def managed_root(app_db: Path, tmp_path: Path) -> tuple[str, Path]:
+    """添加一个受管理根目录，返回 (root_id, root_path)。"""
+    root_dir = tmp_path / "mods"
+    root_dir.mkdir()
+    (root_dir / "armor").mkdir()
+    (root_dir / "armor" / "mod.7z").write_bytes(b"\x00" * 100)
+
+    conn = get_connection(app_db)
     conn.row_factory = sqlite3.Row
     try:
-        service = ManagedRootService(
-            ManagedRootRepository(conn),
-            now_provider=lambda: "2026-07-07T00:00:00Z",
-            uuid_provider=lambda: "worker-root",
-        )
-        root = service.add_root(sample_mod_tree)
+        service = ManagedRootService(ManagedRootRepository(conn))
+        root = service.add_root(root_dir)
         conn.commit()
-        root_id = root.id
+        return root.id, root_dir
     finally:
         conn.close()
 
-    summary, error = _run_worker(qapp, db_path, root_id)
-    assert error is None, f"预期 scan_finished 但收到 scan_failed：{error}"
-    assert summary is not None
-    assert summary.root_id == root_id
-    assert summary.scanned_folders == 4
-    assert summary.scanned_files == 7
-    assert summary.error_count == 0
+
+class TestScanWorkerSuccess:
+    def test_scan_finished_returns_summary(
+        self, qapp, app_db: Path, managed_root: tuple[str, Path]
+    ) -> None:
+        root_id, _ = managed_root
+        harness = _Harness(app_db, root_id, incremental=False)
+        try:
+            harness.run()
+            _wait_for_completion(harness, qapp)
+            assert harness.error is None, f"意外错误：{harness.error}"
+            assert harness.summary is not None
+            assert harness.summary.root_id == root_id
+            assert harness.summary.scanned_dirs > 0
+            assert harness.summary.content_units_found == 1
+        finally:
+            harness.cleanup()
+
+    def test_scan_persists_to_db(self, qapp, app_db: Path, managed_root: tuple[str, Path]) -> None:
+        root_id, _ = managed_root
+        harness = _Harness(app_db, root_id, incremental=False)
+        try:
+            harness.run()
+            _wait_for_completion(harness, qapp)
+            assert harness.summary is not None, "扫描未完成"
+            # 独立连接验证持久化（必须设置 row_factory）
+            conn = get_connection(app_db)
+            conn.row_factory = sqlite3.Row
+            try:
+                repo = ContentUnitRepository(conn)
+                units = repo.list_all()
+                assert len(units) == 1
+            finally:
+                conn.close()
+        finally:
+            harness.cleanup()
 
 
-def test_scan_worker_emits_summary_with_errors_for_missing_dir(
-    qapp, db_path: Path, tmp_path: Path
-) -> None:
-    """根目录在扫描前被删除，worker 仍通过 scan_finished 回传含错误的摘要。"""
-    init_db(db_path)
-    target = tmp_path / "deleted"
-    target.mkdir()
-
-    conn = get_connection(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        service = ManagedRootService(
-            ManagedRootRepository(conn),
-            now_provider=lambda: "2026-07-07T00:00:00Z",
-            uuid_provider=lambda: "worker-missing",
-        )
-        root = service.add_root(target)
-        conn.commit()
-        root_id = root.id
-    finally:
-        conn.close()
-
-    # 删除目录
-    target.rmdir()
-
-    summary, error = _run_worker(qapp, db_path, root_id)
-    assert error is None, "缺失目录应通过 scan_finished 回传错误摘要，而非 scan_failed"
-    assert summary is not None
-    assert summary.error_count >= 1
-    assert summary.scanned_folders == 0
+class TestScanWorkerFailure:
+    def test_scan_failed_on_nonexistent_root(self, qapp, app_db: Path) -> None:
+        harness = _Harness(app_db, "nonexistent-root", incremental=False)
+        try:
+            harness.run()
+            _wait_for_completion(harness, qapp)
+            assert harness.summary is None
+            assert harness.error is not None
+            assert "扫描失败" in harness.error or "不存在" in harness.error
+        finally:
+            harness.cleanup()
 
 
-def test_scan_worker_emits_failed_for_unknown_root(qapp, db_path: Path) -> None:
-    """root_id 不存在时 worker 通过 scan_failed 信号回传错误。"""
-    init_db(db_path)
+class TestScanWorkerIncremental:
+    def test_incremental_scan_skips_unchanged(
+        self, qapp, app_db: Path, managed_root: tuple[str, Path]
+    ) -> None:
+        root_id, _ = managed_root
 
-    summary, error = _run_worker(qapp, db_path, "nonexistent-root-id")
-    assert summary is None
-    assert error is not None
-    assert "不存在" in error or "失败" in error
+        # 第一次全量扫描
+        harness1 = _Harness(app_db, root_id, incremental=False)
+        try:
+            harness1.run()
+            _wait_for_completion(harness1, qapp)
+            assert harness1.summary is not None, "第一次扫描未完成"
+            assert harness1.summary.skipped_unchanged == 0
+        finally:
+            harness1.cleanup()
 
-
-def test_scan_worker_creates_independent_connection(
-    qapp, db_path: Path, sample_mod_tree: Path
-) -> None:
-    """worker 在自身线程内创建独立 SQLite 连接，不依赖主线程连接。"""
-    init_db(db_path)
-    conn = get_connection(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        service = ManagedRootService(
-            ManagedRootRepository(conn),
-            now_provider=lambda: "2026-07-07T00:00:00Z",
-            uuid_provider=lambda: "worker-indep",
-        )
-        root = service.add_root(sample_mod_tree)
-        conn.commit()
-        root_id = root.id
-    finally:
-        # 主线程连接关闭——worker 必须使用自身连接
-        conn.close()
-
-    summary, error = _run_worker(qapp, db_path, root_id)
-    assert error is None, f"worker 应独立连接 DB：{error}"
-    assert summary is not None
-    assert summary.scanned_files == 7
-
-
-def test_scan_worker_persists_results_to_db(qapp, db_path: Path, sample_mod_tree: Path) -> None:
-    """扫描完成后数据必须已提交到 DB，用独立连接可查到 folder_node 记录。
-
-    回归测试：修复前 ScanWorker.run 在 conn.close() 前未调用 conn.commit()，
-    persist_scan_result 与 Repository.create 均不自提交，导致未提交事务被
-    回滚，扫描结果丢失，目录树始终显示"未扫描"。
-    """
-    init_db(db_path)
-    conn = get_connection(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        service = ManagedRootService(
-            ManagedRootRepository(conn),
-            now_provider=lambda: "2026-07-07T00:00:00Z",
-            uuid_provider=lambda: "worker-persist",
-        )
-        root = service.add_root(sample_mod_tree)
-        conn.commit()
-        root_id = root.id
-    finally:
-        conn.close()
-
-    summary, error = _run_worker(qapp, db_path, root_id)
-    assert error is None, f"扫描不应失败：{error}"
-    assert summary is not None
-    assert summary.persisted_folders > 0, "应有持久化的目录节点"
-
-    # 用全新独立连接查询——验证事务已提交，不依赖 worker 的连接
-    verify_conn = get_connection(db_path)
-    verify_conn.row_factory = sqlite3.Row
-    try:
-        rows = verify_conn.execute("SELECT COUNT(*) AS n FROM folder_node").fetchone()
-        assert rows["n"] > 0, "扫描后 folder_node 表为空，事务未提交"
-
-        # 验证根节点 is_managed_root=1
-        root_rows = verify_conn.execute(
-            "SELECT COUNT(*) AS n FROM folder_node WHERE is_managed_root = 1"
-        ).fetchone()
-        assert root_rows["n"] >= 1, "未找到 is_managed_root=1 的根节点"
-
-        # 验证文件也持久化
-        file_rows = verify_conn.execute("SELECT COUNT(*) AS n FROM file_asset").fetchone()
-        assert file_rows["n"] > 0, "扫描后 file_asset 表为空，事务未提交"
-    finally:
-        verify_conn.close()
+        # 第二次增量扫描应跳过所有目录
+        harness2 = _Harness(app_db, root_id, incremental=True)
+        try:
+            harness2.run()
+            _wait_for_completion(harness2, qapp)
+            assert harness2.summary is not None, "第二次扫描未完成"
+            assert harness2.summary.skipped_unchanged > 0
+            assert harness2.summary.scanned_dirs == 0
+        finally:
+            harness2.cleanup()

@@ -8,6 +8,146 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.11.0] - 2026-07-12
+
+对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 2（方向 C 重建：新扫描器 + Domain/Repository/Service/UI 适配）完成。schema_version 维持 4（Task 1 已建立）。
+
+### Added
+
+- Domain 层重写 [src/domain/models.py](src/domain/models.py)：
+  - 移除全部旧实体（ModItem / FileAsset / FolderNode / OperationLog / AssetKind / FileRole / OperationStatus / ConflictPolicy / OperationType）。
+  - 新增 `ContentUnit`（id / path / title / content_type / source_url / rating / cover_image / status / notes / created_at / updated_at；status ∈ {unorganized, organized}；rating ∈ [0,5] 或 None）。
+  - 新增 `TagCategory`（id / name / color_hue ∈ [0,360]）。
+  - 新增 `Tag`（id / name / category_id）。
+  - 新增 `OperationHistory`（id / operation_type ∈ {move,delete,rename,new_folder} / source_path / target_path / created_at / can_undo）；`VALID_OPERATION_TYPES` 为 ClassVar 避免被 dataclass 视为实例字段。
+  - 新增 `FolderCache`（id / path / parent_id / last_scanned_mtime / managed_root_id）；parent_id 可自引用（根节点）。
+  - 保留 `ManagedRoot`（未改动）。
+- ContentUnitRepository [src/infrastructure/repositories/content_unit.py](src/infrastructure/repositories/content_unit.py)（新文件）：
+  - CRUD：create / get_by_id / get_by_path / list_by_path_prefix / list_all / update / delete。
+  - path 唯一约束冲突抛 `ConstraintViolationError`。
+  - `_row_to_model` 使用 `row["column"]` 索引（需 row_factory = sqlite3.Row）。
+- FolderCacheRepository [src/infrastructure/repositories/folder_cache.py](src/infrastructure/repositories/folder_cache.py)（新文件）：
+  - CRUD：create / get_by_id / get_by_path / list_by_parent / list_all / upsert_mtime / delete / delete_by_path。
+  - path 唯一约束冲突抛 `ConstraintViolationError`。
+  - upsert_mtime：已存在则更新 mtime，不存在抛 `NotFoundError`。
+- 文件系统扫描器重写 [src/infrastructure/file_scanner.py](src/infrastructure/file_scanner.py)：
+  - `ScanError` / `ScannedFolderEntry` / `ScanResult` 数据类。
+  - `FileScanner.scan_full(root)`：全量递归扫描。
+  - `FileScanner.scan_incremental(root, folder_mtime_map)`：增量扫描，mtime 未变目录跳过记录但仍递归子目录（子目录 mtime 可能独立变化）。
+  - 内容单元识别规则（spec §5.4）：文件夹内含压缩包 → 候选 ContentUnit，识别后停止递归子目录。
+  - 只读：仅使用 `Path.iterdir` / `is_dir` / `is_file` / `is_symlink` / `stat`，不修改用户文件。
+  - 符号链接不跟随（避免循环）。
+  - mtime 相等判定使用差值绝对值 < 0.001 秒（避免浮点精度问题）。
+  - 单目录扫描失败不中断整体流程，记入 `ScanResult.errors`。
+- 扫描编排服务 [src/application/scan_service.py](src/application/scan_service.py)（新文件）：
+  - `ScanSummary` dataclass：root_id / root_path / scanned_dirs / content_units_found / skipped_unchanged / errors。
+  - `ScanService.scan_root(root_id, incremental=True)`：读取 ManagedRoot，构建 folder_mtime_map（增量），调用 FileScanner，持久化结果。
+  - `ScanService.scan_root_by_path(real_path)`：直接按路径全量扫描。
+  - 持久化：folder_cache upsert（更新 mtime 或新建）；content_unit create（path 已存在则跳过，避免重复）。
+  - root_id 不存在抛 `ManagedRootNotFoundError`；根路径不存在抛 `ScanError`。
+- Application 层错误更新 [src/application/errors.py](src/application/errors.py)：
+  - 移除 `ModItemNotFoundError` / `FileAssetNotFoundError` / `MemberLimitError` / `DuplicateMemberError`。
+  - 新增 `ScanError`。
+- ScanWorker 重写 [src/app/scan_worker.py](src/app/scan_worker.py)：
+  - 构造签名：`ScanWorker(db_path, root_id, incremental=True)`。
+  - 在自身线程创建独立 SQLite 连接（row_factory = sqlite3.Row）。
+  - 信号：scan_started / scan_finished(ScanSummary) / scan_failed(str)。
+  - 捕获所有异常转为 scan_failed 信号。
+- 主窗口最小修复 [src/app/main_window.py](src/app/main_window.py)：
+  - 构造签名：`MainWindow(managed_root_service, db_path, commit_callback=None)`。
+  - 左栏：受管理根目录列表 + 添加/移除按钮 + 增量扫描按钮 + 全量重扫按钮 + 扫描状态。
+  - 右栏：内容区占位（Task 3+ 实现目录树、内容单元列表、详情面板）。
+  - 移除全部旧 UI 组件（素材池、ModItem 列表、详情面板、目录树、缩略图、成员表格）。
+  - 扫描期间禁用所有扫描入口与根目录操作按钮。
+  - closeEvent 等待后台线程退出。
+- 应用入口简化 [src/app/main.py](src/app/main.py)：
+  - 仅构造 ManagedRootService 注入 MainWindow。
+  - 移除 ModAssemblyService / FolderTreeService / ThumbnailCoordinator 等旧依赖。
+- UI 文案更新 [src/app/ui_constants.py](src/app/ui_constants.py)：
+  - APP_TITLE 改为 "Skyrim Content Workbench"。
+  - 新增 SCAN_BUTTON_FULL / SCAN_BUTTON_SCANNING。
+  - format_summary 改名 format_scan_summary，参数调整为 scanned_dirs / content_units_found / skipped_unchanged / errors。
+  - 移除旧 Task 3/4 相关常量（素材池、ModItem 列表、详情编辑、成员表格、角色名）。
+
+### Changed
+
+- [src/domain/models.py](src/domain/models.py)：完全重写（见 Added）。
+- [src/infrastructure/file_scanner.py](src/infrastructure/file_scanner.py)：完全重写（见 Added）。
+- [src/app/scan_worker.py](src/app/scan_worker.py)：完全重写（见 Added）。
+- [src/app/main_window.py](src/app/main_window.py)：完全重写为最小可启动版本（见 Added）。
+- [src/app/main.py](src/app/main.py)：简化为仅注入 ManagedRootService。
+- [src/app/ui_constants.py](src/app/ui_constants.py)：重写文案常量（见 Added）。
+- [src/application/errors.py](src/application/errors.py)：移除旧错误，新增 ScanError。
+
+### Removed
+
+- 删除旧 Domain 实体（ModItem / FileAsset / FolderNode / OperationLog 及相关 enum）。
+- 删除旧 Repository 模块：
+  - `src/infrastructure/repositories/mod_item.py`
+  - `src/infrastructure/repositories/file_asset.py`
+  - `src/infrastructure/repositories/folder_node.py`
+  - `src/infrastructure/repositories/operation_log.py`
+- 删除旧 Application Service：
+  - `src/application/scan_workflow_service.py`
+  - `src/application/mod_assembly_service.py`
+  - `src/application/folder_tree_service.py`
+- 删除旧 UI model：
+  - `src/app/pool_model.py`
+  - `src/app/folder_tree_model.py`
+- 删除旧测试文件：
+  - `tests/test_scan_workflow_service.py`
+
+### Preserved（保留但未在 main.py 引用，Task 3+ 重新接入）
+
+- `src/application/thumbnail_coordinator.py`：保留文件，移除 main.py 引用（决策 1）。
+- `src/app/thumbnail_worker.py`：保留文件，移除 main.py 引用。
+- `src/infrastructure/thumbnail_generator.py`：保留文件，测试仍 skip。
+- `src/infrastructure/file_operation_service.py`：保留文件，移除 main.py 引用（决策 2）。
+- `src/infrastructure/repositories/thumbnail_cache.py`：保留文件，测试仍 skip。
+
+### Skipped（测试仍 module-level skip，Task 3+ 重新启用）
+
+- `tests/test_folder_tree_model.py`：Task 3 重写目录树后启用。
+- `tests/test_folder_tree_service.py`：Task 3 重写目录树后启用。
+- `tests/test_thumbnail_coordinator.py`：Task 4+ 适配新 schema 后启用。
+- `tests/test_thumbnail_generator.py`：Task 4+ 适配新 schema 后启用。
+- `tests/test_thumbnail_cache.py`：Task 4+ 适配新 schema 后启用。
+
+### Tests
+
+- 单元测试 92 项新增/重写（总计 170 passed, 5 skipped），覆盖：
+  - `test_domain_models.py`（完全重写，33 项）：ContentUnit（10）/ TagCategory（6）/ Tag（4）/ OperationHistory（5）/ FolderCache（4）/ ManagedRoot（4）。
+  - `test_content_unit_repository.py`（新文件，16 项）：create+get_by_id / get_by_path / 中文路径 / path 唯一约束 / id 重复 / list_by_path_prefix / list_all / update / delete。
+  - `test_folder_cache_repository.py`（新文件，16 项）：create+get_by_id / get_by_path / 中文路径 / path 唯一约束 / list_by_parent / list_all / upsert_mtime / parent 自引用 / delete。
+  - `test_file_scanner.py`（完全重写，11 项）：全量扫描（7：扫描所有子目录、识别内容单元候选、不递归内容单元、中文路径、根不存在、根非目录、空根）+ 增量扫描（3：未变跳过、变更重扫、无缓存全扫）+ 符号链接（1，Windows 权限不足 skip）。
+  - `test_scan_service.py`（新文件，11 项）：全量扫描（4：持久化 folder_cache、持久化 content_unit、默认 status、标题为目录名）+ 增量扫描（2：跳过未变、重扫变更）+ 错误（2：root 不存在、路径不存在）+ scan_by_path（1）+ 重复扫描（2：无重复 content_unit、无重复 folder_cache）。
+  - `test_scan_worker.py`（完全重写，4 项）：scan_finished 回传 summary / 持久化到 DB / 不存在 root 触发 scan_failed / 增量扫描跳过未变目录。
+
+### 安全限制
+
+- 扫描器严格只读：不移动、不删除、不重命名、不修改、不读取文件内容（仅 iterdir / is_dir / is_file / stat）。
+- 符号链接不跟随（避免循环）。
+- 单目录扫描失败不中断整体流程。
+- ScanWorker 在后台线程创建独立 SQLite 连接，不冻结 UI。
+- 扫描期间禁用所有扫描入口与根目录操作按钮。
+- UI 不直接访问 Repository 或文件系统（AGENTS 规则 3）。
+- 路径、日志、数据库文本编码为 UTF-8。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 49 files already formatted
+- `python -m pytest` → 170 passed, 5 skipped
+
+### Not in Scope
+
+- 目录树浏览 UI（Task 3）。
+- 内容单元列表与浏览模式（Task 4）。
+- 双模式切换（Task 5）。
+- 缩略图适配新 schema（Task 4+）。
+- 文件操作服务适配新 schema（阶段 3）。
+- `thumbnail_coordinator` / `file_operation_service` / `thumbnail_worker` 保留源文件但未接入 main.py，Task 3+ 重新启用。
+
 ## [0.10.0] - 2026-07-12
 
 对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 1（方向 C 重建：新数据库 Schema + 迁移）完成。schema_version 由 3 升至 4。
