@@ -8,6 +8,105 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.12.0] - 2026-07-12
+
+对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 3（目录树浏览）完成。schema_version 维持 4。
+
+### Added
+
+- 只读目录树查询服务 [src/application/folder_tree_service.py](src/application/folder_tree_service.py)（新文件）：
+  - `TreeNode` dataclass：node_id / display_name / real_path / category / is_managed_root / managed_root_id / folder_cache_id / parent_id。
+  - category 取值：`managed_root`（已扫描根目录）/ `unscanned_root`（未扫描根目录）/ `folder`（普通子目录）。
+  - 节点 ID 约定：`"mr:<managed_root_id>"` / `"fc:<folder_cache_id>"`。
+  - `FolderTreeService.list_root_nodes()`：合并 ManagedRoot 与 FolderCache 根节点，已扫描→managed_root，未扫描→unscanned_root。
+  - `FolderTreeService.list_children(node_id)`：按 node_id 前缀分发（mr:→managed_root 子节点，fc:→folder_cache 子节点）。
+  - `FolderTreeService.get_node(node_id)` / `count_children(node_id)` / `has_scan_data(managed_root_id)`。
+  - 关联逻辑（决策问题 1 选项 B）：对 FolderCache.path 调用 make_path_key 归一化后与 ManagedRoot.path_key 比较，不改 schema。
+  - 不访问文件系统；不写数据库。
+- Qt 目录树 model [src/app/folder_tree_model.py](src/app/folder_tree_model.py)（新文件）：
+  - `FolderTreeModel(QAbstractItemModel)`：采用 Qt 推荐的内部节点对象 + 对象引用 internalPointer 的标准实现。
+  - `_Node` 内部类持有 TreeNode、父节点引用、子节点列表、loaded 标记、row_in_parent 行号。
+  - 惰性加载（canFetchMore / fetchMore），`fetchMore` 直接使用 View 传入的 parent。
+  - `parent()` O(1) 直接访问（通过 _Node.parent 引用 + row_in_parent 缓存）。
+  - 数据源严格为 FolderTreeService（即 SQLite folder_cache 表），不重新扫描文件系统。
+  - 未扫描根目录 display 追加「（未扫描）」提示。
+  - 选中节点可通过 node_at / node_id_at 接口获取。
+  - refresh() 重置所有缓存并重新加载根节点。
+- UI 文案常量 [src/app/ui_constants.py](src/app/ui_constants.py)：
+  - 新增目录树区域常量：TREE_GROUP_TITLE / TREE_EMPTY_HINT / TREE_UNSCANNED_HINT。
+  - 新增详情区常量：DETAIL_GROUP_TITLE / DETAIL_NAME_LABEL / DETAIL_PATH_LABEL / DETAIL_IS_ROOT_LABEL / DETAIL_TYPE_LABEL / DETAIL_CHILD_COUNT_LABEL / DETAIL_TYPE_MANAGED_ROOT / DETAIL_TYPE_UNSCANNED_ROOT / DETAIL_TYPE_FOLDER / DETAIL_NOT_SELECTED。
+  - 移除旧占位常量 PLACEHOLDER_CONTENT_TITLE / PLACEHOLDER_CONTENT_HINT。
+
+### Changed
+
+- [src/app/main_window.py](src/app/main_window.py)：
+  - 构造签名新增 `folder_tree_service: FolderTreeService` 参数。
+  - 右栏占位替换为目录树（QTreeView + FolderTreeModel）+ 选中目录详情（QLabel）。
+  - 详情区显示 5 字段：目录名称 / 完整路径 / 是否受管理根目录 / 类型 / 直接子目录数（决策问题 4 选项 A）。
+  - `_refresh_tree()`：扫描完成/根目录变更后刷新目录树模型。
+  - `_on_tree_selection_changed`：选中节点更新详情区。
+  - 添加/移除根目录后调用 `_refresh_tree()`。
+  - `_on_scan_finished` 扫描完成后调用 `_refresh_tree()`。
+- [src/app/main.py](src/app/main.py)：
+  - 构造 `FolderTreeService(ManagedRootRepository(conn), FolderCacheRepository(conn))` 注入 MainWindow。
+
+### Fixed
+
+- **FolderTreeModel 架构重构**：初版实现采用字符串 node_id 作为 internalPointer，`parent()` 通过 service 反查 + 线性扫描实现，存在性能与稳定性缺陷。手动验收时连续暴露三个问题：
+  1. `hasChildren` 未重写 → QTreeView 不显示展开箭头，根节点无法展开。
+  2. `internalPointer()` 在 PySide6 某些调用路径返回非字符串非 None 对象 → `_loaded` 集合 `in` 操作触发 `TypeError: unhashable type`。
+  3. `_fetch` 通过 `_find_index_by_node_id` 重新创建 parent index 调用 `beginInsertRows` → Qt C++ 层 persistent index 机制访问无效内存导致 segfault，展开二级节点时闪退且无 Python 异常输出。
+  局部补丁修复无效后，按 Qt 官方推荐架构重构为 `_Node` 内部类 + 对象引用 internalPointer 的标准实现：
+  - `parent()` 由 O(深度)+反查 变为 O(1) 直接访问。
+  - `fetchMore` 直接使用 View 传入的 parent，满足 persistent index 机制对 index 对象身份的要求。
+  - 缓存状态集中在 _Node 对象内（children + loaded），消除多处缓存不一致风险。
+  - 删除 `_find_index_by_node_id` / `_children_cache` / `_loaded` 等旧实现。
+
+### Tests
+
+- 单元测试 44 项新增（总计 214 passed, 3 skipped），覆盖：
+  - `test_folder_tree_service.py`（22 项）：
+    - TestListRootNodes（5）：空数据 / 未扫描根 / 已扫描根 / 中文目录名 / 多根目录 / 重复扫描不重复。
+    - TestListChildren（6）：空根节点 / 多层层级 / mr: 前缀分发 / fc: 前缀分发 / 无效 node_id / 未扫描根返回空。
+    - TestGetNode（4）：managed_root / folder / 无效 ID / 未扫描根。
+    - TestCountChildren（3）：直接子目录数 / 孙节点不计入 / 无效 node_id 返回 0。
+    - 持久化验证：重新连接数据库后树可加载。
+    - TreeNode category 校验：拒绝非法值 / 接受所有合法值。
+  - `test_folder_tree_model.py`（22 项，重构后）：
+    - 基础测试（10）：空 model / 未扫描顶层节点 / fetchMore 惰性加载 / 父子关系 / 深层访问 / node_at / node_id_at / refresh 重置 / 无效 index / 中文显示名。
+    - hasChildren 测试（5）：未扫描根 / 已扫描根未 fetch / 叶子节点 fetch 后 / 已加载父节点 / 空 model。
+    - 旧版缺陷回归测试（7）：
+      - `test_fetch_does_not_recurse_when_connected_to_view`：连接真实 QTreeView 后 fetchMore 不触发 RecursionError。
+      - `test_fetch_empty_children_does_not_emit_rows_inserted`：空子节点不发 rowsInserted 信号。
+      - `test_row_count_handles_invalid_index_without_crash`：rowCount 对无效 QModelIndex 不崩溃。
+      - `test_index_handles_invalid_parent_without_crash`：index 对无效 parent 不崩溃。
+      - `test_has_children_handles_invalid_index_without_crash`：hasChildren 对无效 QModelIndex 不崩溃。
+      - `test_deep_expansion_does_not_crash`：**核心回归测试**——Root/L1/L2/L3 逐级展开 + parent 链验证，连接真实 QTreeView，验证 Qt C++ 层 persistent index 机制在多层 fetchMore 下不崩溃。
+      - `test_view_loads_root_children_without_crash`：连接真实 QTreeView 后显式 fetchMore 加载根子节点不崩溃。
+
+### 安全限制
+
+- 目录树数据源严格为 SQLite folder_cache 表，不重新扫描文件系统。
+- FolderTreeService 只读：不访问文件系统，不写数据库。
+- FolderTreeModel 惰性加载：仅在展开节点时查询子节点，避免一次性加载全树。
+- 错误隔离：查询异常捕获并降级为空子树，不崩溃。
+- UI 不直接访问 Repository 或文件系统（AGENTS 规则 3）。
+- 路径归一化使用 make_path_key（normcase + normpath），支持中文路径。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 51 files already formatted
+- `python -m pytest` → 214 passed, 3 skipped
+- `python -m app.main` → 主窗口正常启动，可添加目录、扫描、浏览目录树（含深层逐级展开）、选中节点查看详情（人工验收通过）
+
+### Not in Scope
+
+- 内容单元列表与浏览模式（Task 4）。
+- 双模式切换（Task 5）。
+- 缩略图适配新 schema（Task 4+）。
+- 文件操作服务适配新 schema（阶段 3）。
+
 ## [0.11.0] - 2026-07-12
 
 对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 2（方向 C 重建：新扫描器 + Domain/Repository/Service/UI 适配）完成。schema_version 维持 4（Task 1 已建立）。

@@ -32,9 +32,22 @@ STATUS_SCANNING = "正在扫描…"
 STATUS_SCAN_COMPLETE = "扫描完成"
 STATUS_SCAN_FAILED = "扫描失败"
 
-# 占位区域（Task 3+ 实现）
-PLACEHOLDER_CONTENT_TITLE = "内容区（待实现）"
-PLACEHOLDER_CONTENT_HINT = "将在阶段 2 Task 3+ 实现：目录树、内容单元列表、详情面板。"
+# 目录树区域
+TREE_GROUP_TITLE = "目录树"
+TREE_EMPTY_HINT = "尚未扫描任何目录。请先在左侧选择根目录并点击「扫描」。"
+TREE_UNSCANNED_HINT = "（未扫描）"
+
+# 选中目录详情区域
+DETAIL_GROUP_TITLE = "选中目录详情"
+DETAIL_NAME_LABEL = "目录名称"
+DETAIL_PATH_LABEL = "完整路径"
+DETAIL_IS_ROOT_LABEL = "是否受管理根目录"
+DETAIL_TYPE_LABEL = "类型"
+DETAIL_CHILD_COUNT_LABEL = "直接子目录数"
+DETAIL_TYPE_MANAGED_ROOT = "已扫描根目录"
+DETAIL_TYPE_UNSCANNED_ROOT = "未扫描根目录"
+DETAIL_TYPE_FOLDER = "子目录"
+DETAIL_NOT_SELECTED = "未选中任何目录。请在目录树中点击选择。"
 
 # 错误
 ERR_ADD_ROOT_FAILED = "添加目录失败"

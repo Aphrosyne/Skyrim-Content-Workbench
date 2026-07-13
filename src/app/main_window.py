@@ -1,8 +1,8 @@
-"""主窗口。阶段 2 Task 2：方向 C 重建后的最小可启动版本。
+"""主窗口。阶段 2 Task 3：目录树浏览。
 
 布局：
 - 左栏：受管理根目录列表 + 添加/移除按钮 + 扫描按钮（增量/全量）+ 扫描状态。
-- 右栏：内容区占位（Task 3+ 实现目录树、内容单元列表、详情面板）。
+- 右栏：目录树（FolderTreeModel）+ 选中目录详情。
 
 约束（AGENTS 规则 3）：
 - UI 不直接调用 shutil / Path.rename / Path.unlink 等文件写 API。
@@ -10,8 +10,7 @@
 - 扫描通过 ScanWorker 在后台线程执行，不冻结 UI。
 - 扫描期间禁用重复扫描入口。
 
-旧 Task 3/4 的 UI 组件（素材池、ModItem 列表、详情面板、目录树、缩略图）
-在 Task 1 schema 重建后已失效，将在 Task 3+ 逐步重建。
+目录树数据源严格为 SQLite folder_cache 表，不重新扫描文件系统。
 """
 
 from __future__ import annotations
@@ -32,17 +31,20 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QTreeView,
     QVBoxLayout,
     QWidget,
 )
 
 from app import ui_constants as ui
+from app.folder_tree_model import FolderTreeModel
 from app.scan_worker import ScanWorker
 from application.errors import (
     DuplicateManagedRootError,
     InvalidRootPathError,
     ManagedRootNotFoundError,
 )
+from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from application.scan_service import ScanSummary
 from domain.models import ManagedRoot
@@ -56,19 +58,21 @@ MAX_ERROR_SUMMARY_LINES = 5
 class MainWindow(QMainWindow):
     """应用主窗口。
 
-    通过构造注入 ManagedRootService 与 db_path，便于测试。
+    通过构造注入 ManagedRootService、FolderTreeService 与 db_path，便于测试。
     db_path 用于 ScanWorker 在后台线程创建独立连接。
     """
 
     def __init__(
         self,
         managed_root_service: ManagedRootService,
+        folder_tree_service: FolderTreeService,
         db_path: Path,
         commit_callback: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._service = managed_root_service
+        self._tree_service = folder_tree_service
         self._db_path = db_path
         self._commit_callback = commit_callback
         self._thread: QThread | None = None
@@ -80,6 +84,7 @@ class MainWindow(QMainWindow):
 
         self._setup_ui()
         self._refresh_root_list()
+        self._refresh_tree()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         """关闭窗口前等待后台线程退出，避免 QThread Running 状态析构 CTD。"""
@@ -154,18 +159,39 @@ class MainWindow(QMainWindow):
         left_layout.addStretch(1)
         splitter.addWidget(left)
 
-        # === 右栏：内容区占位 ===
+        # === 右栏：目录树 + 详情 ===
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
-        placeholder_box = QGroupBox(ui.PLACEHOLDER_CONTENT_TITLE)
-        placeholder_layout = QVBoxLayout(placeholder_box)
-        hint = QLabel(ui.PLACEHOLDER_CONTENT_HINT)
-        hint.setWordWrap(True)
-        hint.setAlignment(Qt.AlignCenter)
-        placeholder_layout.addWidget(hint)
-        right_layout.addWidget(placeholder_box, stretch=1)
+        # 目录树
+        self._tree_group = QGroupBox(ui.TREE_GROUP_TITLE)
+        tree_layout = QVBoxLayout(self._tree_group)
+
+        self._tree_view = QTreeView()
+        self._tree_view.setHeaderHidden(True)
+        self._tree_view.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
+        self._tree_view.setSelectionMode(QTreeView.SelectionMode.SingleSelection)
+        self._tree_view.setDragDropMode(QTreeView.DragDropMode.NoDragDrop)
+        self._tree_model = FolderTreeModel(self._tree_service)
+        self._tree_view.setModel(self._tree_model)
+        self._tree_view.selectionModel().selectionChanged.connect(self._on_tree_selection_changed)
+        tree_layout.addWidget(self._tree_view)
+
+        self._tree_empty_hint = QLabel(ui.TREE_EMPTY_HINT)
+        self._tree_empty_hint.setWordWrap(True)
+        tree_layout.addWidget(self._tree_empty_hint)
+
+        right_layout.addWidget(self._tree_group, stretch=2)
+
+        # 选中目录详情
+        self._detail_group = QGroupBox(ui.DETAIL_GROUP_TITLE)
+        detail_layout = QVBoxLayout(self._detail_group)
+        self._detail_label = QLabel(ui.DETAIL_NOT_SELECTED)
+        self._detail_label.setWordWrap(True)
+        self._detail_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        detail_layout.addWidget(self._detail_label)
+        right_layout.addWidget(self._detail_group, stretch=1)
 
         splitter.addWidget(right)
 
@@ -204,6 +230,48 @@ class MainWindow(QMainWindow):
         self._scan_full_button.setEnabled(has_selection and not self._is_scanning)
         self._remove_button.setEnabled(has_selection and not self._is_scanning)
 
+    # --- 目录树 ---
+
+    def _refresh_tree(self) -> None:
+        """刷新目录树模型。"""
+        self._tree_model.refresh()
+        root_count = self._tree_model.root_node_count()
+        self._tree_empty_hint.setVisible(root_count == 0)
+        # 清空详情区
+        self._detail_label.setText(ui.DETAIL_NOT_SELECTED)
+
+    def _on_tree_selection_changed(self, *args) -> None:  # noqa: ANN001 (Qt 信号)
+        """目录树选中变化时更新详情区。"""
+        indexes = self._tree_view.selectionModel().selectedIndexes()
+        if not indexes:
+            self._detail_label.setText(ui.DETAIL_NOT_SELECTED)
+            return
+
+        index = indexes[0]
+        node = self._tree_model.node_at(index)
+        if node is None:
+            self._detail_label.setText(ui.DETAIL_NOT_SELECTED)
+            return
+
+        # 查询子目录数
+        child_count = self._tree_service.count_children(node.node_id)
+
+        if node.category == "managed_root":
+            type_text = ui.DETAIL_TYPE_MANAGED_ROOT
+        elif node.category == "unscanned_root":
+            type_text = ui.DETAIL_TYPE_UNSCANNED_ROOT
+        else:
+            type_text = ui.DETAIL_TYPE_FOLDER
+
+        lines = [
+            f"{ui.DETAIL_NAME_LABEL}：{node.display_name}",
+            f"{ui.DETAIL_PATH_LABEL}：{node.real_path}",
+            f"{ui.DETAIL_IS_ROOT_LABEL}：{'是' if node.is_managed_root else '否'}",
+            f"{ui.DETAIL_TYPE_LABEL}：{type_text}",
+            f"{ui.DETAIL_CHILD_COUNT_LABEL}：{child_count}",
+        ]
+        self._detail_label.setText("\n".join(lines))
+
     # --- 添加根目录 ---
 
     def _on_add_root(self) -> None:
@@ -231,6 +299,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, ui.ERR_ADD_ROOT_FAILED, f"{ui.ERR_ADD_ROOT_FAILED}：{e}")
             return
         self._refresh_root_list()
+        self._refresh_tree()
 
     # --- 移除根目录配置 ---
 
@@ -278,6 +347,7 @@ class MainWindow(QMainWindow):
             return
 
         self._refresh_root_list()
+        self._refresh_tree()
 
     # --- 扫描 ---
 
@@ -334,7 +404,7 @@ class MainWindow(QMainWindow):
         self._set_status(ui.STATUS_SCANNING)
 
     def _on_scan_finished(self, summary: ScanSummary) -> None:
-        """扫描完成：展示摘要。"""
+        """扫描完成：展示摘要并刷新目录树。"""
         text = ui.format_scan_summary(
             scanned_dirs=summary.scanned_dirs,
             content_units_found=summary.content_units_found,
@@ -351,6 +421,8 @@ class MainWindow(QMainWindow):
             text = "\n".join(lines)
         self._set_status(f"{ui.STATUS_SCAN_COMPLETE}\n{text}")
         self._end_scanning()
+        # 扫描完成后刷新目录树
+        self._refresh_tree()
 
     def _on_scan_failed(self, message: str) -> None:
         self._set_status(f"{ui.STATUS_SCAN_FAILED}\n{message}")
