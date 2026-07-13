@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 
 from domain.models import ContentUnit
@@ -85,12 +86,15 @@ class ContentUnitRepository:
         """返回 path 以 prefix 开头（含 prefix 自身）的 ContentUnit。
 
         用于"目录下的内容单元"查询。prefix 应为目录路径（不含尾部分隔符）。
-        匹配规则：path == prefix OR path LIKE 'prefix/%'。
+        匹配规则：path == prefix OR path LIKE 'prefix{sep}%'。
+        使用 os.sep 构造 LIKE 模式，适配 Windows（反斜杠）与 Linux（正斜杠）。
         """
+        sep = os.sep
+        like_pattern = f"{prefix}{sep}%"
         try:
             rows = self._conn.execute(
                 "SELECT * FROM content_unit WHERE path = ? OR path LIKE ? ORDER BY path",
-                (prefix, f"{prefix}/%"),
+                (prefix, like_pattern),
             ).fetchall()
         except sqlite3.Error as e:
             raise RepositoryError(f"无法列出 ContentUnit：{e}") from e

@@ -1,14 +1,14 @@
 """FileScanner 测试。
 
-覆盖：
-- 全量扫描：递归扫描所有子目录
+覆盖（spec §5.4 2026-07-13 修正）：
+- 全量扫描：递归扫描所有子目录（不再因压缩包停止递归）
 - 增量扫描：mtime 未变跳过，mtime 变化重新扫描
-- 内容单元识别：含压缩包的文件夹 → 候选；不含 → 非候选
-- 内容单元识别后停止递归其子目录
+- 压缩包文件识别：所有压缩包文件路径记入 archive_candidates
+- 嵌套目录中的压缩包也被识别
+- 文件夹不作为候选（新规则）
 - 中文路径支持
 - 符号链接不跟随
 - 根目录不存在 → 错误结果
-- 单个目录扫描失败不中断整体
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def mod_tree(tmp_path: Path) -> Path:
     ├── Weapons/
     │   ├── DragonSword.rar
     │   └── sub/
-    │       └── note.txt
+    │       └── nested.zip
     ├── 空目录/
     ├── 普通文件夹/
     │   └── readme.txt
@@ -55,7 +55,7 @@ def mod_tree(tmp_path: Path) -> Path:
     weapons.mkdir()
     (weapons / "DragonSword.rar").write_bytes(b"\x00" * 80)
     (weapons / "sub").mkdir()
-    (weapons / "sub" / "note.txt").write_bytes(b"hello")
+    (weapons / "sub" / "nested.zip").write_bytes(b"\x00" * 60)
 
     (root / "空目录").mkdir()
 
@@ -69,34 +69,66 @@ def mod_tree(tmp_path: Path) -> Path:
 
 class TestScanFull:
     def test_scans_all_subdirs(self, scanner: FileScanner, mod_tree: Path) -> None:
+        """新规则：递归所有子目录，包括含压缩包的目录的子目录。"""
         result = scanner.scan_full(mod_tree)
         paths = {e.path for e in result.scanned_dirs}
         assert str(mod_tree) in paths
         assert str(mod_tree / "护甲") in paths
         assert str(mod_tree / "Weapons") in paths
+        assert str(mod_tree / "Weapons" / "sub") in paths  # 新规则：递归进入
         assert str(mod_tree / "空目录") in paths
         assert str(mod_tree / "普通文件夹") in paths
 
-    def test_identifies_content_unit_candidates(self, scanner: FileScanner, mod_tree: Path) -> None:
+    def test_identifies_archive_candidates(self, scanner: FileScanner, mod_tree: Path) -> None:
+        """新规则：压缩包文件路径记入 archive_candidates。"""
         result = scanner.scan_full(mod_tree)
-        candidate_paths = {e.path for e in result.content_unit_candidates}
-        # 护甲（含 .7z）和 Weapons（含 .rar）应为候选
-        assert str(mod_tree / "护甲") in candidate_paths
-        assert str(mod_tree / "Weapons") in candidate_paths
-        # 普通文件夹（无压缩包）不应为候选
-        assert str(mod_tree / "普通文件夹") not in candidate_paths
+        candidates = set(result.archive_candidates)
+        # 三个压缩包文件均应被识别
+        assert str(mod_tree / "护甲" / "寒霜之心.7z") in candidates
+        assert str(mod_tree / "Weapons" / "DragonSword.rar") in candidates
+        assert str(mod_tree / "Weapons" / "sub" / "nested.zip") in candidates
+        # 普通文件不应在候选中
+        assert str(mod_tree / "normal_file.txt") not in candidates
+        assert str(mod_tree / "普通文件夹" / "readme.txt") not in candidates
 
-    def test_does_not_recurse_into_content_unit(self, scanner: FileScanner, mod_tree: Path) -> None:
+    def test_folders_not_in_candidates(self, scanner: FileScanner, mod_tree: Path) -> None:
+        """新规则：文件夹不作为内容单元候选。"""
+        result = scanner.scan_full(mod_tree)
+        candidates = set(result.archive_candidates)
+        # 文件夹路径不应出现在候选中
+        assert str(mod_tree / "护甲") not in candidates
+        assert str(mod_tree / "Weapons") not in candidates
+
+    def test_old_candidates_field_empty(self, scanner: FileScanner, mod_tree: Path) -> None:
+        """新规则下 content_unit_candidates 字段为空（向后兼容保留）。"""
+        result = scanner.scan_full(mod_tree)
+        assert result.content_unit_candidates == []
+        # scanned_dirs 中 is_content_unit_candidate 恒为 False
+        for entry in result.scanned_dirs:
+            assert entry.is_content_unit_candidate is False
+
+    def test_recurses_into_archive_parent_subdirs(
+        self, scanner: FileScanner, mod_tree: Path
+    ) -> None:
+        """新规则：递归进入含压缩包目录的子目录。"""
         result = scanner.scan_full(mod_tree)
         paths = {e.path for e in result.scanned_dirs}
-        # Weapons 是内容单元候选，其 sub 子目录不应被扫描
-        assert str(mod_tree / "Weapons" / "sub") not in paths
+        # Weapons 含 .rar，但其 sub 子目录仍应被递归扫描
+        assert str(mod_tree / "Weapons" / "sub") in paths
+        # sub 中的 nested.zip 也应被识别
+        assert str(mod_tree / "Weapons" / "sub" / "nested.zip") in set(result.archive_candidates)
 
     def test_chinese_path_scanned(self, scanner: FileScanner, mod_tree: Path) -> None:
         result = scanner.scan_full(mod_tree)
         paths = {e.path for e in result.scanned_dirs}
         assert str(mod_tree / "护甲") in paths
         assert str(mod_tree / "普通文件夹") in paths
+
+    def test_chinese_archive_name_identified(self, scanner: FileScanner, mod_tree: Path) -> None:
+        """中文压缩包文件名正确识别。"""
+        result = scanner.scan_full(mod_tree)
+        candidates = set(result.archive_candidates)
+        assert str(mod_tree / "护甲" / "寒霜之心.7z") in candidates
 
     def test_root_not_exist(self, scanner: FileScanner, tmp_path: Path) -> None:
         result = scanner.scan_full(tmp_path / "nonexistent")
@@ -118,7 +150,7 @@ class TestScanFull:
         result = scanner.scan_full(empty_root)
         assert len(result.scanned_dirs) == 1
         assert result.scanned_dirs[0].path == str(empty_root)
-        assert not result.content_unit_candidates
+        assert not result.archive_candidates
 
 
 class TestScanIncremental:

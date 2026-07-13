@@ -12,8 +12,22 @@ from pathlib import Path
 
 import pytest
 
-from app.app_paths import get_app_db_path
-from infrastructure.db import get_connection, init_db
+pytest.importorskip("PySide6")
+
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+from app.app_paths import get_app_db_path  # noqa: E402
+from infrastructure.db import get_connection, init_db  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+def qapp() -> Iterator[QApplication]:
+    """全局 QApplication fixture（session 级，避免重复创建）。
+
+    Qt 测试中所有需要 QApplication 的测试函数均可注入此 fixture。
+    """
+    app = QApplication.instance() or QApplication([])
+    yield app
 
 
 @pytest.fixture

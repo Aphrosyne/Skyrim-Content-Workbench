@@ -8,6 +8,121 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.13.0] - 2026-07-13
+
+对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 4（文件列表 + 内容单元显示）完成。schema_version 维持 4。
+
+**2026-07-13 设计修正**：中间列表从"仅显示内容单元"改为"显示目录下所有文件，内容单元只是标记"。
+内容单元不是可见性门槛，未标记的文件也正常可见可操作（spec §5.1 关键设计）。
+
+**2026-07-13 扫描规则修正（spec §5.4）**：内容单元识别规则从"含压缩包的文件夹"改为"压缩包文件本身"。
+- 压缩包文件路径作为 `ContentUnit.path`（不再是文件夹路径）。
+- `ContentUnit.title` 为压缩包文件名（含扩展名）。
+- 文件夹不自动标记为内容单元（手动标记属阶段 3 Task 3）。
+- 递归所有子目录，不再因识别到压缩包而停止递归。
+- 双击非内容单元（文件或文件夹）不响应（spec §5.1 L205），移除 `os.startfile` 调用。
+
+**2026-07-13 性能修复**：`FileListModel` 图标缓存优化，解决文件列表 hover 高亮延迟。
+- 根因：`QStyle.standardIcon()` 无内部缓存，Qt 在 hover/paint/selection 高频事件中反复调用 `data(DecorationRole)` 导致每次重新渲染图标像素图。
+- 修复：在 Model `__init__` 中预创建 `QIcon` 实例并缓存，`_icon_for` 直接返回缓存（懒加载，QApplication 未就绪时跳过）。
+
+### Added
+
+- Domain 数据类 `FileEntry` [src/domain/models.py](src/domain/models.py)：
+  - 描述目录条目（文件或文件夹）+ 可选的 `ContentUnit` 关联。
+  - 字段：name / path / is_dir / modified_at（ISO 8601 UTC）/ size（文件夹为 None）/ content_unit（未标记时为 None）。
+- 内容单元查询服务扩展 [src/application/content_service.py](src/application/content_service.py)：
+  - 新增 `ContentService.list_directory_entries(dir_path)`：从文件系统读取目录下所有条目（`Path.iterdir` / `is_dir` / `stat`，只读），按 path 精确匹配 `content_unit` 表填充关联。
+  - 排序：文件夹在前，名称不区分大小写升序。
+  - 跳过符号链接（避免循环）。目录不存在/读取失败返回空列表（记日志）。
+  - 保留原有 `list_by_directory` / `list_direct_children` / `get_by_id`。
+- 文件列表 Qt Model [src/app/file_list_model.py](src/app/file_list_model.py)（新文件，替代旧 `content_unit_list_model.py`）：
+  - `FileListModel(QAbstractListModel)`：展示 `FileEntry` 列表。
+  - DisplayRole：name + 内容单元标记（`[内容单元 ✓]` if organized / `[内容单元]` if unorganized / 无标记 if 非内容单元）。
+  - ToolTipRole：完整路径。UserRole：`FileEntry` 对象。DecorationRole：Qt 内置标准图标（`QStyle.SP_DirIcon` 文件夹 / `SP_FileIcon` 文件）。
+  - `refresh(entries)` 重置列表。测试接口：`entry_at(row)` / `entry_count()`。
+- UI 文案常量 [src/app/ui_constants.py](src/app/ui_constants.py)：
+  - 新增文件列表项标记：CONTENT_UNIT_MARKER_ORGANIZED / CONTENT_UNIT_MARKER_UNORGANIZED。
+  - 新增右键菜单常量：CONTEXT_MENU_COPY_PATH / CONTEXT_MENU_COPY_PATH_OK。
+  - 新增元数据面板常量：METADATA_NOT_CONTENT_UNIT（双击非内容单元文件时显示）。
+  - CONTENT_LIST_GROUP_TITLE 从"内容单元列表"改为"文件列表"；CONTENT_LIST_EMPTY_HINT 调整为"该目录为空或无可见文件。"
+
+### Changed
+
+- [src/app/main_window.py](src/app/main_window.py)：
+  - 三栏布局与 spec §7.1 一致：
+    - 左栏：受管理根目录 + 扫描控制 + 扫描状态 + 目录树 + 选中目录详情。
+    - 中栏：文件列表（QListView + FileListModel，数据源为文件系统，content_unit 表仅作标记）。
+    - 右栏：元数据面板（QLabel，只读显示）。
+  - 构造签名：`content_service: ContentService` 参数保留。
+  - `_on_tree_selection_changed`：选中目录树节点时调用 `ContentService.list_directory_entries` 刷新文件列表，同时清空元数据面板。
+  - `_on_entry_activated`（替代 `_on_content_unit_activated`）：双击行为分支：
+    - 内容单元 → 右栏显示元数据（8 字段只读：标题/路径/类型/来源 URL/评分/整理状态/备注/创建时间）。
+    - 非内容单元（文件或文件夹）→ 不响应，右栏保持现状（spec §5.1 L205）。移除 `os.startfile` 调用。
+  - 新增右键菜单（`customContextMenuRequested`）：本 Task 仅实现"复制路径"（决策问题 2），重命名/删除属阶段 5 Task 3。
+  - 新增 Elide 路径文本（决策问题 4）：
+    - 详情区路径标签 + 元数据面板路径字段启用 ElideMiddle。
+    - QLabel 关闭自动换行 + PlainText 格式，缓存原文供 `resizeEvent` 重算。
+    - `_set_detail_text` / `_set_metadata_text` 缓存原文并触发 Elide；`resizeEvent` 调用 `_apply_elide`。
+  - 测试接口：`entry_count()` / `entry_at(row)` / `metadata_text()` / `metadata_full_text()` / `detail_full_text()`。
+- [src/app/main.py](src/app/main.py)：构造 `ContentService(ContentUnitRepository(conn))` 注入 `MainWindow`（无变化，沿用）。
+- [src/infrastructure/file_scanner.py](src/infrastructure/file_scanner.py)（扫描规则修正 spec §5.4）：
+  - `ScanResult` 新增 `archive_candidates: list[str]` 字段，记录压缩包文件完整路径。
+  - `ScannedFolderEntry.is_content_unit_candidate` 恒为 False（向后兼容保留）。
+  - `_scan_dir` 遍历文件时，压缩包文件路径记入 `result.archive_candidates`。
+  - 移除"识别后停止递归"逻辑：无条件递归所有子目录（含压缩包所在目录的子目录）。
+- [src/application/scan_service.py](src/application/scan_service.py)（扫描规则修正 spec §5.4）：
+  - `_persist_scan_result` 从 `result.archive_candidates` 读取压缩包路径，创建 `ContentUnit`：
+    - `path` = 压缩包文件路径；`title` = 文件名（含扩展名）；`content_type` = "mod"；`status` = "unorganized"。
+    - 仅插入新候选（已存在 path 跳过，避免重复）。
+    - 单个创建失败不中断整体流程，记入 `summary.errors`。
+- [src/app/file_list_model.py](src/app/file_list_model.py)（性能修复）：
+  - 新增 `_dir_icon` / `_file_icon` / `_icons_initialized` 缓存字段。
+  - 新增 `_ensure_icons()` 懒加载方法：QApplication/style 未就绪时跳过，下次调用再尝试。
+  - `_icon_for(entry)` 改为直接返回缓存的 `QIcon` 实例，避免 hover/paint 高频事件中反复调用 `QStyle.standardIcon()`。
+
+### Removed
+
+- 删除 [src/app/content_unit_list_model.py](src/app/content_unit_list_model.py)（旧文件，由 `file_list_model.py` 替代）。
+- 删除 [tests/test_content_unit_list_model.py](tests/test_content_unit_list_model.py)（旧测试）。
+
+### Tests
+
+- 单元测试 60 项新增/重写（总计 273 passed, 5 skipped），覆盖：
+  - `test_file_list_model.py`（20 项，新文件）：
+    - 空 model / refresh 加载 / refresh 重置 / refresh 复制列表；
+    - DisplayRole（非内容单元无标记 / 未整理标记 / 已整理标记 / 中文文件名）；
+    - ToolTipRole（路径 / 中文路径）/ UserRole（FileEntry 对象）；
+    - DecorationRole（文件夹图标 / 文件图标）；
+    - 无效 index（QModelIndex / 越界 / 负数行）；
+    - entry_at（合法 / 越界）/ rowCount（带 parent index）。
+  - `test_content_service.py` 新增 TestListDirectoryEntries（11 项）：
+    - 空目录 / 不存在路径 / 非目录 / 列出所有文件和文件夹 / 文件夹排前 / 基本字段 / 文件夹 size 为 None；
+    - 内容单元关联（压缩包文件路径）/ 非内容单元 content_unit 为 None / 中文文件名 / 返回 FileEntry 实例 / 符号链接跳过。
+  - `test_main_window_content.py`（13 项，重写）：
+    - 初始状态 / 选中节点刷新列表 / 含非内容单元文件 / 压缩包文件是内容单元 / 子目录中压缩包是内容单元 / 双击内容单元显示元数据；
+    - 双击非内容单元文件不响应 / 双击非内容单元文件夹不响应（同目录内测试，避免切换目录清空元数据）；
+    - 切换节点清空 / 未扫描根不崩溃 / 中文文件名 / 右键复制路径 / Elide 长路径。
+  - `test_file_scanner.py`（重写，13 项）：递归所有子目录 / 压缩包文件记入 archive_candidates / 文件夹不在候选中 / 旧字段为空 / 递归含压缩包目录的子目录 / 中文路径 / 中文压缩包名 / 根不存在 / 根非目录 / 空根 + 增量扫描（3）+ 符号链接。
+  - `test_scan_service.py`（重写，11 项）：全量扫描持久化 folder_cache / 持久化压缩包候选为 ContentUnit.path / 默认 status / title 含扩展名 + 增量扫描（2）+ 错误（2）+ scan_by_path + 重复扫描（2）。
+  - `tests/conftest.py` 新增全局 `qapp` fixture（session 级，所有 Qt 测试复用）。
+
+### 安全限制
+
+- 文件列表数据源为文件系统（`Path.iterdir` / `is_dir` / `is_file` / `stat`），仅只读，不修改用户文件。
+- 跳过符号链接，避免循环遍历。
+- 目录读取失败返回空列表，不崩溃。
+- 右键菜单"复制路径"只写入剪贴板，不访问文件系统。
+- UI 不直接调用文件写 API（AGENTS 规则 3）；双击非内容单元不响应，不调用 `os.startfile` 或任何外部程序（spec §5.1 L205）。
+- 扫描器严格只读：仅使用 `Path.iterdir` / `is_dir` / `is_file` / `is_symlink` / `stat`，不修改用户文件。
+- 单目录扫描失败不中断整体流程，记入 `ScanResult.errors`。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 56 files already formatted
+- `python -m pytest` → 273 passed, 5 skipped
+
 ## [0.12.0] - 2026-07-12
 
 对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 3（目录树浏览）完成。schema_version 维持 4。

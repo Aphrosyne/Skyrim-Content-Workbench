@@ -15,9 +15,11 @@ from PySide6.QtWidgets import QApplication
 from app.app_paths import ensure_app_directories, get_app_db_path
 from app.logging_setup import setup_logging
 from app.main_window import MainWindow
+from application.content_service import ContentService
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from infrastructure.db import get_connection, init_db
+from infrastructure.repositories.content_unit import ContentUnitRepository
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
 
@@ -59,11 +61,13 @@ def main() -> int:
         ManagedRootRepository(conn),
         FolderCacheRepository(conn),
     )
+    content_service = ContentService(ContentUnitRepository(conn))
 
     app = QApplication(sys.argv)
     window = MainWindow(
         managed_root_service,
         folder_tree_service,
+        content_service,
         db_path,
         commit_callback=conn.commit,
     )

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -83,20 +84,25 @@ class TestListByPathPrefix:
     def test_list_by_path_prefix_includes_self_and_children(
         self, repo: ContentUnitRepository
     ) -> None:
-        repo.create(_make_unit(unit_id="u-1", path="/mods"))
-        repo.create(_make_unit(unit_id="u-2", path="/mods/armor"))
-        repo.create(_make_unit(unit_id="u-3", path="/mods/armor/sub"))
-        repo.create(_make_unit(unit_id="u-4", path="/other"))
+        # 使用 str(Path(...)) 构造路径，适配 OS 分隔符
+        mods = str(Path("/mods"))
+        armor = str(Path("/mods/armor"))
+        armor_sub = str(Path("/mods/armor/sub"))
+        other = str(Path("/other"))
+        repo.create(_make_unit(unit_id="u-1", path=mods))
+        repo.create(_make_unit(unit_id="u-2", path=armor))
+        repo.create(_make_unit(unit_id="u-3", path=armor_sub))
+        repo.create(_make_unit(unit_id="u-4", path=other))
 
-        result = repo.list_by_path_prefix("/mods")
+        result = repo.list_by_path_prefix(mods)
         paths = {u.path for u in result}
-        assert "/mods" in paths
-        assert "/mods/armor" in paths
-        assert "/mods/armor/sub" in paths
-        assert "/other" not in paths
+        assert mods in paths
+        assert armor in paths
+        assert armor_sub in paths
+        assert other not in paths
 
     def test_list_by_path_prefix_empty(self, repo: ContentUnitRepository) -> None:
-        result = repo.list_by_path_prefix("/nonexistent")
+        result = repo.list_by_path_prefix(str(Path("/nonexistent")))
         assert result == []
 
 

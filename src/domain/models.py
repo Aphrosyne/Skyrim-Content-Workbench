@@ -160,3 +160,35 @@ class ManagedRoot:
             raise ValueError("ManagedRoot.created_at 不能为空")
         if not self.updated_at:
             raise ValueError("ManagedRoot.updated_at 不能为空")
+
+
+@dataclass
+class FileEntry:
+    """目录条目（文件或文件夹）+ 可选的内容单元关联。
+
+    用于浏览模式中栏列表（roadmap Task 4 2026-07-13 设计修正）：
+    数据源为文件系统，content_unit 表仅作为标记来源。
+    内容单元不是可见性门槛——所有文件系统条目均可见可操作。
+
+    name：显示名（文件或文件夹名，可为中文）。
+    path：完整路径（原样存储）。
+    is_dir：True 为文件夹，False 为文件。
+    modified_at：ISO 8601 UTC 字符串（由 service 层从 stat.st_mtime 转换）。
+    size：文件大小（字节）；文件夹为 None。
+    content_unit：若该路径在 content_unit 表中存在则填充，否则为 None。
+    """
+
+    name: str
+    path: str
+    is_dir: bool
+    modified_at: str
+    size: int | None = None
+    content_unit: ContentUnit | None = None
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("FileEntry.name 不能为空")
+        if not self.path:
+            raise ValueError("FileEntry.path 不能为空")
+        if not self.modified_at:
+            raise ValueError("FileEntry.modified_at 不能为空")

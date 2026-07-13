@@ -1,14 +1,15 @@
 """ScanService 测试。
 
-覆盖：
+覆盖（spec §5.4 2026-07-13 修正）：
 - scan_root 增量模式：跳过未变更目录
 - scan_root 全量模式：全量扫描
-- scan_root 持久化：folder_cache 表有记录，content_unit 表有候选记录
+- scan_root 持久化：folder_cache 表有记录，content_unit 表有压缩包候选记录
 - scan_root 重复扫描：已存在的 content_unit 不重复创建
 - scan_root 不存在 → ManagedRootNotFoundError
 - scan_root_by_path 成功
 - ScanSummary 字段正确
 - 中文路径端到端
+- 压缩包文件本身作为 ContentUnit.path（新规则）
 """
 
 from __future__ import annotations
@@ -55,7 +56,10 @@ def managed_root_service(db_connection) -> ManagedRootService:
 
 @pytest.fixture
 def mod_tree(tmp_path: Path) -> Path:
-    """构造样本目录树（含两个内容单元候选 + 一个普通文件夹）。"""
+    """构造样本目录树（含两个压缩包 + 一个普通文件夹 + 嵌套压缩包）。
+
+    spec §5.4 2026-07-13 修正：压缩包文件本身作为内容单元候选。
+    """
     root = tmp_path / "mods"
     root.mkdir()
 
@@ -66,6 +70,9 @@ def mod_tree(tmp_path: Path) -> Path:
     weapons = root / "Weapons"
     weapons.mkdir()
     (weapons / "DragonSword.rar").write_bytes(b"\x00" * 80)
+    # 嵌套压缩包（验证递归）
+    (weapons / "sub").mkdir()
+    (weapons / "sub" / "nested.zip").write_bytes(b"\x00" * 60)
 
     normal = root / "普通文件夹"
     normal.mkdir()
@@ -82,26 +89,32 @@ class TestScanRootFull:
         summary = scan_service.scan_root(root.id, incremental=False)
 
         assert summary.scanned_dirs > 0
-        assert summary.content_units_found == 2  # 护甲 + Weapons
+        # 三个压缩包：寒霜之心.7z + DragonSword.rar + nested.zip
+        assert summary.content_units_found == 3
         assert summary.skipped_unchanged == 0
         assert summary.root_id == root.id
 
-    def test_full_scan_persists_content_units(
+    def test_full_scan_persists_content_units_as_archive_paths(
         self,
         scan_service: ScanService,
         managed_root_service: ManagedRootService,
         mod_tree: Path,
         db_connection,
     ) -> None:
+        """新规则：ContentUnit.path 为压缩包文件路径，不是文件夹路径。"""
         root = managed_root_service.add_root(mod_tree)
         scan_service.scan_root(root.id, incremental=False)
 
         repo = ContentUnitRepository(db_connection)
         units = repo.list_all()
         paths = {u.path for u in units}
-        assert str(mod_tree / "护甲") in paths
-        assert str(mod_tree / "Weapons") in paths
-        # 普通文件夹（无压缩包）不应为内容单元
+        # 压缩包文件路径
+        assert str(mod_tree / "护甲" / "寒霜之心.7z") in paths
+        assert str(mod_tree / "Weapons" / "DragonSword.rar") in paths
+        assert str(mod_tree / "Weapons" / "sub" / "nested.zip") in paths
+        # 文件夹路径不应为内容单元
+        assert str(mod_tree / "护甲") not in paths
+        assert str(mod_tree / "Weapons") not in paths
         assert str(mod_tree / "普通文件夹") not in paths
 
     def test_full_scan_content_unit_default_status(
@@ -119,21 +132,23 @@ class TestScanRootFull:
             assert unit.status == "unorganized"
             assert unit.content_type == "mod"
 
-    def test_full_scan_content_unit_title_is_dirname(
+    def test_full_scan_content_unit_title_is_filename_with_ext(
         self,
         scan_service: ScanService,
         managed_root_service: ManagedRootService,
         mod_tree: Path,
         db_connection,
     ) -> None:
+        """新规则：title 为压缩包文件名（含扩展名）。"""
         root = managed_root_service.add_root(mod_tree)
         scan_service.scan_root(root.id, incremental=False)
 
         repo = ContentUnitRepository(db_connection)
         units = repo.list_all()
         titles = {u.title for u in units}
-        assert "护甲" in titles
-        assert "Weapons" in titles
+        assert "寒霜之心.7z" in titles
+        assert "DragonSword.rar" in titles
+        assert "nested.zip" in titles
 
 
 class TestScanRootIncremental:
@@ -200,12 +215,12 @@ class TestScanRootByPath:
     ) -> None:
         summary = scan_service.scan_root_by_path(mod_tree, incremental=False)
         assert summary.scanned_dirs > 0
-        assert summary.content_units_found == 2
+        assert summary.content_units_found == 3  # 三个压缩包
         assert summary.root_id == "_adhoc"
 
         # 验证 content_unit 已持久化
         repo = ContentUnitRepository(db_connection)
-        assert len(repo.list_all()) == 2
+        assert len(repo.list_all()) == 3
 
 
 class TestRepeatScan:
@@ -225,8 +240,8 @@ class TestRepeatScan:
 
         repo = ContentUnitRepository(db_connection)
         units = repo.list_all()
-        # 仍只有 2 个内容单元（path 唯一约束去重）
-        assert len(units) == 2
+        # 仍只有 3 个内容单元（path 唯一约束去重）
+        assert len(units) == 3
 
     def test_repeat_scan_no_duplicate_folder_cache(
         self,

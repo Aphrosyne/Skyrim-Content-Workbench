@@ -1,8 +1,9 @@
-"""主窗口。阶段 2 Task 3：目录树浏览。
+"""主窗口。阶段 2 Task 4：文件列表 + 内容单元显示（2026-07-13 设计修正）。
 
-布局：
-- 左栏：受管理根目录列表 + 添加/移除按钮 + 扫描按钮（增量/全量）+ 扫描状态。
-- 右栏：目录树（FolderTreeModel）+ 选中目录详情。
+布局（三栏，与 spec §7.1 一致）：
+- 左栏：受管理根目录列表 + 添加/移除按钮 + 扫描按钮 + 扫描状态 + 目录树 + 选中目录详情。
+- 中栏：文件列表（选中目录树节点时刷新，数据源为文件系统，content_unit 表仅作标记）。
+- 右栏：元数据面板（双击内容单元时显示；双击非内容单元不响应）。
 
 约束（AGENTS 规则 3）：
 - UI 不直接调用 shutil / Path.rename / Path.unlink 等文件写 API。
@@ -11,6 +12,11 @@
 - 扫描期间禁用重复扫描入口。
 
 目录树数据源严格为 SQLite folder_cache 表，不重新扫描文件系统。
+文件列表数据源为文件系统（Path.iterdir），通过 ContentService.list_directory_entries
+读取条目并按 path 关联 content_unit 表。内容单元不是可见性门槛——
+所有文件系统条目均可见可操作（spec §5.1 关键设计）。
+元数据面板只读显示（编辑在阶段 4 Task 4）。
+双击非内容单元不响应（spec §5.1 L205）。
 """
 
 from __future__ import annotations
@@ -19,15 +25,19 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread
+from PySide6.QtCore import QPoint, Qt, QThread
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -37,8 +47,10 @@ from PySide6.QtWidgets import (
 )
 
 from app import ui_constants as ui
+from app.file_list_model import FileListModel
 from app.folder_tree_model import FolderTreeModel
 from app.scan_worker import ScanWorker
+from application.content_service import ContentService
 from application.errors import (
     DuplicateManagedRootError,
     InvalidRootPathError,
@@ -47,18 +59,21 @@ from application.errors import (
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from application.scan_service import ScanSummary
-from domain.models import ManagedRoot
+from domain.models import ContentUnit, FileEntry, ManagedRoot
 
 logger = logging.getLogger(__name__)
 
 # 错误摘要最多展示条数
 MAX_ERROR_SUMMARY_LINES = 5
 
+# 详情区路径 / 元数据路径字段在 Elide 时保留的左右字符比例参考
+# 详情区第 2 行为路径，元数据面板第 2 行为路径（详见 _apply_elide）
+
 
 class MainWindow(QMainWindow):
     """应用主窗口。
 
-    通过构造注入 ManagedRootService、FolderTreeService 与 db_path，便于测试。
+    通过构造注入 ManagedRootService、FolderTreeService、ContentService 与 db_path，便于测试。
     db_path 用于 ScanWorker 在后台线程创建独立连接。
     """
 
@@ -66,6 +81,7 @@ class MainWindow(QMainWindow):
         self,
         managed_root_service: ManagedRootService,
         folder_tree_service: FolderTreeService,
+        content_service: ContentService,
         db_path: Path,
         commit_callback: Callable[[], None] | None = None,
         parent: QWidget | None = None,
@@ -73,6 +89,7 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self._service = managed_root_service
         self._tree_service = folder_tree_service
+        self._content_service = content_service
         self._db_path = db_path
         self._commit_callback = commit_callback
         self._thread: QThread | None = None
@@ -106,7 +123,7 @@ class MainWindow(QMainWindow):
     def _setup_ui(self) -> None:
         splitter = QSplitter(Qt.Horizontal)
 
-        # === 左栏：受管理根目录 + 扫描控制 ===
+        # === 左栏：受管理根目录 + 扫描控制 + 目录树 + 详情 ===
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -156,14 +173,6 @@ class MainWindow(QMainWindow):
         status_layout.addWidget(self._status_label)
         left_layout.addWidget(status_box)
 
-        left_layout.addStretch(1)
-        splitter.addWidget(left)
-
-        # === 右栏：目录树 + 详情 ===
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-
         # 目录树
         self._tree_group = QGroupBox(ui.TREE_GROUP_TITLE)
         tree_layout = QVBoxLayout(self._tree_group)
@@ -182,21 +191,71 @@ class MainWindow(QMainWindow):
         self._tree_empty_hint.setWordWrap(True)
         tree_layout.addWidget(self._tree_empty_hint)
 
-        right_layout.addWidget(self._tree_group, stretch=2)
+        left_layout.addWidget(self._tree_group, stretch=2)
 
         # 选中目录详情
         self._detail_group = QGroupBox(ui.DETAIL_GROUP_TITLE)
         detail_layout = QVBoxLayout(self._detail_group)
         self._detail_label = QLabel(ui.DETAIL_NOT_SELECTED)
-        self._detail_label.setWordWrap(True)
+        # 详情区路径需要 Elide，整体不自动换行；多行字段之间用 \n 分隔
+        self._detail_label.setWordWrap(False)
+        self._detail_label.setTextFormat(Qt.PlainText)
         self._detail_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        # 缓存原始文本供 resizeEvent 重新 Elide
+        self._detail_full_text = ui.DETAIL_NOT_SELECTED
         detail_layout.addWidget(self._detail_label)
-        right_layout.addWidget(self._detail_group, stretch=1)
+        left_layout.addWidget(self._detail_group, stretch=1)
+
+        splitter.addWidget(left)
+
+        # === 中栏：文件列表（roadmap Task 4 2026-07-13 设计修正） ===
+        middle = QWidget()
+        middle_layout = QVBoxLayout(middle)
+        middle_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._content_group = QGroupBox(ui.CONTENT_LIST_GROUP_TITLE)
+        content_layout = QVBoxLayout(self._content_group)
+
+        self._content_view = QListView()
+        self._content_view.setEditTriggers(QListView.EditTrigger.NoEditTriggers)
+        self._content_view.setSelectionMode(QListView.SelectionMode.SingleSelection)
+        self._content_view.setDragDropMode(QListView.DragDropMode.NoDragDrop)
+        self._content_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._content_list_model = FileListModel()
+        self._content_view.setModel(self._content_list_model)
+        self._content_view.doubleClicked.connect(self._on_entry_activated)
+        self._content_view.customContextMenuRequested.connect(self._on_content_context_menu)
+        content_layout.addWidget(self._content_view)
+
+        self._content_empty_hint = QLabel(ui.CONTENT_LIST_NO_SELECTION)
+        self._content_empty_hint.setWordWrap(True)
+        content_layout.addWidget(self._content_empty_hint)
+
+        middle_layout.addWidget(self._content_group)
+
+        splitter.addWidget(middle)
+
+        # === 右栏：元数据面板 ===
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._metadata_group = QGroupBox(ui.METADATA_GROUP_TITLE)
+        metadata_layout = QVBoxLayout(self._metadata_group)
+        self._metadata_label = QLabel(ui.METADATA_NOT_SELECTED)
+        # 元数据路径字段需要 Elide，整体不自动换行
+        self._metadata_label.setWordWrap(False)
+        self._metadata_label.setTextFormat(Qt.PlainText)
+        self._metadata_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self._metadata_full_text = ui.METADATA_NOT_SELECTED
+        metadata_layout.addWidget(self._metadata_label)
+        right_layout.addWidget(self._metadata_group)
 
         splitter.addWidget(right)
 
         splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 1)
 
         self.setCentralWidget(splitter)
 
@@ -237,20 +296,27 @@ class MainWindow(QMainWindow):
         self._tree_model.refresh()
         root_count = self._tree_model.root_node_count()
         self._tree_empty_hint.setVisible(root_count == 0)
-        # 清空详情区
-        self._detail_label.setText(ui.DETAIL_NOT_SELECTED)
+        # 清空详情区与文件列表
+        self._set_detail_text(ui.DETAIL_NOT_SELECTED)
+        self._content_list_model.refresh([])
+        self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
+        self._set_metadata_text(ui.METADATA_NOT_SELECTED)
 
     def _on_tree_selection_changed(self, *args) -> None:  # noqa: ANN001 (Qt 信号)
-        """目录树选中变化时更新详情区。"""
+        """目录树选中变化时更新详情区与文件列表。"""
         indexes = self._tree_view.selectionModel().selectedIndexes()
         if not indexes:
-            self._detail_label.setText(ui.DETAIL_NOT_SELECTED)
+            self._set_detail_text(ui.DETAIL_NOT_SELECTED)
+            self._content_list_model.refresh([])
+            self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
             return
 
         index = indexes[0]
         node = self._tree_model.node_at(index)
         if node is None:
-            self._detail_label.setText(ui.DETAIL_NOT_SELECTED)
+            self._set_detail_text(ui.DETAIL_NOT_SELECTED)
+            self._content_list_model.refresh([])
+            self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
             return
 
         # 查询子目录数
@@ -270,7 +336,145 @@ class MainWindow(QMainWindow):
             f"{ui.DETAIL_TYPE_LABEL}：{type_text}",
             f"{ui.DETAIL_CHILD_COUNT_LABEL}：{child_count}",
         ]
-        self._detail_label.setText("\n".join(lines))
+        self._set_detail_text("\n".join(lines))
+
+        # 刷新文件列表（使用 node.real_path 读取目录条目）
+        self._refresh_content_list(node.real_path)
+        # 清空元数据面板（切换目录时重置）
+        self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+
+    def _refresh_content_list(self, dir_path: str) -> None:
+        """刷新文件列表（数据源为文件系统，content_unit 表仅作标记）。"""
+        try:
+            entries = self._content_service.list_directory_entries(dir_path)
+        except Exception:  # noqa: BLE001 - UI 边界需捕获所有异常
+            logger.exception("加载文件列表失败：dir_path=%s", dir_path)
+            entries = []
+
+        self._content_list_model.refresh(entries)
+        if not entries:
+            self._content_empty_hint.setText(ui.CONTENT_LIST_EMPTY_HINT)
+        else:
+            self._content_empty_hint.setText("")
+
+    # --- 文件条目 ---
+
+    def _on_entry_activated(self, index) -> None:  # noqa: ANN001 (Qt 信号)
+        """双击文件条目：仅内容单元响应（显示元数据），非内容单元不响应。
+
+        spec §5.1 L205：双击非内容单元不响应。
+        """
+        entry = self._content_list_model.entry_at(index.row())
+        if entry is None:
+            return
+
+        if entry.content_unit is not None:
+            self._update_metadata(entry.content_unit)
+            return
+
+        # 非内容单元（文件或文件夹）：不响应，右栏保持现状
+
+    def _on_content_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
+        """文件列表右键菜单：本 Task 仅实现「复制路径」（决策问题 2）。"""
+        index = self._content_view.indexAt(pos)
+        if not index.isValid():
+            return
+        entry = self._content_list_model.entry_at(index.row())
+        if entry is None:
+            return
+
+        menu = QMenu(self)
+        action = menu.addAction(ui.CONTEXT_MENU_COPY_PATH)
+        chosen = menu.exec(self._content_view.viewport().mapToGlobal(pos))
+        if chosen is action:
+            self._copy_path_to_clipboard(entry.path)
+
+    def _copy_path_to_clipboard(self, path: str) -> None:
+        """复制路径到剪贴板。"""
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(path)
+        self.statusBar().showMessage(ui.CONTEXT_MENU_COPY_PATH_OK, 3000)
+
+    def _update_metadata(self, unit: ContentUnit) -> None:
+        """更新元数据面板。"""
+        title = unit.title or "（无标题）"
+        status_text = (
+            ui.METADATA_STATUS_ORGANIZED
+            if unit.status == "organized"
+            else ui.METADATA_STATUS_UNORGANIZED
+        )
+        rating_text = f"{unit.rating} / 5" if unit.rating is not None else ui.METADATA_RATING_EMPTY
+        source_url = unit.source_url or ui.METADATA_SOURCE_URL_EMPTY
+        notes = unit.notes or ui.METADATA_NOTES_EMPTY
+
+        lines = [
+            f"{ui.METADATA_TITLE_LABEL}：{title}",
+            f"{ui.METADATA_PATH_LABEL}：{unit.path}",
+            f"{ui.METADATA_TYPE_LABEL}：{unit.content_type}",
+            f"{ui.METADATA_SOURCE_URL_LABEL}：{source_url}",
+            f"{ui.METADATA_RATING_LABEL}：{rating_text}",
+            f"{ui.METADATA_STATUS_LABEL}：{status_text}",
+            f"{ui.METADATA_NOTES_LABEL}：{notes}",
+            f"{ui.METADATA_CREATED_AT_LABEL}：{unit.created_at}",
+        ]
+        self._set_metadata_text("\n".join(lines))
+
+    # --- Elide 路径文本（决策问题 4） ---
+
+    def _set_detail_text(self, text: str) -> None:
+        """设置详情区文本（缓存原文，触发 Elide 重算）。"""
+        self._detail_full_text = text
+        self._apply_elide()
+
+    def _set_metadata_text(self, text: str) -> None:
+        """设置元数据面板文本（缓存原文，触发 Elide 重算）。"""
+        self._metadata_full_text = text
+        self._apply_elide()
+
+    def _apply_elide(self) -> None:
+        """对详情区和元数据面板的路径行应用 ElideMiddle。
+
+        多行文本按 \n 拆分，仅对路径行（"路径：..." 或 "完整路径：..."）做省略，
+        其他行原样保留。文本超长时用 QFontMetrics.elidedText 替换为中间省略形式。
+        """
+        self._elide_label_lines(self._detail_label, self._detail_full_text)
+        self._elide_label_lines(self._metadata_label, self._metadata_full_text)
+
+    def _elide_label_lines(self, label: QLabel, full_text: str) -> None:
+        """对 label 的多行文本逐行 Elide。"""
+        if not full_text:
+            label.setText("")
+            return
+
+        fm = QFontMetrics(label.font())
+        # 减去内边距，预留 16px 余量
+        max_width = max(50, label.width() - 16)
+
+        lines = full_text.split("\n")
+        out: list[str] = []
+        for line in lines:
+            # 识别路径行：含 "路径：" 前缀的字段
+            if "路径：" in line:
+                # 找到 "路径：" 位置，对值部分 Elide
+                idx = line.index("路径：")
+                prefix = line[: idx + len("路径：")]
+                value = line[idx + len("路径：") :]
+                available = max_width - fm.horizontalAdvance(prefix)
+                elided = fm.elidedText(value, Qt.TextElideMode.ElideMiddle, available)
+                out.append(prefix + elided)
+            else:
+                # 非路径行：若仍超宽，整体 ElideMiddle
+                if fm.horizontalAdvance(line) > max_width:
+                    out.append(fm.elidedText(line, Qt.TextElideMode.ElideMiddle, max_width))
+                else:
+                    out.append(line)
+        label.setText("\n".join(out))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        """窗口尺寸变化时重新 Elide。"""
+        super().resizeEvent(event)
+        self._apply_elide()
 
     # --- 添加根目录 ---
 
@@ -421,7 +625,7 @@ class MainWindow(QMainWindow):
             text = "\n".join(lines)
         self._set_status(f"{ui.STATUS_SCAN_COMPLETE}\n{text}")
         self._end_scanning()
-        # 扫描完成后刷新目录树
+        # 扫描完成后刷新目录树（内容单元列表也会在选中节点时刷新）
         self._refresh_tree()
 
     def _on_scan_failed(self, message: str) -> None:
@@ -448,3 +652,25 @@ class MainWindow(QMainWindow):
     def is_remove_button_enabled(self) -> bool:
         """返回移除按钮是否可用（供测试）。"""
         return self._remove_button.isEnabled()
+
+    # --- 文件列表测试接口 ---
+
+    def entry_count(self) -> int:
+        """返回当前文件列表条数（供测试）。"""
+        return self._content_list_model.entry_count()
+
+    def entry_at(self, row: int) -> FileEntry | None:
+        """返回指定行的 FileEntry（供测试）。"""
+        return self._content_list_model.entry_at(row)
+
+    def metadata_text(self) -> str:
+        """返回元数据面板当前显示文本（已 Elide，供测试）。"""
+        return self._metadata_label.text()
+
+    def metadata_full_text(self) -> str:
+        """返回元数据面板原始文本（未 Elide，供测试）。"""
+        return self._metadata_full_text
+
+    def detail_full_text(self) -> str:
+        """返回详情区原始文本（未 Elide，供测试）。"""
+        return self._detail_full_text

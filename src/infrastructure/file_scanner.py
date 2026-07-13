@@ -1,14 +1,16 @@
 """文件系统扫描器。
 
-只读递归扫描受管理根目录，识别内容单元候选（含压缩包的文件夹），
-返回 ScannedFolderEntry 列表供 ScanService 持久化。
+只读递归扫描受管理根目录，识别压缩包文件作为内容单元候选（spec §5.4 2026-07-13 修正），
+返回 ScannedFolderEntry 列表 + archive_candidates 压缩包文件路径列表供 ScanService 持久化。
 
 设计要点：
 - 只读：不修改、不移动、不删除任何用户文件（AGENTS 规则 2、5）。
 - 不读取文件内容（AGENTS 规则 6）：仅使用 Path.iterdir / is_dir / stat。
 - 符号链接不跟随（避免循环）。
-- 内容单元识别规则（spec §5.4）：文件夹内含压缩包 → 候选 ContentUnit。
-  识别为内容单元后停止递归其子目录。
+- 内容单元识别规则（spec §5.4 2026-07-13 修正）：所有压缩包文件均自动标记为内容单元候选。
+  压缩包文件本身作为 ContentUnit.path，不再以文件夹作为候选。
+  文件夹不自动标记为内容单元（手动标记属阶段 3 Task 3）。
+  递归所有子目录，不再因识别到压缩包而停止递归。
 - 增量扫描：传入 folder_cache 的 last_scanned_mtime，未变更目录跳过。
 
 错误处理：单个目录扫描失败不中断整体流程，记入 ScanResult.errors。
@@ -37,8 +39,8 @@ class ScanError:
 class ScannedFolderEntry:
     """扫描得到的单个目录条目。
 
-    is_content_unit_candidate 为 True 表示该目录被识别为内容单元候选
-    （含压缩包文件）。扫描器识别到候选后会停止递归其子目录。
+    is_content_unit_candidate 字段保留向后兼容，新扫描规则下恒为 False
+    （内容单元候选改为记录压缩包文件路径，见 ScanResult.archive_candidates）。
     """
 
     path: str
@@ -49,10 +51,15 @@ class ScannedFolderEntry:
 
 @dataclass
 class ScanResult:
-    """扫描结果。"""
+    """扫描结果。
+
+    archive_candidates：扫描发现的所有压缩包文件完整路径列表
+    （spec §5.4 2026-07-13 修正：压缩包文件本身作为内容单元候选）。
+    """
 
     scanned_dirs: list[ScannedFolderEntry] = field(default_factory=list)
     content_unit_candidates: list[ScannedFolderEntry] = field(default_factory=list)
+    archive_candidates: list[str] = field(default_factory=list)
     errors: list[ScanError] = field(default_factory=list)
     skipped_unchanged: int = 0
 
@@ -105,9 +112,13 @@ class FileScanner:
 
         增量扫描逻辑：
         - mtime 未变 → 跳过该目录的扫描结果记录（skipped_unchanged），
-          但仍读取目录内容以获取子目录列表，递归检查子目录
+          但仍读取目录内容以获取子目录列表和压缩包文件列表，递归检查子目录
           （子目录的 mtime 可能独立变化）。
         - mtime 变化 → 重新扫描该目录，记录到 scanned_dirs。
+
+        新扫描规则（spec §5.4 2026-07-13 修正）：
+        - 递归所有子目录，不再因发现压缩包而停止递归。
+        - 压缩包文件路径记入 result.archive_candidates。
         """
         try:
             dir_mtime = dir_path.stat().st_mtime
@@ -124,16 +135,15 @@ class FileScanner:
             if cached_mtime is not None and self._mtime_equal(cached_mtime, dir_mtime):
                 is_unchanged = True
 
-        # 读取目录内容（即使 mtime 未变也需要获取子目录列表）
+        # 读取目录内容（即使 mtime 未变也需要获取子目录列表 + 压缩包文件）
         try:
             entries = list(dir_path.iterdir())
         except OSError as e:
             result.errors.append(ScanError(path=dir_path_str, message=f"无法读取目录内容：{e}"))
             return
 
-        # 分离子目录与文件
+        # 分离子目录与压缩包文件
         subdirs: list[Path] = []
-        has_archive = False
         for entry in entries:
             try:
                 # 符号链接不跟随（避免循环）
@@ -144,7 +154,8 @@ class FileScanner:
                 elif entry.is_file():
                     ext = get_extension(entry.name)
                     if ext in ARCHIVE_EXTENSIONS:
-                        has_archive = True
+                        # 压缩包文件作为内容单元候选（spec §5.4 2026-07-13 修正）
+                        result.archive_candidates.append(str(entry))
             except OSError as e:
                 result.errors.append(ScanError(path=str(entry), message=f"无法读取条目：{e}"))
                 continue
@@ -152,31 +163,6 @@ class FileScanner:
         if is_unchanged:
             # mtime 未变：跳过扫描结果记录，但仍递归子目录
             result.skipped_unchanged += 1
-            # 内容单元候选不会递归子目录，所以未变的内容单元候选直接跳过
-            if not has_archive:
-                for subdir in subdirs:
-                    self._scan_dir(
-                        subdir,
-                        parent_path=dir_path_str,
-                        folder_mtime_map=folder_mtime_map,
-                        result=result,
-                    )
-            return
-
-        # 记录当前目录（mtime 已变化）
-        entry = ScannedFolderEntry(
-            path=dir_path_str,
-            mtime=dir_mtime,
-            is_content_unit_candidate=has_archive,
-            parent_path=parent_path,
-        )
-        result.scanned_dirs.append(entry)
-        if has_archive:
-            result.content_unit_candidates.append(entry)
-
-        # 递归子目录
-        # 内容单元候选：停止递归其子目录（spec §5.4）
-        if not has_archive:
             for subdir in subdirs:
                 self._scan_dir(
                     subdir,
@@ -184,6 +170,25 @@ class FileScanner:
                     folder_mtime_map=folder_mtime_map,
                     result=result,
                 )
+            return
+
+        # 记录当前目录（mtime 已变化）
+        entry = ScannedFolderEntry(
+            path=dir_path_str,
+            mtime=dir_mtime,
+            is_content_unit_candidate=False,  # 新规则下恒为 False
+            parent_path=parent_path,
+        )
+        result.scanned_dirs.append(entry)
+
+        # 递归所有子目录（新规则：不再因压缩包而停止递归）
+        for subdir in subdirs:
+            self._scan_dir(
+                subdir,
+                parent_path=dir_path_str,
+                folder_mtime_map=folder_mtime_map,
+                result=result,
+            )
 
     @staticmethod
     def _mtime_equal(cached: float, current: float) -> bool:

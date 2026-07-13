@@ -2,9 +2,11 @@
 
 编排 ManagedRoot → FileScanner → folder_cache + content_unit 持久化的完整链路。
 
-依据 spec §5.4：
-- 内容单元识别规则：文件夹内含压缩包 → 候选 ContentUnit。
-- 识别后停止递归其子目录。
+依据 spec §5.4（2026-07-13 修正）：
+- 内容单元识别规则：所有压缩包文件均自动标记为内容单元候选。
+- 压缩包文件本身作为 ContentUnit.path（不再是文件夹）。
+- 文件夹不自动标记为内容单元（手动标记属阶段 3 Task 3）。
+- 递归所有子目录，不再因识别到压缩包而停止递归。
 
 依据 architecture §8.1：
 - 增量扫描：对比 folder_cache.last_scanned_mtime，未变更目录跳过。
@@ -182,15 +184,16 @@ class ScanService:
         summary.scanned_dirs = len(result.scanned_dirs)
 
         # 持久化 content_unit（仅插入新候选）
+        # spec §5.4 2026-07-13 修正：压缩包文件本身作为内容单元候选
         existing_cu_paths: set[str] = {cu.path for cu in self._content_unit_repo.list_all()}
         new_units_count = 0
-        for candidate in result.content_unit_candidates:
-            if candidate.path in existing_cu_paths:
+        for archive_path in result.archive_candidates:
+            if archive_path in existing_cu_paths:
                 continue
             unit = ContentUnit(
                 id=self._new_uuid(),
-                path=candidate.path,
-                title=Path(candidate.path).name,
+                path=archive_path,
+                title=Path(archive_path).name,
                 content_type="mod",
                 status="unorganized",
                 created_at=now,
