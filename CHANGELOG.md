@@ -8,6 +8,29 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.15.1] - 2026-07-14
+
+Code Review 第二批修复：修复进入阶段 3 前的 3 项高优先级技术债。schema_version 维持 4。
+
+### Fixed
+
+- **TD-H4 + TD-H5**：[src/app/main_window.py](src/app/main_window.py) `_on_thread_finished` 修复扫描线程竞态条件。
+  - 原实现盲目清除 `self._worker`/`self._thread` 引用，当用户在扫描完成后立即触发新扫描时，旧线程退出会误清除指向新扫描线程的引用，导致 closeEvent 无法等待新线程退出（Qt 析构运行中 QThread 可致崩溃）。
+  - 修复：用 `sender()` 校验退出的线程是否为当前 `self._thread`，仅匹配时才清除引用。
+- **TD-H6**：[src/infrastructure/repositories/content_unit.py](src/infrastructure/repositories/content_unit.py) `list_by_path_prefix` 修复 SQL LIKE 通配符未转义问题。
+  - 原实现将 `prefix` 直接拼入 LIKE 模式，未转义 `%` 和 `_`。Mod 目录名中 `_` 极常见（如 `my_mods`、`SkyUI_5.1`），`_` 在 LIKE 中匹配任意单字符会导致错误路径被返回。
+  - 修复：转义 `prefix + sep` 中的 `%`、`_`、`\`，使用 `ESCAPE '\\'` 子句。
+
+### Tests
+
+- 测试数量变化：292 passed, 2 skipped（+6 新测试）。
+- [tests/test_content_unit_repository.py](tests/test_content_unit_repository.py)：新增 2 项测试验证 `_` 和 `%` 不被误认为 LIKE 通配符。
+- [tests/test_main_window_scan_thread.py](tests/test_main_window_scan_thread.py)（新文件）：4 项测试覆盖线程引用管理——直接调用不清除非 None 引用、sender 匹配时正常清除、旧线程退出不误清除新线程引用、closeEvent 线程安全。
+
+### Documentation
+
+- 更新 [docs/technical-debt.md](docs/technical-debt.md)：标记 TD-H4/H5/H6 为已修复，更新处理优先级建议。
+
 ## [0.15.0] - 2026-07-14
 
 Code Review 第一批修复：删除方向 C 重构后的遗留死代码，修复路径归一化与事务一致性问题。schema_version 维持 4。未在本轮修复的问题已记录至 [docs/technical-debt.md](docs/technical-debt.md)。

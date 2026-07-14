@@ -702,9 +702,20 @@ class MainWindow(QMainWindow):
         self._remove_button.setEnabled(has_selection)
 
     def _on_thread_finished(self) -> None:
-        """QThread 真正退出后清理 Python 引用。"""
-        self._worker = None
-        self._thread = None
+        """QThread 真正退出后清理 Python 引用。
+
+        仅当退出的线程是当前扫描线程（self._thread）时才清除引用，
+        避免旧线程退出时误清除新扫描线程的引用（TD-H4 竞态修复）。
+
+        竞态场景：扫描完成 → _on_scan_finished 恢复按钮 → 用户立即点击扫描
+        → 新 QThread 覆盖 self._thread → 旧线程退出触发本方法。
+        若不校验 sender，会盲目清除指向新扫描的引用，导致 closeEvent
+        无法等待新线程（TD-H5 崩溃风险）。
+        """
+        sender = self.sender()
+        if sender is self._thread:
+            self._worker = None
+            self._thread = None
 
     def _on_scan_started(self) -> None:
         self._set_status(ui.STATUS_SCANNING)

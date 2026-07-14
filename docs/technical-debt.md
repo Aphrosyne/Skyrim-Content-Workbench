@@ -2,6 +2,7 @@
 
 > 本文档记录 Code Review 中发现但未在第一批修复的问题。
 > 第一批已修复：C1-C4、H2、H5、H6、M8、M12（详见 CHANGELOG v0.15.0）。
+> 第二批已修复：TD-H4、TD-H5、TD-H6（详见 CHANGELOG v0.15.1）。
 > 以下问题按严重级别排列，将在阶段 3 及后续迭代中逐步处理。
 
 ---
@@ -26,23 +27,20 @@
 - **问题**: 每个目录条目执行 3 次系统调用（is_symlink/is_dir/stat）+ 1 次独立 DB 查询（get_by_path）。大目录（数百文件）UI 可冻结数百毫秒至数秒。违反 project_memory 中"UI must not freeze"约束。
 - **建议**: 批量查询替代 N+1；将 list_directory_entries 移入后台线程或加 mtime 缓存。
 
-### TD-H4: 扫描线程引用管理存在竞态条件
+### TD-H4: 扫描线程引用管理存在竞态条件 ✅ 已修复（v0.15.1）
 
-- **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) `_end_scanning` / `_on_thread_finished` / `_on_scan_finished`
-- **问题**: `_is_scanning` 在 `scan_finished` 信号时即清除，但 QThread 尚未真正退出。用户立即触发新扫描会覆盖 `self._thread`/`self._worker`，旧线程退出时 `_on_thread_finished` 盲目清除新线程引用。
-- **建议**: 将 `_end_scanning()` 移至 `_on_thread_finished`，或在 `_on_thread_finished` 中用 `sender()` 校验。
+- **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) `_on_thread_finished`
+- **修复**: 在 `_on_thread_finished` 中用 `sender()` 校验，仅当退出的线程是当前 `self._thread` 时才清除引用。
 
-### TD-H5: closeEvent 线程等待逻辑受 TD-H4 竞态影响
+### TD-H5: closeEvent 线程等待逻辑受 TD-H4 竞态影响 ✅ 已修复（v0.15.1）
 
 - **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) `closeEvent`
-- **问题**: 若旧线程的 `_on_thread_finished` 已将 `self._thread` 置 None，而新扫描线程仍在运行，closeEvent 会跳过等待，Qt 析构运行中的 QThread 可致崩溃。
-- **建议**: 随 TD-H4 一并修复。
+- **修复**: 随 TD-H4 一并修复。`self._thread` 现在始终指向当前运行的线程，closeEvent 能正确等待。
 
-### TD-H6: ContentUnitRepository.list_by_path_prefix SQL LIKE 通配符未转义
+### TD-H6: ContentUnitRepository.list_by_path_prefix SQL LIKE 通配符未转义 ✅ 已修复（v0.15.1）
 
 - **位置**: [content_unit.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/repositories/content_unit.py) `list_by_path_prefix`
-- **问题**: `prefix` 直接拼入 LIKE 模式，未转义 `%` 和 `_`。Mod 目录名中 `_` 极常见（如 `my_mods`、`SkyUI_5.1`），`_` 匹配任意单字符会导致错误路径被返回。
-- **建议**: 使用 `ESCAPE` 子句并显式转义通配符，或改用 `substr` 前缀比较。
+- **修复**: 转义 `prefix + sep` 中的 `%`、`_`、`\`，使用 `ESCAPE '\\'` 子句。
 
 ---
 
@@ -264,9 +262,9 @@
 
 ## 处理优先级建议
 
-1. **阶段 3 开发前优先处理**（影响安全/正确性）：
-   - TD-H6（SQL LIKE 未转义，数据正确性）
-   - TD-H4 + TD-H5（线程竞态，可致崩溃）
+1. ~~**阶段 3 开发前优先处理**（影响安全/正确性）~~：
+   - ~~TD-H6（SQL LIKE 未转义，数据正确性）~~ ✅ 已修复
+   - ~~TD-H4 + TD-H5（线程竞态，可致崩溃）~~ ✅ 已修复
 
 2. **阶段 3 开发中视情况处理**（影响性能/可用性）：
    - TD-H3（UI 冻结，影响基本可用性）
