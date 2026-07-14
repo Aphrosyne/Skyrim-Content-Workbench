@@ -87,6 +87,16 @@ ERR_DUPLICATE_ROOT = "该目录已添加。"
 ERR_INVALID_ROOT = "路径不存在或不是目录。"
 ERR_REMOVE_ROOT_FAILED = "移除目录配置失败"
 
+# 模式切换（spec §5.1/§5.2，roadmap 阶段 2 Task 5）
+MODE_SWITCH_GROUP_TITLE = "模式"
+MODE_BROWSE = "浏览"
+MODE_ORGANIZE = "整理"
+MODE_BROWSE_HINT = "浏览模式：点击目录树节点切换中栏内容。"
+MODE_ORGANIZE_HINT = "整理模式：中栏内容已冻结，目录树作为目标选择器。"
+MODE_ORGANIZE_WORKAREA_HINT = "整理模式 - 工作区：{name}"
+MODE_ORGANIZE_TARGET_HINT = "目标：{path}"
+MODE_ORGANIZE_NO_WORKAREA = "整理模式：请先在浏览模式选中目录后再切换。"
+
 
 def format_scan_summary(
     scanned_dirs: int,

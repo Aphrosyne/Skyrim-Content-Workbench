@@ -8,6 +8,65 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.14.0] - 2026-07-13
+
+对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 5（双模式切换 + 扫描联动）完成。schema_version 维持 4。
+
+**新增功能**：
+- 顶部 `[浏览 | 整理]` 模式切换按钮（默认浏览模式，互斥分组）。
+- 整理模式：中栏内容冻结为切换前所在目录的文件列表（工作区），目录树点击节点只高亮目标并显示"目标：xxx"提示，不刷新中栏。
+- 浏览模式：目录树点击节点 → 中栏刷新该目录文件列表（Task 4 既有行为）。
+- 扫描联动：扫描完成后自动刷新当前中栏文件列表，使新扫描出的压缩包文件立即显示 `[内容单元]` 标记（浏览模式刷新当前选中节点，整理模式刷新冻结的工作区）。
+- 整理模式下 `_refresh_tree` 不清空中栏内容（保留冻结的工作区）。
+
+**设计约束**：
+- 暂存区完整功能（标记/取消/持久化/目录树 [S] 标记）属阶段 3 Task 1，本 Task 只实现模式切换框架 + 扫描联动。
+- 整理模式中栏"冻结"语义为保留切换前所在目录的文件列表，作为简化工作区。
+- 切回浏览模式时中栏恢复跟随目录树当前选中节点刷新。
+- 整理模式下右栏元数据面板保留当前行为（双击内容单元显示元数据），不因模式切换清空。
+
+### Added
+
+- [src/domain/models.py](src/domain/models.py)：新增 `AppMode(StrEnum)` 枚举（browse / organize），纯领域枚举无数据库知识。
+- [src/app/mode_manager.py](src/app/mode_manager.py)（新文件）：`ModeManager(QObject)` 封装当前模式状态，提供 `mode_changed` 信号；相同模式重复设置不 emit 信号。
+- [src/app/ui_constants.py](src/app/ui_constants.py)：新增模式切换相关常量（`MODE_SWITCH_GROUP_TITLE` / `MODE_BROWSE` / `MODE_ORGANIZE` / `MODE_BROWSE_HINT` / `MODE_ORGANIZE_HINT` / `MODE_ORGANIZE_WORKAREA_HINT` / `MODE_ORGANIZE_TARGET_HINT` / `MODE_ORGANIZE_NO_WORKAREA`）。
+
+### Changed
+
+- [src/app/main_window.py](src/app/main_window.py)：
+  - 顶部新增模式切换栏（QHBoxLayout + QButtonGroup 互斥），主布局改为顶部栏 + 三栏 splitter。
+  - 中栏顶部新增 `_mode_hint_label` 显示当前模式提示与目标路径。
+  - `__init__` 新增 `ModeManager`、`_organize_workarea_path`、`_organize_target_path` 字段。
+  - `_on_tree_selection_changed` 新增模式分支：浏览模式刷新中栏 + 清空元数据；整理模式只更新目标路径提示，不刷新中栏。
+  - `_refresh_tree` 在整理模式下不清空中栏文件列表（保留冻结的工作区）。
+  - `_on_scan_finished` 扫描完成后调用 `_refresh_content_list_after_scan` 刷新当前中栏文件列表。
+  - 新增 `_on_mode_changed` / `_freeze_workarea_for_organize` / `_update_organize_hint` / `_refresh_content_for_current_tree_selection` / `_refresh_content_list_after_scan` 方法。
+  - 新增测试接口：`current_mode()` / `mode_hint_text()` / `mode_hint_full_text()` / `organize_workarea_path()`。
+  - **UI 一致性修复**：统一所有路径显示策略为 Elide + Tooltip。
+    - `_mode_hint_label` 关闭自动换行（`setWordWrap(False)`）+ PlainText，走统一 Elide 流程。
+    - `_elide_label_lines` 识别"目标："前缀，对值部分 ElideMiddle（与"路径："/"完整路径："一致）。
+    - 详情区、元数据面板、模式提示三个标签均设置 Tooltip 显示完整原文，便于鼠标悬停查看。
+    - 拆分 `_elide_single_line` 方法，提取单行 Elide 逻辑。
+    - `_ELIDE_PATH_PREFIXES` 类常量统一管理路径前缀列表。
+
+### Tests
+
+- 单元测试 14 项新增（总计 287 passed, 5 skipped），覆盖：
+  - `tests/test_mode_manager.py`（5 项，新文件）：初始模式 / 切换到 organize / 切换回 browse / 相同模式不 emit / 信号正确发射。
+  - `tests/test_main_window_mode.py`（9 项，新文件）：初始模式为 browse / 切换到整理模式冻结中栏 / 整理模式点击目录树不刷新中栏 / 整理模式显示目标提示 / 切回浏览模式刷新中栏 / 扫描完成刷新中栏（浏览模式）/ 扫描完成刷新工作区（整理模式）/ 未选中节点切换到整理模式显示提示 / 长目标路径 Elide + Tooltip。
+
+### 安全限制
+
+- 模式切换纯 UI 状态变更，不访问数据库或文件系统。
+- 扫描联动中的文件列表刷新通过 `ContentService.list_directory_entries` 只读访问文件系统，不修改用户文件。
+- 整理模式下目录树点击节点只更新 UI 高亮与提示文本，不触发任何文件操作。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 59 files already formatted
+- `python -m pytest` → 287 passed, 5 skipped
+
 ## [0.13.0] - 2026-07-13
 
 对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 4（文件列表 + 内容单元显示）完成。schema_version 维持 4。

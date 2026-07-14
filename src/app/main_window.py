@@ -1,9 +1,19 @@
-"""主窗口。阶段 2 Task 4：文件列表 + 内容单元显示（2026-07-13 设计修正）。
+"""主窗口。阶段 2 Task 5：双模式切换 + 扫描联动（2026-07-13）。
 
-布局（三栏，与 spec §7.1 一致）：
+布局（顶部模式切换 + 三栏，与 spec §7.1 一致）：
+- 顶部：[浏览 | 整理] 模式切换按钮（默认浏览）。
 - 左栏：受管理根目录列表 + 添加/移除按钮 + 扫描按钮 + 扫描状态 + 目录树 + 选中目录详情。
-- 中栏：文件列表（选中目录树节点时刷新，数据源为文件系统，content_unit 表仅作标记）。
+- 中栏：文件列表（浏览模式跟随目录树节点；整理模式冻结为切换前工作区）。
 - 右栏：元数据面板（双击内容单元时显示；双击非内容单元不响应）。
+
+模式行为（spec §5.1/§5.2，roadmap 阶段 2 Task 5）：
+- 浏览模式：目录树点击节点 → 中栏刷新该目录文件列表 + 详情区更新。
+- 整理模式：中栏内容冻结（保留切换前的文件列表），目录树点击节点只高亮目标
+  并在中栏顶部显示"目标：xxx"，不切换中栏内容。
+
+扫描联动（roadmap 阶段 2 Task 5 验收项 5）：
+- 扫描完成 → 刷新目录树 + 刷新当前中栏文件列表
+  （新扫描出的压缩包文件立即显示 [内容单元] 标记）。
 
 约束（AGENTS 规则 3）：
 - UI 不直接调用 shutil / Path.rename / Path.unlink 等文件写 API。
@@ -29,6 +39,7 @@ from PySide6.QtCore import QPoint, Qt, QThread
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -49,6 +60,7 @@ from PySide6.QtWidgets import (
 from app import ui_constants as ui
 from app.file_list_model import FileListModel
 from app.folder_tree_model import FolderTreeModel
+from app.mode_manager import ModeManager
 from app.scan_worker import ScanWorker
 from application.content_service import ContentService
 from application.errors import (
@@ -59,7 +71,7 @@ from application.errors import (
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from application.scan_service import ScanSummary
-from domain.models import ContentUnit, FileEntry, ManagedRoot
+from domain.models import AppMode, ContentUnit, FileEntry, ManagedRoot
 
 logger = logging.getLogger(__name__)
 
@@ -96,10 +108,18 @@ class MainWindow(QMainWindow):
         self._worker: ScanWorker | None = None
         self._is_scanning = False
 
+        # 模式管理器（默认浏览模式）
+        self._mode_manager = ModeManager(self)
+        # 整理模式冻结的工作区目录路径（None 表示未设置，切换到整理模式时填充）
+        self._organize_workarea_path: str | None = None
+        # 整理模式下目录树选中的目标路径（用于显示"目标：xxx"提示）
+        self._organize_target_path: str | None = None
+
         self.setWindowTitle(ui.APP_TITLE)
         self.resize(ui.WINDOW_DEFAULT_WIDTH, ui.WINDOW_DEFAULT_HEIGHT)
 
         self._setup_ui()
+        self._mode_manager.mode_changed.connect(self._on_mode_changed)
         self._refresh_root_list()
         self._refresh_tree()
 
@@ -121,6 +141,35 @@ class MainWindow(QMainWindow):
     # --- UI 构建 ---
 
     def _setup_ui(self) -> None:
+        # === 顶部模式切换栏（spec §7.1，roadmap 阶段 2 Task 5） ===
+        top_bar = QWidget()
+        top_layout = QHBoxLayout(top_bar)
+        top_layout.setContentsMargins(8, 4, 8, 4)
+
+        mode_label = QLabel(ui.MODE_SWITCH_GROUP_TITLE)
+        top_layout.addWidget(mode_label)
+
+        self._mode_browse_button = QPushButton(ui.MODE_BROWSE)
+        self._mode_browse_button.setCheckable(True)
+        self._mode_browse_button.setChecked(True)  # 默认浏览模式
+        self._mode_browse_button.clicked.connect(lambda: self._set_mode(AppMode.browse))
+        top_layout.addWidget(self._mode_browse_button)
+
+        self._mode_organize_button = QPushButton(ui.MODE_ORGANIZE)
+        self._mode_organize_button.setCheckable(True)
+        self._mode_organize_button.clicked.connect(lambda: self._set_mode(AppMode.organize))
+        top_layout.addWidget(self._mode_organize_button)
+
+        # 互斥分组
+        self._mode_group = QButtonGroup(self)
+        self._mode_group.setExclusive(True)
+        self._mode_group.addButton(self._mode_browse_button)
+        self._mode_group.addButton(self._mode_organize_button)
+
+        top_layout.addStretch(1)
+        # 右侧预留空间（搜索框、置顶按钮等属后续 Task）
+
+        # === 三栏 Splitter ===
         splitter = QSplitter(Qt.Horizontal)
 
         # === 左栏：受管理根目录 + 扫描控制 + 目录树 + 详情 ===
@@ -213,6 +262,15 @@ class MainWindow(QMainWindow):
         middle_layout = QVBoxLayout(middle)
         middle_layout.setContentsMargins(0, 0, 0, 0)
 
+        # 模式提示标签（显示当前模式 + 目标路径/工作区）
+        # 与详情区/元数据面板一致：关闭自动换行 + PlainText，走 Elide 流程
+        self._mode_hint_label = QLabel(ui.MODE_BROWSE_HINT)
+        self._mode_hint_label.setWordWrap(False)
+        self._mode_hint_label.setTextFormat(Qt.PlainText)
+        self._mode_hint_label.setStyleSheet("padding: 4px; color: #666;")
+        self._mode_hint_full_text = ui.MODE_BROWSE_HINT
+        middle_layout.addWidget(self._mode_hint_label)
+
         self._content_group = QGroupBox(ui.CONTENT_LIST_GROUP_TITLE)
         content_layout = QVBoxLayout(self._content_group)
 
@@ -257,7 +315,14 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 1)
 
-        self.setCentralWidget(splitter)
+        # 主布局：顶部模式栏 + 三栏 splitter
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(top_bar)
+        central_layout.addWidget(splitter, stretch=1)
+        self.setCentralWidget(central)
 
     # --- 根目录列表 ---
 
@@ -292,31 +357,44 @@ class MainWindow(QMainWindow):
     # --- 目录树 ---
 
     def _refresh_tree(self) -> None:
-        """刷新目录树模型。"""
+        """刷新目录树模型。
+
+        整理模式下不清空中栏文件列表（保留冻结的工作区）。
+        """
         self._tree_model.refresh()
         root_count = self._tree_model.root_node_count()
         self._tree_empty_hint.setVisible(root_count == 0)
-        # 清空详情区与文件列表
+        # 清空详情区
         self._set_detail_text(ui.DETAIL_NOT_SELECTED)
-        self._content_list_model.refresh([])
-        self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
-        self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+        if self._mode_manager.is_browse():
+            # 浏览模式：清空文件列表与元数据
+            self._content_list_model.refresh([])
+            self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
+            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+        # 整理模式：保留冻结的工作区内容，不清空中栏
 
     def _on_tree_selection_changed(self, *args) -> None:  # noqa: ANN001 (Qt 信号)
-        """目录树选中变化时更新详情区与文件列表。"""
+        """目录树选中变化时更新详情区与文件列表。
+
+        模式行为分支：
+        - 浏览模式：刷新详情区 + 刷新中栏文件列表 + 清空元数据。
+        - 整理模式：刷新详情区 + 更新整理目标提示，**不刷新中栏内容**（中栏冻结）。
+        """
         indexes = self._tree_view.selectionModel().selectedIndexes()
         if not indexes:
             self._set_detail_text(ui.DETAIL_NOT_SELECTED)
-            self._content_list_model.refresh([])
-            self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
+            if self._mode_manager.is_browse():
+                self._content_list_model.refresh([])
+                self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
             return
 
         index = indexes[0]
         node = self._tree_model.node_at(index)
         if node is None:
             self._set_detail_text(ui.DETAIL_NOT_SELECTED)
-            self._content_list_model.refresh([])
-            self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
+            if self._mode_manager.is_browse():
+                self._content_list_model.refresh([])
+                self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
             return
 
         # 查询子目录数
@@ -338,10 +416,15 @@ class MainWindow(QMainWindow):
         ]
         self._set_detail_text("\n".join(lines))
 
-        # 刷新文件列表（使用 node.real_path 读取目录条目）
-        self._refresh_content_list(node.real_path)
-        # 清空元数据面板（切换目录时重置）
-        self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+        if self._mode_manager.is_browse():
+            # 浏览模式：刷新文件列表（使用 node.real_path 读取目录条目）
+            self._refresh_content_list(node.real_path)
+            # 清空元数据面板（切换目录时重置）
+            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+        else:
+            # 整理模式：只更新目标路径提示，不刷新中栏内容
+            self._organize_target_path = node.real_path
+            self._update_organize_hint()
 
     def _refresh_content_list(self, dir_path: str) -> None:
         """刷新文件列表（数据源为文件系统，content_unit 表仅作标记）。"""
@@ -420,7 +503,10 @@ class MainWindow(QMainWindow):
         ]
         self._set_metadata_text("\n".join(lines))
 
-    # --- Elide 路径文本（决策问题 4） ---
+    # --- Elide 路径文本（决策问题 4，Task 5 统一路径显示策略） ---
+
+    # 需要对值部分做 ElideMiddle 的路径前缀列表
+    _ELIDE_PATH_PREFIXES = ("路径：", "完整路径：", "目标：")
 
     def _set_detail_text(self, text: str) -> None:
         """设置详情区文本（缓存原文，触发 Elide 重算）。"""
@@ -432,19 +518,27 @@ class MainWindow(QMainWindow):
         self._metadata_full_text = text
         self._apply_elide()
 
-    def _apply_elide(self) -> None:
-        """对详情区和元数据面板的路径行应用 ElideMiddle。
+    def _set_mode_hint_text(self, text: str) -> None:
+        """设置模式提示文本（缓存原文，触发 Elide 重算）。"""
+        self._mode_hint_full_text = text
+        self._apply_elide()
 
-        多行文本按 \n 拆分，仅对路径行（"路径：..." 或 "完整路径：..."）做省略，
-        其他行原样保留。文本超长时用 QFontMetrics.elidedText 替换为中间省略形式。
+    def _apply_elide(self) -> None:
+        """对详情区、元数据面板、模式提示的路径行应用 ElideMiddle。
+
+        多行文本按 \\n 拆分，仅对路径行（"路径：..." / "完整路径：..." / "目标：..."）
+        做值部分省略，其他行原样保留。文本超长时用 QFontMetrics.elidedText 替换为中间省略形式。
+        同时设置 Tooltip 显示完整文本，便于鼠标悬停查看。
         """
         self._elide_label_lines(self._detail_label, self._detail_full_text)
         self._elide_label_lines(self._metadata_label, self._metadata_full_text)
+        self._elide_label_lines(self._mode_hint_label, self._mode_hint_full_text)
 
     def _elide_label_lines(self, label: QLabel, full_text: str) -> None:
-        """对 label 的多行文本逐行 Elide。"""
+        """对 label 的多行文本逐行 Elide，并设置 Tooltip 显示完整文本。"""
         if not full_text:
             label.setText("")
+            label.setToolTip("")
             return
 
         fm = QFontMetrics(label.font())
@@ -454,22 +548,30 @@ class MainWindow(QMainWindow):
         lines = full_text.split("\n")
         out: list[str] = []
         for line in lines:
-            # 识别路径行：含 "路径：" 前缀的字段
-            if "路径：" in line:
-                # 找到 "路径：" 位置，对值部分 Elide
-                idx = line.index("路径：")
-                prefix = line[: idx + len("路径：")]
-                value = line[idx + len("路径：") :]
+            elided_line = self._elide_single_line(line, fm, max_width)
+            out.append(elided_line)
+        label.setText("\n".join(out))
+        # Tooltip 显示完整原文（统一路径显示策略：Elide + 悬停查看完整路径）
+        label.setToolTip(full_text)
+
+    def _elide_single_line(self, line: str, fm: QFontMetrics, max_width: int) -> str:
+        """对单行文本应用 Elide。
+
+        识别路径前缀（"路径：" / "完整路径：" / "目标："），对值部分 ElideMiddle；
+        其他行若超宽则整体 ElideMiddle。
+        """
+        for prefix_str in self._ELIDE_PATH_PREFIXES:
+            if prefix_str in line:
+                idx = line.index(prefix_str)
+                prefix = line[: idx + len(prefix_str)]
+                value = line[idx + len(prefix_str) :]
                 available = max_width - fm.horizontalAdvance(prefix)
                 elided = fm.elidedText(value, Qt.TextElideMode.ElideMiddle, available)
-                out.append(prefix + elided)
-            else:
-                # 非路径行：若仍超宽，整体 ElideMiddle
-                if fm.horizontalAdvance(line) > max_width:
-                    out.append(fm.elidedText(line, Qt.TextElideMode.ElideMiddle, max_width))
-                else:
-                    out.append(line)
-        label.setText("\n".join(out))
+                return prefix + elided
+        # 非路径行：若仍超宽，整体 ElideMiddle
+        if fm.horizontalAdvance(line) > max_width:
+            return fm.elidedText(line, Qt.TextElideMode.ElideMiddle, max_width)
+        return line
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         """窗口尺寸变化时重新 Elide。"""
@@ -608,7 +710,13 @@ class MainWindow(QMainWindow):
         self._set_status(ui.STATUS_SCANNING)
 
     def _on_scan_finished(self, summary: ScanSummary) -> None:
-        """扫描完成：展示摘要并刷新目录树。"""
+        """扫描完成：展示摘要、刷新目录树、刷新当前中栏文件列表。
+
+        扫描联动（roadmap 阶段 2 Task 5 验收项 5）：
+        - 浏览模式：若当前选中目录树节点，刷新该目录的文件列表，
+          使新扫描出的压缩包文件立即显示 [内容单元] 标记。
+        - 整理模式：刷新冻结的工作区目录的文件列表。
+        """
         text = ui.format_scan_summary(
             scanned_dirs=summary.scanned_dirs,
             content_units_found=summary.content_units_found,
@@ -625,8 +733,32 @@ class MainWindow(QMainWindow):
             text = "\n".join(lines)
         self._set_status(f"{ui.STATUS_SCAN_COMPLETE}\n{text}")
         self._end_scanning()
-        # 扫描完成后刷新目录树（内容单元列表也会在选中节点时刷新）
+        # 扫描完成 → 刷新目录树
         self._refresh_tree()
+        # 扫描完成 → 刷新当前中栏文件列表（扫描联动）
+        self._refresh_content_list_after_scan()
+
+    def _refresh_content_list_after_scan(self) -> None:
+        """扫描完成后刷新中栏文件列表（扫描联动）。
+
+        - 浏览模式：若目录树有选中节点，重新读取该目录文件列表。
+        - 整理模式：若有冻结的工作区，重新读取工作区目录文件列表。
+        - 否则：无操作。
+        """
+        if self._mode_manager.is_organize():
+            workarea = self._organize_workarea_path
+            if workarea is not None:
+                self._refresh_content_list(workarea)
+            return
+
+        # 浏览模式：读取当前选中目录树节点
+        sm = self._tree_view.selectionModel()
+        indexes = sm.selectedIndexes() if sm is not None else []
+        if not indexes:
+            return
+        node = self._tree_model.node_at(indexes[0])
+        if node is not None:
+            self._refresh_content_list(node.real_path)
 
     def _on_scan_failed(self, message: str) -> None:
         self._set_status(f"{ui.STATUS_SCAN_FAILED}\n{message}")
@@ -674,3 +806,85 @@ class MainWindow(QMainWindow):
     def detail_full_text(self) -> str:
         """返回详情区原始文本（未 Elide，供测试）。"""
         return self._detail_full_text
+
+    # --- 模式切换（spec §5.1/§5.2，roadmap 阶段 2 Task 5） ---
+
+    def _set_mode(self, mode: AppMode) -> None:
+        """切换应用模式（按钮回调）。"""
+        self._mode_manager.set_mode(mode)
+
+    def _on_mode_changed(self, mode: AppMode) -> None:
+        """模式变化时更新 UI 状态与中栏提示。"""
+        if mode == AppMode.organize:
+            # 切换到整理模式：冻结当前工作区
+            self._freeze_workarea_for_organize()
+            self._update_organize_hint()
+        else:
+            # 切换回浏览模式：恢复跟随目录树刷新
+            self._organize_workarea_path = None
+            self._organize_target_path = None
+            self._set_mode_hint_text(ui.MODE_BROWSE_HINT)
+            # 恢复显示当前选中目录树节点的内容
+            self._refresh_content_for_current_tree_selection()
+
+    def _freeze_workarea_for_organize(self) -> None:
+        """切换到整理模式时冻结当前工作区。
+
+        若目录树有选中节点，将其 real_path 作为冻结工作区；
+        否则工作区为 None，中栏显示提示。
+        """
+        sm = self._tree_view.selectionModel()
+        indexes = sm.selectedIndexes() if sm is not None else []
+        if not indexes:
+            self._organize_workarea_path = None
+            return
+        node = self._tree_model.node_at(indexes[0])
+        if node is not None:
+            self._organize_workarea_path = node.real_path
+            self._organize_target_path = node.real_path
+        else:
+            self._organize_workarea_path = None
+
+    def _update_organize_hint(self) -> None:
+        """更新整理模式下的中栏顶部提示（走 Elide 流程）。"""
+        if self._organize_workarea_path is None:
+            self._set_mode_hint_text(ui.MODE_ORGANIZE_NO_WORKAREA)
+            return
+        workarea_name = Path(self._organize_workarea_path).name
+        base_hint = ui.MODE_ORGANIZE_WORKAREA_HINT.format(name=workarea_name)
+        target = self._organize_target_path
+        if target is not None and target != self._organize_workarea_path:
+            target_hint = ui.MODE_ORGANIZE_TARGET_HINT.format(path=target)
+            self._set_mode_hint_text(f"{base_hint}\n{target_hint}")
+        else:
+            self._set_mode_hint_text(base_hint)
+
+    def _refresh_content_for_current_tree_selection(self) -> None:
+        """切回浏览模式时，根据目录树当前选中节点刷新中栏。"""
+        sm = self._tree_view.selectionModel()
+        if sm is None:
+            return
+        indexes = sm.selectedIndexes()
+        if not indexes:
+            return
+        node = self._tree_model.node_at(indexes[0])
+        if node is not None:
+            self._refresh_content_list(node.real_path)
+
+    # --- 模式测试接口 ---
+
+    def current_mode(self) -> AppMode:
+        """返回当前应用模式（供测试）。"""
+        return self._mode_manager.mode
+
+    def mode_hint_text(self) -> str:
+        """返回中栏顶部模式提示显示文本（已 Elide，供测试）。"""
+        return self._mode_hint_label.text()
+
+    def mode_hint_full_text(self) -> str:
+        """返回中栏顶部模式提示原始文本（未 Elide，供测试）。"""
+        return self._mode_hint_full_text
+
+    def organize_workarea_path(self) -> str | None:
+        """返回整理模式冻结的工作区路径（供测试）。"""
+        return self._organize_workarea_path
