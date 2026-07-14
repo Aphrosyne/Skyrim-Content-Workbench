@@ -18,10 +18,12 @@ from app.main_window import MainWindow
 from application.content_service import ContentService
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
+from application.staging_service import StagingService
 from infrastructure.db import get_connection, init_db
 from infrastructure.repositories.content_unit import ContentUnitRepository
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
+from infrastructure.repositories.staging_area import StagingAreaRepository
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +59,11 @@ def main() -> int:
     conn = get_connection(db_path)
     conn.row_factory = sqlite3.Row
     managed_root_service = ManagedRootService(ManagedRootRepository(conn))
+    staging_service = StagingService(StagingAreaRepository(conn))
     folder_tree_service = FolderTreeService(
         ManagedRootRepository(conn),
         FolderCacheRepository(conn),
+        staging_service=staging_service,
     )
     content_service = ContentService(ContentUnitRepository(conn))
 
@@ -70,6 +74,7 @@ def main() -> int:
         content_service,
         db_path,
         commit_callback=conn.commit,
+        staging_service=staging_service,
     )
     window.show()
     exit_code = app.exec()

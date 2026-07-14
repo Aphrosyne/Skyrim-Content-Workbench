@@ -36,6 +36,11 @@ STATUS_SCAN_FAILED = "扫描失败"
 TREE_GROUP_TITLE = "目录树"
 TREE_EMPTY_HINT = "尚未扫描任何目录。请先在左侧选择根目录并点击「扫描」。"
 TREE_UNSCANNED_HINT = "（未扫描）"
+TREE_STAGING_HINT = "[S] "
+
+# 暂存区右键菜单（阶段 3 Task 1）
+MENU_MARK_STAGING = "标记为暂存区"
+MENU_UNMARK_STAGING = "取消暂存区标记"
 
 # 选中目录详情区域
 DETAIL_GROUP_TITLE = "选中目录详情"

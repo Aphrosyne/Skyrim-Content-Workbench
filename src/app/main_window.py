@@ -65,12 +65,16 @@ from app.scan_worker import ScanWorker
 from application.content_service import ContentService
 from application.errors import (
     DuplicateManagedRootError,
+    DuplicateStagingAreaError,
     InvalidRootPathError,
     ManagedRootNotFoundError,
+    StagingAreaNestingError,
+    StagingAreaNotFoundError,
 )
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from application.scan_service import ScanSummary
+from application.staging_service import StagingService
 from domain.models import AppMode, ContentUnit, FileEntry, ManagedRoot
 
 logger = logging.getLogger(__name__)
@@ -96,6 +100,7 @@ class MainWindow(QMainWindow):
         content_service: ContentService,
         db_path: Path,
         commit_callback: Callable[[], None] | None = None,
+        staging_service: StagingService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -104,6 +109,7 @@ class MainWindow(QMainWindow):
         self._content_service = content_service
         self._db_path = db_path
         self._commit_callback = commit_callback
+        self._staging_service = staging_service
         self._thread: QThread | None = None
         self._worker: ScanWorker | None = None
         self._is_scanning = False
@@ -231,9 +237,11 @@ class MainWindow(QMainWindow):
         self._tree_view.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self._tree_view.setSelectionMode(QTreeView.SelectionMode.SingleSelection)
         self._tree_view.setDragDropMode(QTreeView.DragDropMode.NoDragDrop)
+        self._tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree_model = FolderTreeModel(self._tree_service)
         self._tree_view.setModel(self._tree_model)
         self._tree_view.selectionModel().selectionChanged.connect(self._on_tree_selection_changed)
+        self._tree_view.customContextMenuRequested.connect(self._on_tree_context_menu)
         tree_layout.addWidget(self._tree_view)
 
         self._tree_empty_hint = QLabel(ui.TREE_EMPTY_HINT)
@@ -456,6 +464,79 @@ class MainWindow(QMainWindow):
             return
 
         # 非内容单元（文件或文件夹）：不响应，右栏保持现状
+
+    def _on_tree_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
+        """目录树右键菜单：标记/取消暂存区（阶段 3 Task 1）。
+
+        仅当注入了 StagingService 时显示菜单。根据节点当前 is_staging 状态
+        显示"标记为暂存区"或"取消暂存区标记"。
+        """
+        if self._staging_service is None:
+            return
+        index = self._tree_view.indexAt(pos)
+        if not index.isValid():
+            return
+        node = self._tree_model.node_at(index)
+        if node is None:
+            return
+
+        menu = QMenu(self)
+        if node.is_staging:
+            action = menu.addAction(ui.MENU_UNMARK_STAGING)
+            chosen = menu.exec(self._tree_view.viewport().mapToGlobal(pos))
+            if chosen is action:
+                self._unmark_staging_from_node(node)
+        else:
+            action = menu.addAction(ui.MENU_MARK_STAGING)
+            chosen = menu.exec(self._tree_view.viewport().mapToGlobal(pos))
+            if chosen is action:
+                self._mark_staging_from_node(node)
+
+    def _mark_staging_from_node(self, node) -> None:
+        """通过目录树节点标记暂存区。"""
+        if self._staging_service is None:
+            return
+        try:
+            self._staging_service.mark_staging(Path(node.real_path))
+            self._commit()
+            self._tree_service.refresh_staging_cache()
+            self._tree_model.refresh()
+            self.statusBar().showMessage("已标记为暂存区", 3000)
+        except DuplicateStagingAreaError:
+            QMessageBox.warning(self, "提示", "该目录已是暂存区。")
+        except StagingAreaNestingError as e:
+            QMessageBox.warning(self, "无法标记", f"暂存区不允许嵌套：\n{e}")
+        except StagingAreaNotFoundError as e:
+            QMessageBox.warning(self, "无法标记", f"路径无效：\n{e}")
+        except Exception:  # noqa: BLE001
+            logger.exception("标记暂存区失败")
+            QMessageBox.critical(self, "错误", "标记暂存区失败，请查看日志。")
+
+    def _unmark_staging_from_node(self, node) -> None:
+        """通过目录树节点取消暂存区标记。"""
+        if self._staging_service is None:
+            return
+        try:
+            # 通过 is_staging + list_staging 找到对应记录 ID
+            target_path = Path(node.real_path)
+            staging_id: str | None = None
+            for staging in self._staging_service.list_staging():
+                if Path(staging.real_path) == target_path:
+                    staging_id = staging.id
+                    break
+            if staging_id is None:
+                QMessageBox.warning(self, "提示", "未找到该目录的暂存区标记。")
+                return
+            self._staging_service.unmark_staging(staging_id)
+            self._commit()
+            self._tree_service.refresh_staging_cache()
+            self._tree_model.refresh()
+            self.statusBar().showMessage("已取消暂存区标记", 3000)
+        except StagingAreaNotFoundError:
+            QMessageBox.warning(self, "提示", "该目录未标记为暂存区。")
+        except Exception:  # noqa: BLE001
+            logger.exception("取消暂存区标记失败")
+            QMessageBox.critical(self, "错误", "取消暂存区标记失败，请查看日志。")
 
     def _on_content_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
         """文件列表右键菜单：本 Task 仅实现「复制路径」（决策问题 2）。"""

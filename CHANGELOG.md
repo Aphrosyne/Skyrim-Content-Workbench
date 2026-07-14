@@ -8,6 +8,41 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.16.0] - 2026-07-14
+
+阶段 3 Task 1：暂存区标记与管理。schema_version 从 4 升级至 5（新增 `staging_area` 表）。仅写应用数据库，不修改用户文件。
+
+### Added
+
+- **Schema v5 迁移**：[src/infrastructure/migrations.py](src/infrastructure/migrations.py) 新增 `migrate_v4_to_v5`，创建 `staging_area` 表（id / real_path / path_key / display_name / created_at / updated_at）+ `idx_staging_area_path_key` 索引；`CURRENT_SCHEMA_VERSION` 由 4 升至 5。
+- **领域模型**：[src/domain/models.py](src/domain/models.py) 新增 `StagingArea` dataclass（含字段非空校验）。
+- **Repository**：[src/infrastructure/repositories/staging_area.py](src/infrastructure/repositories/staging_area.py)（新文件）`StagingAreaRepository` 提供 CRUD（create / get_by_id / get_by_path_key / list_all / delete），不自提交，`IntegrityError` 转 `ConstraintViolationError`。
+- **Application 服务**：[src/application/staging_service.py](src/application/staging_service.py)（新文件）`StagingService` 实现：
+  - `mark_staging`：只读校验路径合法性（Path.exists / Path.is_dir）后写入配置；含祖先+子树双向嵌套检查（基于 `os.sep` 边界的字符串前缀比较，避免 `a/b` 误判为 `a/bc` 的祖先）。
+  - `unmark_staging`：仅删除 `staging_area` 记录，不修改用户文件。
+  - `list_staging` / `get_staging` / `is_staging` / `get_staging_path_keys`：查询接口。
+- **Application 错误类型**：[src/application/errors.py](src/application/errors.py) 新增 `StagingAreaNotFoundError` / `DuplicateStagingAreaError` / `StagingAreaNestingError`。
+- **目录树集成**：[src/application/folder_tree_service.py](src/application/folder_tree_service.py) `TreeNode` 新增 `is_staging: bool = False` 字段；`FolderTreeService.__init__` 新增可选 `staging_service` 参数；内部维护 `_staging_keys_cache: set[str] | None` 惰性缓存，`refresh_staging_cache()` 在标记/取消后增量更新，所有 7 处 TreeNode 构造点均填充 `is_staging`。
+- **UI 右键菜单**：[src/app/main_window.py](src/app/main_window.py) 目录树启用 `CustomContextMenu` 策略，`_on_tree_context_menu` 根据节点 `is_staging` 显示"标记为暂存区"或"取消暂存区标记"：
+  - 标记流程：`mark_staging` → `_commit()` → `refresh_staging_cache()` → `_tree_model.refresh()`，状态栏提示"已标记为暂存区"。
+  - 取消流程：通过 `list_staging()` 查找匹配 `real_path` 的记录 ID → `unmark_staging` → commit → refresh。
+  - 错误处理：`DuplicateStagingAreaError` / `StagingAreaNestingError` / `StagingAreaNotFoundError` 弹中文 QMessageBox 提示；其他异常记日志后弹错误对话框。
+- **UI 显示**：[src/app/folder_tree_model.py](src/app/folder_tree_model.py) `data()` 在 `is_staging=True` 时为 display_name 添加 `[S] ` 前缀；[src/app/ui_constants.py](src/app/ui_constants.py) 新增 `TREE_STAGING_HINT` / `MENU_MARK_STAGING` / `MENU_UNMARK_STAGING` 常量。
+- **入口注入**：[src/app/main.py](src/app/main.py) 构造 `StagingService` 实例，同时注入 `FolderTreeService`（用于目录树 `[S]` 显示）与 `MainWindow`（用于右键菜单）。
+
+### Tests
+
+- 测试数量变化：292 passed, 2 skipped → 338 passed, 2 skipped（+46 新测试）。
+- [tests/test_staging_area_repository.py](tests/test_staging_area_repository.py)（新文件，11 项）：CRUD、中文路径、唯一约束、排序、持久化、显式 commit。
+- [tests/test_staging_service.py](tests/test_staging_service.py)（新文件，20 项）：标记/取消/查询/嵌套检查（祖先+子树双向）/中文路径/不修改文件/重启持久化/不自提交。
+- [tests/test_folder_tree_service.py](tests/test_folder_tree_service.py)：新增 `TestStagingMark` 类（6 项），覆盖根节点/子节点标记、未标记、取消后刷新、get_node 反映标记、无 StagingService 默认 False。
+- [tests/test_main_window_staging.py](tests/test_main_window_staging.py)（新文件，8 项）：右键标记/取消、`[S]` 前缀显示、未注入 StagingService 时菜单 noop、嵌套拒绝弹 QMessageBox、重启后保留、中文路径、取消未标记节点提示、DB 持久化。
+- [tests/test_migrations.py](tests/test_migrations.py)：更新断言为 schema v5；新增 `test_migrate_v4_to_v5_idempotent`；原 `test_init_db_migrates_v3_db_to_v4` 重命名为 `test_init_db_migrates_v3_db_to_v5`。
+
+### Documentation
+
+- 更新 [docs/roadmap.md](docs/roadmap.md)：阶段 3 Task 1 验收项全部 `[ ]` → `[x]`，标题加 ✅ 标记。
+
 ## [0.15.1] - 2026-07-14
 
 Code Review 第二批修复：修复进入阶段 3 前的 3 项高优先级技术债。schema_version 维持 4。

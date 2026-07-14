@@ -23,6 +23,7 @@ import logging
 
 from PySide6.QtCore import QAbstractItemModel, QModelIndex, Qt
 
+from app import ui_constants as ui
 from application.folder_tree_service import FolderTreeService, TreeNode
 
 logger = logging.getLogger(__name__)
@@ -127,8 +128,10 @@ class FolderTreeModel(QAbstractItemModel):
 
         if role == Qt.DisplayRole:
             name = tn.display_name
+            if tn.is_staging:
+                name = f"{ui.TREE_STAGING_HINT}{name}"
             if tn.category == "unscanned_root":
-                name = f"{name}（未扫描）"
+                name = f"{name}{ui.TREE_UNSCANNED_HINT}"
             return name
         if role == Qt.ToolTipRole:
             return tn.real_path

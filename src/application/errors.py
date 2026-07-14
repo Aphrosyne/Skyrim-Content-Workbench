@@ -24,3 +24,15 @@ class InvalidRootPathError(ApplicationError):
 
 class ScanError(ApplicationError):
     """扫描过程中发生的可向用户展示的错误（非单个目录的扫描错误，而是整体性错误）。"""
+
+
+class StagingAreaNotFoundError(ApplicationError):
+    """StagingArea 不存在。"""
+
+
+class DuplicateStagingAreaError(ApplicationError):
+    """同一 path_key 的暂存区已存在。"""
+
+
+class StagingAreaNestingError(ApplicationError):
+    """暂存区不允许嵌套：祖先目录或子目录已是暂存区。"""

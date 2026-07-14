@@ -204,3 +204,34 @@ class AppMode(StrEnum):
 
     browse = "browse"
     organize = "organize"
+
+
+@dataclass
+class StagingArea:
+    """暂存区标记。spec §5.2 整理模式。
+
+    用户标记的"暂存区"目录配置，独立于扫描缓存持久化——即使暂存区目录
+    未被扫描到或 folder_cache 被清理，标记仍保留。
+
+    real_path 原样存储（可为中文），path_key 用于比较与唯一约束（A2 决策）。
+    本模型不访问文件系统；路径合法性由调用方在 application 层校验。
+    """
+
+    id: str
+    real_path: str
+    path_key: str
+    created_at: str
+    updated_at: str
+    display_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            raise ValueError("StagingArea.id 不能为空")
+        if not self.real_path:
+            raise ValueError("StagingArea.real_path 不能为空")
+        if not self.path_key:
+            raise ValueError("StagingArea.path_key 不能为空")
+        if not self.created_at:
+            raise ValueError("StagingArea.created_at 不能为空")
+        if not self.updated_at:
+            raise ValueError("StagingArea.updated_at 不能为空")

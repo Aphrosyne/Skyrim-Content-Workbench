@@ -1,8 +1,9 @@
 """migrations 模块测试。
 
-覆盖 v0→v1 / v1→v2 / v2→v3 / v3→v4 迁移。
+覆盖 v0→v1 / v1→v2 / v2→v3 / v3→v4 / v4→v5 迁移。
 v3→v4 为方向 C 重建：新建 content_unit 等表，移除 mod_item / file_asset /
 folder_node / operation_log，重建 thumbnail_cache（FK 改为 content_unit）。
+v4→v5 新增 staging_area 表（阶段 3 Task 1 暂存区标记）。
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from infrastructure.migrations import (
     migrate_v1_to_v2,
     migrate_v2_to_v3,
     migrate_v3_to_v4,
+    migrate_v4_to_v5,
 )
 
 
@@ -23,16 +25,17 @@ def test_migrations_sorted_by_target() -> None:
     """MIGRATIONS 列表应按 target 升序可排序（init_db 内部排序）。"""
     targets = [t for t, _ in MIGRATIONS]
     assert targets == sorted(targets)
-    assert len(MIGRATIONS) >= 4
+    assert len(MIGRATIONS) >= 5
     assert MIGRATIONS[0][0] == 1
     assert MIGRATIONS[1][0] == 2
     assert MIGRATIONS[2][0] == 3
     assert MIGRATIONS[3][0] == 4
+    assert MIGRATIONS[4][0] == 5
 
 
-def test_current_schema_version_is_four() -> None:
-    """当前 schema 版本应为 4。"""
-    assert CURRENT_SCHEMA_VERSION == 4
+def test_current_schema_version_is_five() -> None:
+    """当前 schema 版本应为 5。"""
+    assert CURRENT_SCHEMA_VERSION == 5
 
 
 def test_migrate_v0_to_v1_idempotent() -> None:
@@ -493,9 +496,9 @@ def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
     db_path = tmp_path / "test.db"
     version = init_db(db_path)
     assert version == CURRENT_SCHEMA_VERSION
-    assert version == 4
+    assert version == 5
 
-    # v4 后 managed_root 表仍存在
+    # v5 后 managed_root 表仍存在
     conn = sqlite3.connect(str(db_path))
     try:
         row = conn.execute(
@@ -503,17 +506,40 @@ def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
         ).fetchone()
         assert row is not None
 
-        # v4 后 content_unit 表存在
+        # v5 后 content_unit 表存在
         row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='content_unit'"
         ).fetchone()
         assert row is not None
 
-        # v4 后旧表 mod_item 不存在
+        # v5 后 staging_area 表存在
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='staging_area'"
+        ).fetchone()
+        assert row is not None
+
+        # v5 后旧表 mod_item 不存在
         row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='mod_item'"
         ).fetchone()
         assert row is None
+    finally:
+        conn.close()
+
+
+def test_migrate_v4_to_v5_idempotent() -> None:
+    """v4→v5 迁移函数本身幂等（CREATE TABLE IF NOT EXISTS）。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        migrate_v4_to_v5(conn)
+        # 再次调用不应报错
+        migrate_v4_to_v5(conn)
+
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='staging_area'"
+        ).fetchone()
+        assert row is not None
     finally:
         conn.close()
 
@@ -526,11 +552,11 @@ def test_init_db_idempotent_at_current(tmp_path) -> None:
     assert version1 == version2 == CURRENT_SCHEMA_VERSION
 
 
-def test_init_db_migrates_v3_db_to_v4(tmp_path) -> None:
-    """已存在 v3 数据库的 init_db 应迁移到 v4。
+def test_init_db_migrates_v3_db_to_v5(tmp_path) -> None:
+    """已存在 v3 数据库的 init_db 应迁移到 v5。
 
     模拟真实场景：用户已有 v3 数据库（含 managed_root 数据），
-    升级后 managed_root 数据应保留，旧业务表被移除。
+    升级后 managed_root 数据应保留，旧业务表被移除，staging_area 表被创建。
     """
     db_path = tmp_path / "test.db"
     # 手动构造 v3 状态
@@ -563,9 +589,9 @@ def test_init_db_migrates_v3_db_to_v4(tmp_path) -> None:
     finally:
         conn.close()
 
-    # init_db 应识别 v3 并应用 v3→v4
+    # init_db 应识别 v3 并依次应用 v3→v4→v5
     version = init_db(db_path)
-    assert version == 4
+    assert version == 5
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row

@@ -270,6 +270,37 @@ def migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
     logger.info("迁移 v3 → v4 完成")
 
 
+def migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
+    """v4 → v5：新增 staging_area 表。
+
+    staging_area 保存用户标记的"暂存区"目录配置，独立于 folder_cache 扫描结果。
+    即使暂存区目录未被扫描到或 folder_cache 被清理，标记仍保留。
+
+    设计决策：
+    - 独立配置表（与 managed_root 同模式），而非在 folder_cache 加字段。
+    - path_key 唯一约束防止重复标记同一路径（复用 make_path_key 归一化）。
+    - 不与 managed_root 建立外键：暂存区路径不必在受管理根目录下，
+      移除受管理根目录不应级联删除暂存区标记。
+
+    依据 docs/spec.md §5.2、docs/roadmap.md 阶段 3 Task 1。
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS staging_area (
+            id TEXT PRIMARY KEY,
+            real_path TEXT NOT NULL,
+            path_key TEXT NOT NULL UNIQUE,
+            display_name TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_staging_area_path_key ON staging_area(path_key);
+        """
+    )
+    logger.info("迁移 v4 → v5 完成")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -277,4 +308,5 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (2, migrate_v1_to_v2),
     (3, migrate_v2_to_v3),
     (4, migrate_v3_to_v4),
+    (5, migrate_v4_to_v5),
 ]

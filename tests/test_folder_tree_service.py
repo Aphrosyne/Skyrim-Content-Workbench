@@ -21,9 +21,11 @@ import pytest
 from application.folder_tree_service import FolderTreeService, TreeNode
 from application.managed_root_service import ManagedRootService
 from application.scan_service import ScanService
+from application.staging_service import StagingService
 from infrastructure.repositories.content_unit import ContentUnitRepository
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
+from infrastructure.repositories.staging_area import StagingAreaRepository
 
 
 @pytest.fixture
@@ -59,10 +61,28 @@ def scan_service(db_connection: sqlite3.Connection) -> ScanService:
 
 
 @pytest.fixture
-def tree_service(db_connection: sqlite3.Connection) -> FolderTreeService:
+def staging_service(db_connection: sqlite3.Connection) -> StagingService:
+    counter = {"n": 0}
+
+    def fake_uuid() -> str:
+        counter["n"] += 1
+        return f"staging-{counter['n']}"
+
+    return StagingService(
+        StagingAreaRepository(db_connection),
+        now_provider=lambda: "2026-07-14T00:00:00Z",
+        uuid_provider=fake_uuid,
+    )
+
+
+@pytest.fixture
+def tree_service(
+    db_connection: sqlite3.Connection, staging_service: StagingService
+) -> FolderTreeService:
     return FolderTreeService(
         ManagedRootRepository(db_connection),
         FolderCacheRepository(db_connection),
+        staging_service=staging_service,
     )
 
 
@@ -522,3 +542,140 @@ def test_treenode_accepts_valid_categories() -> None:
             parent_id=None,
         )
         assert node.category == category
+
+
+# --- 暂存区标记（阶段 3 Task 1） ---
+
+
+class TestStagingMark:
+    """FolderTreeService 的暂存区标记填充与缓存刷新。"""
+
+    def test_root_node_is_staging_when_marked(
+        self,
+        db_connection: sqlite3.Connection,
+        managed_root_service: ManagedRootService,
+        scan_service: ScanService,
+        staging_service: StagingService,
+        tree_service: FolderTreeService,
+        mod_tree: Path,
+    ) -> None:
+        """标记为暂存区的根节点 is_staging=True。"""
+        root = managed_root_service.add_root(mod_tree)
+        scan_service.scan_root(root.id, incremental=False)
+        staging_service.mark_staging(mod_tree)
+        tree_service.refresh_staging_cache()
+
+        nodes = tree_service.list_root_nodes()
+        assert len(nodes) == 1
+        assert nodes[0].is_staging is True
+
+    def test_root_node_not_staging_when_unmarked(
+        self,
+        db_connection: sqlite3.Connection,
+        managed_root_service: ManagedRootService,
+        scan_service: ScanService,
+        staging_service: StagingService,
+        tree_service: FolderTreeService,
+        mod_tree: Path,
+    ) -> None:
+        """未标记的根节点 is_staging=False。"""
+        root = managed_root_service.add_root(mod_tree)
+        scan_service.scan_root(root.id, incremental=False)
+        # 不标记暂存区
+        tree_service.refresh_staging_cache()
+
+        nodes = tree_service.list_root_nodes()
+        assert len(nodes) == 1
+        assert nodes[0].is_staging is False
+
+    def test_child_node_is_staging_when_marked(
+        self,
+        db_connection: sqlite3.Connection,
+        managed_root_service: ManagedRootService,
+        scan_service: ScanService,
+        staging_service: StagingService,
+        tree_service: FolderTreeService,
+        mod_tree: Path,
+    ) -> None:
+        """标记为暂存区的子节点 is_staging=True，其他兄弟节点为 False。"""
+        root = managed_root_service.add_root(mod_tree)
+        scan_service.scan_root(root.id, incremental=False)
+        # 标记 "护甲" 子目录为暂存区
+        staging_service.mark_staging(mod_tree / "护甲")
+        tree_service.refresh_staging_cache()
+
+        nodes = tree_service.list_root_nodes()
+        children = tree_service.list_children(nodes[0].node_id)
+        for child in children:
+            if child.display_name == "护甲":
+                assert child.is_staging is True
+            else:
+                assert child.is_staging is False
+
+    def test_refresh_cache_reflects_unmark(
+        self,
+        db_connection: sqlite3.Connection,
+        managed_root_service: ManagedRootService,
+        scan_service: ScanService,
+        staging_service: StagingService,
+        tree_service: FolderTreeService,
+        mod_tree: Path,
+    ) -> None:
+        """取消标记后刷新缓存，节点 is_staging 变为 False。"""
+        root = managed_root_service.add_root(mod_tree)
+        scan_service.scan_root(root.id, incremental=False)
+        created = staging_service.mark_staging(mod_tree)
+        tree_service.refresh_staging_cache()
+
+        nodes = tree_service.list_root_nodes()
+        assert nodes[0].is_staging is True
+
+        staging_service.unmark_staging(created.id)
+        tree_service.refresh_staging_cache()
+
+        nodes = tree_service.list_root_nodes()
+        assert nodes[0].is_staging is False
+
+    def test_get_node_reflects_staging(
+        self,
+        db_connection: sqlite3.Connection,
+        managed_root_service: ManagedRootService,
+        scan_service: ScanService,
+        staging_service: StagingService,
+        tree_service: FolderTreeService,
+        mod_tree: Path,
+    ) -> None:
+        """get_node 返回的节点 is_staging 正确。"""
+        root = managed_root_service.add_root(mod_tree)
+        scan_service.scan_root(root.id, incremental=False)
+        staging_service.mark_staging(mod_tree / "Weapons")
+        tree_service.refresh_staging_cache()
+
+        nodes = tree_service.list_root_nodes()
+        children = tree_service.list_children(nodes[0].node_id)
+        weapons_node = next(c for c in children if c.display_name == "Weapons")
+
+        fetched = tree_service.get_node(weapons_node.node_id)
+        assert fetched is not None
+        assert fetched.is_staging is True
+
+    def test_no_staging_service_defaults_to_false(
+        self,
+        db_connection: sqlite3.Connection,
+        managed_root_service: ManagedRootService,
+        scan_service: ScanService,
+        mod_tree: Path,
+    ) -> None:
+        """未注入 StagingService 时所有节点 is_staging=False。"""
+        # 构造未注入 staging_service 的 FolderTreeService
+        tree_svc = FolderTreeService(
+            ManagedRootRepository(db_connection),
+            FolderCacheRepository(db_connection),
+            staging_service=None,
+        )
+        root = managed_root_service.add_root(mod_tree)
+        scan_service.scan_root(root.id, incremental=False)
+
+        nodes = tree_svc.list_root_nodes()
+        assert len(nodes) == 1
+        assert nodes[0].is_staging is False
