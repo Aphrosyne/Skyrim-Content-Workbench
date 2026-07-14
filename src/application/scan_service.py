@@ -28,6 +28,7 @@ from pathlib import Path
 from application.errors import ManagedRootNotFoundError
 from domain.models import ContentUnit, FolderCache, ManagedRoot
 from infrastructure.file_scanner import FileScanner, ScanResult
+from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.content_unit import ContentUnitRepository
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
@@ -109,7 +110,7 @@ class ScanService:
         root = ManagedRoot(
             id="_adhoc",
             real_path=str(path),
-            path_key=str(path),
+            path_key=make_path_key(path),
             created_at=self._now(),
             updated_at=self._now(),
             display_name=path.name,
@@ -142,24 +143,34 @@ class ScanService:
         return summary
 
     def _build_folder_mtime_map(self) -> dict[str, float]:
-        """从 folder_cache 表构造 path → mtime 映射。"""
+        """从 folder_cache 表构造 path_key → mtime 映射。
+
+        键使用 make_path_key() 归一化，与 FileScanner 的查询键一致。
+        """
         folders = self._folder_cache_repo.list_all()
-        return {f.path: f.last_scanned_mtime for f in folders if f.last_scanned_mtime is not None}
+        return {
+            make_path_key(f.path): f.last_scanned_mtime
+            for f in folders
+            if f.last_scanned_mtime is not None
+        }
 
     def _persist_scan_result(self, result: ScanResult, summary: ScanSummary) -> None:
         """将扫描结果持久化到 folder_cache 和 content_unit 表。
 
         - folder_cache：upsert（存在则更新 mtime，不存在则插入）
         - content_unit：仅插入新候选（已存在 path 跳过）
+
+        路径字典键/集合元素统一使用 make_path_key() 归一化，避免大小写/分隔符差异。
         """
         now = self._now()
 
         # 持久化 folder_cache
         existing_folder_map: dict[str, FolderCache] = {
-            f.path: f for f in self._folder_cache_repo.list_all()
+            make_path_key(f.path): f for f in self._folder_cache_repo.list_all()
         }
         for entry in result.scanned_dirs:
-            existing = existing_folder_map.get(entry.path)
+            entry_key = make_path_key(entry.path)
+            existing = existing_folder_map.get(entry_key)
             if existing is not None:
                 # 更新 mtime
                 if existing.last_scanned_mtime is None or not self._scanner._mtime_equal(
@@ -179,16 +190,18 @@ class ScanService:
                     created_at=now,
                 )
                 created = self._folder_cache_repo.create(folder)
-                existing_folder_map[created.path] = created
+                existing_folder_map[make_path_key(created.path)] = created
 
         summary.scanned_dirs = len(result.scanned_dirs)
 
         # 持久化 content_unit（仅插入新候选）
         # spec §5.4 2026-07-13 修正：压缩包文件本身作为内容单元候选
-        existing_cu_paths: set[str] = {cu.path for cu in self._content_unit_repo.list_all()}
+        existing_cu_paths: set[str] = {
+            make_path_key(cu.path) for cu in self._content_unit_repo.list_all()
+        }
         new_units_count = 0
         for archive_path in result.archive_candidates:
-            if archive_path in existing_cu_paths:
+            if make_path_key(archive_path) in existing_cu_paths:
                 continue
             unit = ContentUnit(
                 id=self._new_uuid(),
@@ -201,10 +214,9 @@ class ScanService:
             )
             try:
                 self._content_unit_repo.create(unit)
-                existing_cu_paths.add(unit.path)
+                existing_cu_paths.add(make_path_key(unit.path))
                 new_units_count += 1
-            except Exception:
-                # 单个内容单元创建失败不中断整体流程
+            except Exception:  # noqa: BLE001 - 单个内容单元创建失败不中断整体流程
                 logger.exception("无法创建 ContentUnit: %s", unit.path)
                 summary.errors.append(f"{unit.path}: 无法创建内容单元")
 
@@ -219,8 +231,9 @@ class ScanService:
 
         parent_path 为 None 时返回 None（根节点）。
         parent_path 不在 existing_folder_map 中时返回 None（容忍乱序）。
+        查找键使用 make_path_key() 归一化。
         """
         if parent_path is None:
             return None
-        parent = existing_folder_map.get(parent_path)
+        parent = existing_folder_map.get(make_path_key(parent_path))
         return parent.id if parent is not None else None

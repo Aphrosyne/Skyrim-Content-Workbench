@@ -8,6 +8,43 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.15.0] - 2026-07-14
+
+Code Review 第一批修复：删除方向 C 重构后的遗留死代码，修复路径归一化与事务一致性问题。schema_version 维持 4。未在本轮修复的问题已记录至 [docs/technical-debt.md](docs/technical-debt.md)。
+
+### Removed（死代码清理）
+
+- 删除缩略图子系统死代码（C1 + C2 + H6）：
+  - `src/application/thumbnail_coordinator.py`（导入不存在的 FileAsset/FileAssetRepository）
+  - `src/infrastructure/thumbnail_generator.py`（使用旧版 asset_id 体系）
+  - `src/infrastructure/repositories/thumbnail_cache.py`（SQL 使用 asset_id 列但 schema v4 已改名）
+  - `src/app/thumbnail_worker.py`（引用不存在的 FileAssetRepository）
+  - `src/infrastructure/file_operation_service.py`（旧版四步状态机死代码）
+  - `tests/test_thumbnail_cache.py` / `tests/test_thumbnail_generator.py` / `tests/test_thumbnail_coordinator.py`（整模块 skip 且内容过时）
+- 删除 `src/infrastructure/file_scanner.py` 中的死代码字段（M8）：
+  - `ScannedFolderEntry.is_content_unit_candidate`
+  - `ScanResult.content_unit_candidates`
+  - `_scan_dir` 中对应的 `is_content_unit_candidate=False` 赋值
+
+### Fixed（路径归一化与事务一致性）
+
+- **C3**：[src/application/content_service.py](src/application/content_service.py) `list_by_directory` 中 `Path.resolve()` 改为 `make_path_key()`，与项目约定的路径归一化策略一致。
+- **C4**：[src/application/scan_service.py](src/application/scan_service.py) + [src/infrastructure/file_scanner.py](src/infrastructure/file_scanner.py) 路径字典键/集合元素统一使用 `make_path_key()` 归一化，替代原始路径字符串。
+- **H2**：[src/application/managed_root_service.py](src/application/managed_root_service.py) `add_root` 捕获 `ConstraintViolationError` 转为 `DuplicateManagedRootError`，修复 TOCTOU 竞态（原实现先查后插，并发场景下可绕过去重）。
+- **H5**：[src/infrastructure/repositories/managed_root.py](src/infrastructure/repositories/managed_root.py) `create()` / `delete()` 移除 `self._conn.commit()`，改为不自提交，由 application 层通过 `commit_callback` 控制事务边界。
+- **M12**：[src/infrastructure/db.py](src/infrastructure/db.py) `get_connection` 设置 `conn.row_factory = sqlite3.Row`，使查询结果可按列名访问，与所有 Repository 的 `_row_to_model` 实现一致。
+
+### Tests
+
+- 测试数量变化：286 passed, 2 skipped（删除 3 个被 skip 的缩略图测试文件减少 3 个 skipped；删除 `test_old_candidates_field_empty` 减少 1 个 passed）。
+- [tests/test_file_scanner.py](tests/test_file_scanner.py)：`mtime_map` 键改为 `make_path_key(e.path)` 与 FileScanner 内部查询一致；删除 `test_old_candidates_field_empty`。
+- [tests/test_managed_root_repository.py](tests/test_managed_root_repository.py)：`test_create_commits_transaction_without_explicit_commit` 重写为 `test_create_requires_explicit_commit`，验证不自提交 + 显式 commit 后跨连接可见。
+- [tests/test_managed_root_service.py](tests/test_managed_root_service.py)：`test_add_root_persists_without_explicit_commit` 重写为 `test_add_root_requires_explicit_commit`，添加显式 `conn1.commit()`。
+
+### Documentation
+
+- 新增 [docs/technical-debt.md](docs/technical-debt.md)：记录 Code Review 中未在本轮修复的 6 个 High + 20 个 Medium + 17 个 Low 级别问题，按优先级分类并给出修复建议。
+
 ## [0.14.0] - 2026-07-13
 
 对应 [docs/roadmap.md](docs/roadmap.md) 阶段 2 Task 5（双模式切换 + 扫描联动）完成。schema_version 维持 4。

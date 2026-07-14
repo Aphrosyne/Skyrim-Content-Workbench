@@ -184,11 +184,11 @@ def test_get_root_missing_raises(db_connection) -> None:
         service.get_root("missing-id")
 
 
-def test_add_root_persists_without_explicit_commit(db_path: Path, tmp_path: Path) -> None:
-    """add_root 应通过 Repository 自提交持久化，无需调用方显式 commit。
+def test_add_root_requires_explicit_commit(db_path: Path, tmp_path: Path) -> None:
+    """add_root 不自提交，需调用方显式 commit 才能持久化。
 
-    回归测试：模拟生产路径——UI 调用 service.add_root() 后不显式 commit，
-    关闭并重开数据库应仍能读到该根目录。
+    H5 修复：Repository 不再自提交，application 层需通过 commit_callback 控制事务。
+    模拟生产路径——UI 调用 service.add_root() 后显式 commit，关闭并重开数据库应仍能读到。
     """
     from infrastructure.db import get_connection, init_db
 
@@ -196,9 +196,8 @@ def test_add_root_persists_without_explicit_commit(db_path: Path, tmp_path: Path
     path = tmp_path / "PersistedRoot"
     path.mkdir()
 
-    # 第一次连接：通过 service 添加，不显式 commit
+    # 第一次连接：通过 service 添加并显式 commit
     conn1 = get_connection(db_path)
-    conn1.row_factory = __import__("sqlite3").Row
     try:
         service = ManagedRootService(
             ManagedRootRepository(conn1),
@@ -206,12 +205,12 @@ def test_add_root_persists_without_explicit_commit(db_path: Path, tmp_path: Path
             uuid_provider=lambda: "persist-uuid",
         )
         service.add_root(path)
+        conn1.commit()
     finally:
         conn1.close()
 
     # 第二次连接：应能读到
     conn2 = get_connection(db_path)
-    conn2.row_factory = __import__("sqlite3").Row
     try:
         service2 = ManagedRootService(ManagedRootRepository(conn2))
         roots = service2.list_roots()

@@ -27,9 +27,9 @@ class ManagedRootRepository:
         self._conn = conn
 
     def create(self, root: ManagedRoot) -> ManagedRoot:
-        """插入 ManagedRoot 并提交事务。path_key 唯一约束冲突抛 ConstraintViolationError。
+        """插入 ManagedRoot。path_key 唯一约束冲突抛 ConstraintViolationError。
 
-        写操作自提交，确保调用方无需显式 commit 即可跨连接/重启可见。
+        写操作不自提交，由 application 层控制事务边界（与其他 Repository 一致）。
         """
         try:
             self._conn.execute(
@@ -47,7 +47,6 @@ class ManagedRootRepository:
                     root.updated_at,
                 ),
             )
-            self._conn.commit()
         except sqlite3.IntegrityError as e:
             raise ConstraintViolationError(f"无法创建 ManagedRoot：{e}") from e
         except sqlite3.Error as e:
@@ -92,17 +91,15 @@ class ManagedRootRepository:
         """按 ID 删除 ManagedRoot 记录。
 
         仅删除 managed_root 表中的配置记录，不删除、不修改任何用户文件，
-        不清理 folder_node / file_asset 等扫描记录（清理策略待确认，
-        见 docs/phase-2-plan.md 任务 1 范围外内容）。
+        不清理 folder_cache / content_unit 等扫描记录（清理策略待确认）。
 
-        实体不存在时抛 NotFoundError。写操作自提交。
+        实体不存在时抛 NotFoundError。写操作不自提交，由 application 层控制事务边界。
         """
         try:
             cur = self._conn.execute(
                 "DELETE FROM managed_root WHERE id = ?",
                 (root_id,),
             )
-            self._conn.commit()
         except sqlite3.Error as e:
             raise RepositoryError(f"无法删除 ManagedRoot：{e}") from e
         if cur.rowcount == 0:

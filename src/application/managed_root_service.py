@@ -1,15 +1,15 @@
 """受管理根目录管理服务。
 
-依据 docs/phase-2-plan.md 任务 1、docs/spec.md §6.5、docs/architecture.md §3。
-依据 D1 决策：新增独立 managed_root 表，不依赖 folder_node.is_managed_root。
+依据 docs/spec.md §6.5、docs/architecture.md §3。
+依据 D1 决策：新增独立 managed_root 表，不依赖 folder_cache。
 
 约束：
 - 仅写应用数据库；不扫描、不移动、不删除、不重命名、不复制用户文件。
 - 路径合法性检查只使用只读文件系统 API（Path.exists / Path.is_dir）。
 - 同一 path_key 不能重复添加（A2 路径标准化）。
 - 不自动扫描；添加根目录不触发扫描。
-- 移除根目录配置仅删除 managed_root 记录，不清理 folder_node / file_asset
-  扫描记录（清理策略待确认，见 docs/phase-2-plan.md 任务 1 范围外内容）。
+- 移除根目录配置仅删除 managed_root 记录，不清理 folder_cache / content_unit
+  扫描记录（清理策略待确认）。
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from application.errors import (
 )
 from domain.models import ManagedRoot
 from infrastructure.path_utils import make_path_key
+from infrastructure.repositories.errors import ConstraintViolationError
 from infrastructure.repositories.managed_root import ManagedRootRepository
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,11 @@ class ManagedRootService:
             created_at=now,
             updated_at=now,
         )
-        return self._repo.create(root)
+        try:
+            return self._repo.create(root)
+        except ConstraintViolationError as e:
+            # TOCTOU 竞态：去重检查与 create 之间另一线程插入了相同 path_key
+            raise DuplicateManagedRootError(f"该目录已添加为受管理根目录：{real_path}") from e
 
     def list_roots(self) -> list[ManagedRoot]:
         """返回全部受管理根目录，按 real_path 排序。"""
@@ -111,10 +116,10 @@ class ManagedRootService:
     def remove_root(self, root_id: str) -> None:
         """移除受管理根目录配置。
 
-        规则（docs/phase-2-plan.md 任务 1 验收标准）：
+        规则：
         - 仅删除 managed_root 表中的配置记录。
         - 不删除、不移动、不修改该目录及其中任何用户文件。
-        - 不清理 folder_node / file_asset 等扫描记录（清理策略待确认）。
+        - 不清理 folder_cache / content_unit 等扫描记录（清理策略待确认）。
         - 实体不存在时抛 ManagedRootNotFoundError。
         """
         # 先校验存在性，提供面向用户的错误类型（Repository 的 NotFoundError

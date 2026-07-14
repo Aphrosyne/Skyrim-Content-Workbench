@@ -10,7 +10,8 @@ list_directory_entries：从文件系统读取目录下所有条目（roadmap Ta
 并按 path 关联 content_unit 表中的内容单元。内容单元不是可见性门槛——
 所有文件系统条目均返回。仅使用 Path.iterdir / is_dir / is_file / stat（只读）。
 
-路径比较使用 pathlib.Path.resolve() 归一化，避免大小写/分隔符差异。
+路径比较统一使用 make_path_key()（normcase + normpath）归一化，
+不依赖 Path.resolve()（后者会访问文件系统解析符号链接，语义不一致）。
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from domain.models import ContentUnit, FileEntry
+from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.content_unit import ContentUnitRepository
 
 logger = logging.getLogger(__name__)
@@ -42,7 +44,7 @@ class ContentService:
         """只返回 path 直接属于 dir_path 的内容单元。
 
         判断规则：Path(unit.path).parent 与 dir_path 指向同一目录。
-        使用 Path.resolve() 归一化后比较，避免大小写/分隔符差异。
+        使用 make_path_key() 归一化后比较，避免大小写/分隔符差异。
 
         特别地，当 unit.path 本身就是 dir_path（内容单元路径等于目录路径）时，
         也视为直接子项返回。
@@ -51,12 +53,13 @@ class ContentService:
         if not all_units:
             return []
 
-        target = Path(dir_path).resolve()
+        target_key = make_path_key(dir_path)
         result: list[ContentUnit] = []
         for unit in all_units:
-            unit_path = Path(unit.path).resolve()
+            unit_path_key = make_path_key(unit.path)
+            parent_key = make_path_key(str(Path(unit.path).parent))
             # 内容单元路径等于目录本身 或 其父目录等于目录
-            if unit_path == target or unit_path.parent == target:
+            if unit_path_key == target_key or parent_key == target_key:
                 result.append(unit)
         return result
 

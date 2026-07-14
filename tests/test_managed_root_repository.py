@@ -160,34 +160,49 @@ def test_get_by_id_returns_none_for_missing(
     assert repo.get_by_id("nonexistent") is None
 
 
-def test_create_commits_transaction_without_explicit_commit(db_path: Path, tmp_path: Path) -> None:
-    """create 应自提交事务，无需调用方显式 commit 即可跨连接可见。
+def test_create_requires_explicit_commit(db_path: Path, tmp_path: Path) -> None:
+    """create 不自提交事务，需调用方显式 commit 才能跨连接可见。
 
-    回归测试：修复前 create 未调用 conn.commit()，关闭连接后数据丢失。
+    H5 修复：Repository 不再自提交，由 application 层控制事务边界。
     """
     init_db(db_path)
-    path = tmp_path / "AutoCommit"
+    path = tmp_path / "ExplicitCommit"
     path.mkdir()
 
     # 第一次连接：写入但不显式 commit
     conn1 = get_connection(db_path)
-    conn1.row_factory = sqlite3.Row
     try:
         repo1 = ManagedRootRepository(conn1)
-        repo1.create(_make_root(path, root_id="autocommit-1"))
+        repo1.create(_make_root(path, root_id="no-commit-1"))
     finally:
         conn1.close()
 
-    # 第二次连接：应能读到（证明 create 已自提交）
+    # 第二次连接：不应能读到（未提交）
     conn2 = get_connection(db_path)
-    conn2.row_factory = sqlite3.Row
     try:
         repo2 = ManagedRootRepository(conn2)
-        fetched = repo2.get_by_id("autocommit-1")
-        assert fetched is not None, "create 未提交事务，数据丢失"
-        assert fetched.real_path == str(path)
+        fetched = repo2.get_by_id("no-commit-1")
+        assert fetched is None, "create 不应自提交，未显式 commit 的数据不应跨连接可见"
     finally:
         conn2.close()
+
+    # 第三次连接：显式 commit 后应能读到
+    conn3 = get_connection(db_path)
+    try:
+        repo3 = ManagedRootRepository(conn3)
+        repo3.create(_make_root(path, root_id="committed-1"))
+        conn3.commit()
+    finally:
+        conn3.close()
+
+    conn4 = get_connection(db_path)
+    try:
+        repo4 = ManagedRootRepository(conn4)
+        fetched = repo4.get_by_id("committed-1")
+        assert fetched is not None, "显式 commit 后数据应跨连接可见"
+        assert fetched.real_path == str(path)
+    finally:
+        conn4.close()
 
 
 # --- delete 测试（Task 1 遗漏补完） ---

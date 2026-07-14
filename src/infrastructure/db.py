@@ -22,8 +22,13 @@ CURRENT_SCHEMA_VERSION = 4
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
-    """打开 SQLite 连接，启用外键与 WAL。"""
+    """打开 SQLite 连接，启用外键与 WAL，设置 Row 工厂。
+
+    Row 工厂使查询结果可通过列名访问（row["column"]），
+    与所有 Repository 的 _row_to_model 实现一致。
+    """
     conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
     return conn

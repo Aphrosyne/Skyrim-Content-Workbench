@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from infrastructure.file_classify import ARCHIVE_EXTENSIONS, get_extension
+from infrastructure.path_utils import make_path_key
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +38,10 @@ class ScanError:
 
 @dataclass
 class ScannedFolderEntry:
-    """扫描得到的单个目录条目。
-
-    is_content_unit_candidate 字段保留向后兼容，新扫描规则下恒为 False
-    （内容单元候选改为记录压缩包文件路径，见 ScanResult.archive_candidates）。
-    """
+    """扫描得到的单个目录条目。"""
 
     path: str
     mtime: float
-    is_content_unit_candidate: bool
     parent_path: str | None
 
 
@@ -58,7 +54,6 @@ class ScanResult:
     """
 
     scanned_dirs: list[ScannedFolderEntry] = field(default_factory=list)
-    content_unit_candidates: list[ScannedFolderEntry] = field(default_factory=list)
     archive_candidates: list[str] = field(default_factory=list)
     errors: list[ScanError] = field(default_factory=list)
     skipped_unchanged: int = 0
@@ -78,8 +73,8 @@ class FileScanner:
     def scan_incremental(self, root: Path, folder_mtime_map: dict[str, float]) -> ScanResult:
         """增量扫描：mtime 未变的目录跳过其自身及子目录。
 
-        folder_mtime_map: 已知目录路径 → last_scanned_mtime。
-        路径键使用 str(Path)（在 Windows 上为反斜杠，调用方需保证一致性）。
+        folder_mtime_map: 已知目录 path_key → last_scanned_mtime。
+        键使用 make_path_key() 归一化（normcase + normpath），调用方需保证一致性。
         """
         return self._scan(root, folder_mtime_map=folder_mtime_map)
 
@@ -129,9 +124,10 @@ class FileScanner:
         dir_path_str = str(dir_path)
 
         # 增量扫描：判断 mtime 是否未变
+        # folder_mtime_map 的键使用 make_path_key() 归一化（由 ScanService 构造）
         is_unchanged = False
         if folder_mtime_map is not None:
-            cached_mtime = folder_mtime_map.get(dir_path_str)
+            cached_mtime = folder_mtime_map.get(make_path_key(dir_path))
             if cached_mtime is not None and self._mtime_equal(cached_mtime, dir_mtime):
                 is_unchanged = True
 
@@ -176,7 +172,6 @@ class FileScanner:
         entry = ScannedFolderEntry(
             path=dir_path_str,
             mtime=dir_mtime,
-            is_content_unit_candidate=False,  # 新规则下恒为 False
             parent_path=parent_path,
         )
         result.scanned_dirs.append(entry)

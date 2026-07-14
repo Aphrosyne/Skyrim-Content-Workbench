@@ -99,14 +99,6 @@ class TestScanFull:
         assert str(mod_tree / "护甲") not in candidates
         assert str(mod_tree / "Weapons") not in candidates
 
-    def test_old_candidates_field_empty(self, scanner: FileScanner, mod_tree: Path) -> None:
-        """新规则下 content_unit_candidates 字段为空（向后兼容保留）。"""
-        result = scanner.scan_full(mod_tree)
-        assert result.content_unit_candidates == []
-        # scanned_dirs 中 is_content_unit_candidate 恒为 False
-        for entry in result.scanned_dirs:
-            assert entry.is_content_unit_candidate is False
-
     def test_recurses_into_archive_parent_subdirs(
         self, scanner: FileScanner, mod_tree: Path
     ) -> None:
@@ -157,7 +149,10 @@ class TestScanIncremental:
     def test_unchanged_dir_skipped(self, scanner: FileScanner, mod_tree: Path) -> None:
         # 第一次全量扫描获取 mtime
         full_result = scanner.scan_full(mod_tree)
-        mtime_map = {e.path: e.mtime for e in full_result.scanned_dirs}
+        # 键使用 make_path_key 归一化（与 FileScanner 内部查询一致）
+        from infrastructure.path_utils import make_path_key
+
+        mtime_map = {make_path_key(e.path): e.mtime for e in full_result.scanned_dirs}
 
         # 增量扫描应跳过所有未变更目录
         inc_result = scanner.scan_incremental(mod_tree, mtime_map)
@@ -166,7 +161,9 @@ class TestScanIncremental:
 
     def test_changed_dir_rescanned(self, scanner: FileScanner, mod_tree: Path) -> None:
         full_result = scanner.scan_full(mod_tree)
-        mtime_map = {e.path: e.mtime for e in full_result.scanned_dirs}
+        from infrastructure.path_utils import make_path_key
+
+        mtime_map = {make_path_key(e.path): e.mtime for e in full_result.scanned_dirs}
 
         # 修改一个子目录的 mtime（创建新文件）
         time.sleep(0.01)
