@@ -99,8 +99,57 @@ class ContentService:
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower(), e.name))
         return entries
 
+    def list_staging_entries(self, staging_path: str) -> list[FileEntry]:
+        """递归返回暂存区 staging_path 下所有文件和文件夹条目，并关联 content_unit。
+
+        阶段 3 Task 2：暂存区文件列表。
+
+        与 list_directory_entries 区别：
+        - 递归遍历所有子目录（Path.rglob("*")），不只单层；
+        - 批量预查 content_unit（一次 list_by_path_prefix 取回所有相关单元，
+          构建 path_key → ContentUnit 映射），避免 N 次 DB 查询。
+
+        数据源为文件系统，仅读取元数据（is_dir / is_file / stat），跳过符号链接。
+        单条目读取失败不中断整体遍历（记日志后跳过）。
+
+        排序规则：文件夹在前（is_dir=True 优先），同类型按 name 升序（不区分大小写）。
+        排序为初始默认顺序；UI 层可通过 FileListModel.set_sort_key 切换排序键。
+
+        若 staging_path 不存在、不是目录或读取失败，返回空列表（记日志）。
+        """
+        root = Path(staging_path)
+        try:
+            if not root.is_dir():
+                return []
+        except OSError as e:
+            logger.warning("list_staging_entries: 路径检查失败 %s: %s", staging_path, e)
+            return []
+
+        # 批量预查 content_unit：一次 SQL 拿回所有相关单元，构建 path_key 映射
+        unit_map: dict[str, ContentUnit] = {}
+        try:
+            units = self._repo.list_by_path_prefix(staging_path)
+            for unit in units:
+                unit_map[make_path_key(unit.path)] = unit
+        except Exception:  # noqa: BLE001 - 数据库查询失败不阻塞文件系统遍历
+            logger.exception("list_staging_entries: 预查 content_unit 失败：%s", staging_path)
+
+        entries: list[FileEntry] = []
+        try:
+            for child in root.rglob("*"):
+                entry = self._build_entry_with_map(child, unit_map)
+                if entry is not None:
+                    entries.append(entry)
+        except OSError as e:
+            logger.warning("list_staging_entries: 递归读取失败 %s: %s", staging_path, e)
+            return []
+
+        # 文件夹在前，名称不区分大小写升序
+        entries.sort(key=lambda e: (not e.is_dir, e.name.lower(), e.name))
+        return entries
+
     def _build_entry(self, child: Path) -> FileEntry | None:
-        """从单个 Path 构建 FileEntry。跳过符号链接（避免循环）。"""
+        """从单个 Path 构建 FileEntry（单次精确查询 content_unit）。跳过符号链接。"""
         try:
             if child.is_symlink():
                 return None
@@ -118,6 +167,35 @@ class ContentService:
             content_unit = self._repo.get_by_path(str(child))
         except Exception:  # noqa: BLE001 - 数据库查询失败不应中断遍历
             logger.exception("查询 content_unit 失败：path=%s", child)
+
+        return FileEntry(
+            name=child.name,
+            path=str(child),
+            is_dir=is_dir,
+            modified_at=modified_at,
+            size=size,
+            content_unit=content_unit,
+        )
+
+    def _build_entry_with_map(
+        self, child: Path, unit_map: dict[str, ContentUnit]
+    ) -> FileEntry | None:
+        """从单个 Path 构建 FileEntry，content_unit 从预构建的 path_key 映射查询。
+
+        用于 list_staging_entries 的批量关联场景，避免 N 次 DB 查询。
+        """
+        try:
+            if child.is_symlink():
+                return None
+            is_dir = child.is_dir()
+            stat = child.stat()
+            modified_at = _mtime_to_iso(stat.st_mtime)
+            size: int | None = None if is_dir else stat.st_size
+        except OSError as e:
+            logger.warning("list_staging_entries: 读取条目失败 %s: %s", child, e)
+            return None
+
+        content_unit = unit_map.get(make_path_key(str(child)))
 
         return FileEntry(
             name=child.name,

@@ -143,7 +143,11 @@ def test_initial_mode_is_browse(qapp, main_window_env) -> None:
 
 
 def test_switch_to_organize_freezes_content(qapp, main_window_env) -> None:
-    """浏览模式选中目录A → 切换到整理模式 → 中栏仍显示目录A内容。"""
+    """浏览模式选中目录A → 切换到整理模式 → 中栏清空（A 不是 [S] 节点）。
+
+    阶段 3 Task 2 新行为：整理模式只加载 [S] 节点的递归列表。
+    非 [S] 节点 → 中栏清空，显示"请选中暂存区 [S] 节点"提示。
+    """
     window, _, _, _, _ = main_window_env
     _select_root(qapp, window)
     # 选中护甲子目录
@@ -156,28 +160,27 @@ def test_switch_to_organize_freezes_content(qapp, main_window_env) -> None:
     qapp.processEvents()
 
     assert window.current_mode() == AppMode.organize
-    # 中栏内容不变（冻结）
-    assert window.entry_count() == entry_count_before
-    # 工作区路径为护甲目录
-    assert window.organize_workarea_path() is not None
-    assert "护甲" in window.organize_workarea_path()
+    # 护甲不是 [S] 节点 → 中栏清空
+    assert window.entry_count() == 0
+    # 工作区为 None（非 [S] 节点）
+    assert window.organize_workarea_path() is None
 
 
 def test_organize_mode_tree_click_does_not_refresh_content(qapp, main_window_env) -> None:
-    """整理模式下点击目录树其他节点 → 中栏内容不变。"""
+    """整理模式下点击目录树其他节点 → 中栏仍为空（无 [S] 节点被选中）。"""
     window, _, _, _, _ = main_window_env
     _select_root(qapp, window)
     _select_child(qapp, window, "护甲")
-    entry_count_before = window.entry_count()
 
     # 切换到整理模式
     window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
+    assert window.entry_count() == 0  # 非 [S] 节点，中栏清空
 
     # 点击 Weapons 节点
     _select_child(qapp, window, "Weapons")
-    # 中栏内容不变（仍为护甲的文件列表）
-    assert window.entry_count() == entry_count_before
+    # 中栏仍为空（Weapons 也不是 [S] 节点）
+    assert window.entry_count() == 0
 
 
 def test_organize_mode_shows_target_hint(qapp, main_window_env) -> None:
@@ -191,8 +194,7 @@ def test_organize_mode_shows_target_hint(qapp, main_window_env) -> None:
     # 点击 Weapons 节点
     _select_child(qapp, window, "Weapons")
     hint = window.mode_hint_full_text()
-    # 提示应包含工作区（护甲）和目标（Weapons）
-    assert "护甲" in hint
+    # 新行为：提示"请选中 [S] 节点" + 目标路径（Weapons）
     assert "目标" in hint
     assert "Weapons" in hint
 
@@ -202,15 +204,14 @@ def test_switch_back_to_browse_refreshes_content(qapp, main_window_env) -> None:
     window, _, _, _, _ = main_window_env
     _select_root(qapp, window)
     _select_child(qapp, window, "护甲")
-    armor_count = window.entry_count()
 
     # 切换到整理模式
     window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
     # 点击 Weapons
     _select_child(qapp, window, "Weapons")
-    # 中栏仍为护甲
-    assert window.entry_count() == armor_count
+    # 中栏为空（非 [S] 节点）
+    assert window.entry_count() == 0
 
     # 切回浏览模式
     window._set_mode(AppMode.browse)  # noqa: SLF001
@@ -256,42 +257,27 @@ def test_scan_finished_refreshes_content_list(qapp, main_window_env, tmp_path: P
 
 
 def test_scan_finished_refreshes_content_list_in_organize(qapp, main_window_env) -> None:
-    """整理模式下扫描完成 → 冻结的工作区文件列表刷新。"""
-    window, _, root_dir, scan_service, root = main_window_env
+    """整理模式下扫描完成 → 无 [S] 工作区时不刷新（中栏保持空）。"""
+    window, _, _, _, _ = main_window_env
     _select_root(qapp, window)
     _select_child(qapp, window, "护甲")
 
-    # 切换到整理模式（冻结工作区为护甲）
+    # 切换到整理模式（护甲非 [S] 节点，工作区为 None）
     window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
-    workarea = window.organize_workarea_path()
-    assert workarea is not None
-
-    # 在护甲目录下新增压缩包
-    time.sleep(0.01)
-    (root_dir / "护甲" / "整理新增.zip").write_bytes(b"\x00" * 50)
-
-    # 执行扫描
-    scan_service.scan_root(root.id, incremental=True)
-    qapp.processEvents()
+    # 无 [S] 工作区
+    assert window.organize_workarea_path() is None
 
     # 模拟扫描完成后的刷新
     window._refresh_content_list_after_scan()  # noqa: SLF001
     qapp.processEvents()
 
-    # 文件列表应包含新压缩包（工作区被刷新）
-    found_new = False
-    for i in range(window.entry_count()):
-        entry = window.entry_at(i)
-        if entry is not None and entry.name == "整理新增.zip":
-            found_new = True
-            assert entry.content_unit is not None
-            break
-    assert found_new, "整理模式下工作区文件列表应刷新"
+    # 无工作区 → 中栏仍为空
+    assert window.entry_count() == 0
 
 
 def test_organize_no_workarea_hint(qapp, main_window_env) -> None:
-    """未选中任何目录树节点就切换到整理模式 → 显示提示。"""
+    """未选中任何目录树节点就切换到整理模式 → 显示"请选中 [S] 节点"提示。"""
     window, _, _, _, _ = main_window_env
     # 不选中任何节点直接切换到整理模式
     window._set_mode(AppMode.organize)  # noqa: SLF001
@@ -300,7 +286,8 @@ def test_organize_no_workarea_hint(qapp, main_window_env) -> None:
     assert window.current_mode() == AppMode.organize
     assert window.organize_workarea_path() is None
     hint = window.mode_hint_full_text()
-    assert "浏览模式" in hint or "请先" in hint  # 提示用户先在浏览模式选中目录
+    # 新行为：提示"请选中暂存区 [S] 节点"
+    assert "暂存区 [S]" in hint or "请选中" in hint
 
 
 def test_mode_hint_elide_applies_to_long_target_path(qapp, main_window_env) -> None:

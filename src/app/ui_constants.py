@@ -59,6 +59,15 @@ CONTENT_LIST_GROUP_TITLE = "文件列表"
 CONTENT_LIST_EMPTY_HINT = "该目录为空或无可见文件。"
 CONTENT_LIST_NO_SELECTION = "请在左侧目录树中选择一个目录。"
 
+# 文件列表列头（阶段 3 Task 2 4 列 TableModel）
+FILE_LIST_COLUMN_HEADERS = ("名称", "类型", "大小", "修改日期")
+COL_TYPE_FOLDER = "文件夹"
+COL_TYPE_FILE = "文件"
+
+# 暂存区文件列表提示（阶段 3 Task 2）
+STAGING_LIST_NO_STAGING_SELECTED = "整理模式：请在目录树中选中一个暂存区 [S] 节点。"
+STAGING_LIST_PATH_INVALID = "暂存区路径不存在或为空：{path}"
+
 # 文件列表项标记（roadmap Task 4 2026-07-13 设计修正）
 CONTENT_UNIT_MARKER_ORGANIZED = " [内容单元 ✓]"
 CONTENT_UNIT_MARKER_UNORGANIZED = " [内容单元]"

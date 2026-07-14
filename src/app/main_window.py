@@ -38,13 +38,14 @@ from pathlib import Path
 from PySide6.QtCore import QPoint, Qt, QThread
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QButtonGroup,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
-    QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -52,6 +53,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QTableView,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -282,15 +284,26 @@ class MainWindow(QMainWindow):
         self._content_group = QGroupBox(ui.CONTENT_LIST_GROUP_TITLE)
         content_layout = QVBoxLayout(self._content_group)
 
-        self._content_view = QListView()
-        self._content_view.setEditTriggers(QListView.EditTrigger.NoEditTriggers)
-        self._content_view.setSelectionMode(QListView.SelectionMode.SingleSelection)
-        self._content_view.setDragDropMode(QListView.DragDropMode.NoDragDrop)
+        self._content_view = QTableView()
+        self._content_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._content_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._content_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._content_view.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
         self._content_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._content_view.verticalHeader().setVisible(False)
+        self._content_view.horizontalHeader().setHighlightSections(False)
+        self._content_view.horizontalHeader().setStretchLastSection(False)
+        self._content_view.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        self._content_view.horizontalHeader().setSectionsClickable(True)
         self._content_list_model = FileListModel()
         self._content_view.setModel(self._content_list_model)
         self._content_view.doubleClicked.connect(self._on_entry_activated)
         self._content_view.customContextMenuRequested.connect(self._on_content_context_menu)
+        self._content_view.horizontalHeader().sectionClicked.connect(
+            self._on_content_header_clicked
+        )
         content_layout.addWidget(self._content_view)
 
         self._content_empty_hint = QLabel(ui.CONTENT_LIST_NO_SELECTION)
@@ -430,8 +443,14 @@ class MainWindow(QMainWindow):
             # 清空元数据面板（切换目录时重置）
             self._set_metadata_text(ui.METADATA_NOT_SELECTED)
         else:
-            # 整理模式：只更新目标路径提示，不刷新中栏内容
-            self._organize_target_path = node.real_path
+            # 整理模式：点选 [S] 节点 → 中栏切换为该暂存区递归列表；
+            # 点选非 [S] 节点 → 只更新目标提示，不刷新中栏内容。
+            if node.is_staging:
+                self._organize_workarea_path = node.real_path
+                self._organize_target_path = node.real_path
+                self._refresh_staging_content_list(node.real_path)
+            else:
+                self._organize_target_path = node.real_path
             self._update_organize_hint()
 
     def _refresh_content_list(self, dir_path: str) -> None:
@@ -445,6 +464,30 @@ class MainWindow(QMainWindow):
         self._content_list_model.refresh(entries)
         if not entries:
             self._content_empty_hint.setText(ui.CONTENT_LIST_EMPTY_HINT)
+        else:
+            self._content_empty_hint.setText("")
+
+    def _refresh_staging_content_list(self, staging_path: str) -> None:
+        """刷新暂存区文件列表（递归遍历暂存区下所有文件与子目录）。
+
+        阶段 3 Task 2：整理模式下中栏显示暂存区递归文件列表。
+        若路径不存在或为空，显示友好提示。
+        """
+        try:
+            entries = self._content_service.list_staging_entries(staging_path)
+        except Exception:  # noqa: BLE001 - UI 边界需捕获所有异常
+            logger.exception("加载暂存区文件列表失败：staging_path=%s", staging_path)
+            entries = []
+
+        self._content_list_model.refresh(entries)
+        if not entries:
+            # 路径不存在或为空：显示具体提示
+            if not Path(staging_path).is_dir():
+                self._content_empty_hint.setText(
+                    ui.STAGING_LIST_PATH_INVALID.format(path=staging_path)
+                )
+            else:
+                self._content_empty_hint.setText(ui.CONTENT_LIST_EMPTY_HINT)
         else:
             self._content_empty_hint.setText("")
 
@@ -464,6 +507,37 @@ class MainWindow(QMainWindow):
             return
 
         # 非内容单元（文件或文件夹）：不响应，右栏保持现状
+
+    def _on_content_header_clicked(self, column: int) -> None:  # noqa: N802 (Qt 命名)
+        """文件列表列头点击：切换排序键，同列再点切换升降序。
+
+        阶段 3 Task 2：列头排序。点击不同列切换排序键；点击同列切换升降序。
+        """
+        from app.file_list_model import (
+            SORT_MODIFIED,
+            SORT_NAME,
+            SORT_SIZE,
+            SORT_TYPE,
+        )
+
+        key_map = {
+            0: SORT_NAME,
+            1: SORT_TYPE,
+            2: SORT_SIZE,
+            3: SORT_MODIFIED,
+        }
+        new_key = key_map.get(column)
+        if new_key is None:
+            return
+        current_key = self._content_list_model.current_sort_key()
+        if new_key == current_key:
+            # 同列：翻转升降序
+            self._content_list_model.set_sort_key(
+                new_key, not self._content_list_model.is_sort_ascending()
+            )
+        else:
+            # 不同列：切换排序键，默认升序
+            self._content_list_model.set_sort_key(new_key, True)
 
     def _on_tree_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
         """目录树右键菜单：标记/取消暂存区（阶段 3 Task 1）。
@@ -834,13 +908,13 @@ class MainWindow(QMainWindow):
         """扫描完成后刷新中栏文件列表（扫描联动）。
 
         - 浏览模式：若目录树有选中节点，重新读取该目录文件列表。
-        - 整理模式：若有冻结的工作区，重新读取工作区目录文件列表。
+        - 整理模式：若有暂存区工作区，重新读取该暂存区递归文件列表。
         - 否则：无操作。
         """
         if self._mode_manager.is_organize():
             workarea = self._organize_workarea_path
             if workarea is not None:
-                self._refresh_content_list(workarea)
+                self._refresh_staging_content_list(workarea)
             return
 
         # 浏览模式：读取当前选中目录树节点
@@ -908,8 +982,8 @@ class MainWindow(QMainWindow):
     def _on_mode_changed(self, mode: AppMode) -> None:
         """模式变化时更新 UI 状态与中栏提示。"""
         if mode == AppMode.organize:
-            # 切换到整理模式：冻结当前工作区
-            self._freeze_workarea_for_organize()
+            # 切换到整理模式：若当前选中节点是 [S] 则加载暂存区递归列表
+            self._enter_organize_mode()
             self._update_organize_hint()
         else:
             # 切换回浏览模式：恢复跟随目录树刷新
@@ -919,28 +993,48 @@ class MainWindow(QMainWindow):
             # 恢复显示当前选中目录树节点的内容
             self._refresh_content_for_current_tree_selection()
 
-    def _freeze_workarea_for_organize(self) -> None:
-        """切换到整理模式时冻结当前工作区。
+    def _enter_organize_mode(self) -> None:
+        """进入整理模式：根据当前选中节点状态加载中栏。
 
-        若目录树有选中节点，将其 real_path 作为冻结工作区；
-        否则工作区为 None，中栏显示提示。
+        - 当前选中节点是 [S]：加载该暂存区递归列表，工作区=目标=该节点路径。
+        - 当前选中节点非 [S] 或无选中：工作区为 None，中栏显示
+          "请在目录树中选中一个暂存区 [S] 节点" 提示，清空文件列表。
         """
         sm = self._tree_view.selectionModel()
         indexes = sm.selectedIndexes() if sm is not None else []
         if not indexes:
             self._organize_workarea_path = None
+            self._content_list_model.refresh([])
+            self._content_empty_hint.setText(ui.STAGING_LIST_NO_STAGING_SELECTED)
             return
         node = self._tree_model.node_at(indexes[0])
-        if node is not None:
+        if node is None:
+            self._organize_workarea_path = None
+            self._content_list_model.refresh([])
+            self._content_empty_hint.setText(ui.STAGING_LIST_NO_STAGING_SELECTED)
+            return
+        if node.is_staging:
+            # 选中节点是暂存区：加载递归列表
             self._organize_workarea_path = node.real_path
             self._organize_target_path = node.real_path
+            self._refresh_staging_content_list(node.real_path)
         else:
+            # 选中节点不是暂存区：清空中栏，提示用户选中 [S] 节点
             self._organize_workarea_path = None
+            self._organize_target_path = node.real_path
+            self._content_list_model.refresh([])
+            self._content_empty_hint.setText(ui.STAGING_LIST_NO_STAGING_SELECTED)
 
     def _update_organize_hint(self) -> None:
         """更新整理模式下的中栏顶部提示（走 Elide 流程）。"""
         if self._organize_workarea_path is None:
-            self._set_mode_hint_text(ui.MODE_ORGANIZE_NO_WORKAREA)
+            # 无暂存区工作区：显示"请选中 [S] 节点"提示（可能附带目标路径）
+            target = self._organize_target_path
+            if target is not None:
+                target_hint = ui.MODE_ORGANIZE_TARGET_HINT.format(path=target)
+                self._set_mode_hint_text(f"{ui.STAGING_LIST_NO_STAGING_SELECTED}\n{target_hint}")
+            else:
+                self._set_mode_hint_text(ui.STAGING_LIST_NO_STAGING_SELECTED)
             return
         workarea_name = Path(self._organize_workarea_path).name
         base_hint = ui.MODE_ORGANIZE_WORKAREA_HINT.format(name=workarea_name)

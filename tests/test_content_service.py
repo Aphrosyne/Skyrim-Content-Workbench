@@ -402,3 +402,181 @@ class TestListDirectoryEntries:
         # 符号链接应被跳过，返回空
         names = [e.name for e in entries]
         assert "link.txt" not in names
+
+
+class TestListStagingEntries:
+    """list_staging_entries：递归遍历暂存区下所有文件与子目录。
+
+    阶段 3 Task 2：与 list_directory_entries 区别为递归 + 批量 content_unit 关联。
+    所有测试使用 tmp_path fixture 创建真实文件系统。
+    """
+
+    def test_empty_directory_returns_empty(self, service: ContentService, tmp_path: Path) -> None:
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert service.list_staging_entries(str(empty)) == []
+
+    def test_nonexistent_path_returns_empty(self, service: ContentService, tmp_path: Path) -> None:
+        result = service.list_staging_entries(str(tmp_path / "nonexistent"))
+        assert result == []
+
+    def test_not_a_directory_returns_empty(self, service: ContentService, tmp_path: Path) -> None:
+        f = tmp_path / "file.txt"
+        f.write_text("hello", encoding="utf-8")
+        assert service.list_staging_entries(str(f)) == []
+
+    def test_recursive_traversal_includes_subdir_files(
+        self, service: ContentService, tmp_path: Path
+    ) -> None:
+        """递归遍历：暂存区下多层子目录中的文件都应返回。"""
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        # 顶层文件
+        (staging / "top.7z").write_bytes(b"\x00" * 100)
+        # 一层子目录
+        (staging / "汉化").mkdir()
+        (staging / "汉化" / "patch.zip").write_bytes(b"\x00" * 50)
+        (staging / "汉化" / "readme.txt").write_text("hi", encoding="utf-8")
+        # 二层子目录
+        (staging / "汉化" / "deep").mkdir()
+        (staging / "汉化" / "deep" / "nested.7z").write_bytes(b"\x00" * 20)
+
+        entries = service.list_staging_entries(str(staging))
+        names = {e.name for e in entries}
+        assert "top.7z" in names
+        assert "patch.zip" in names
+        assert "readme.txt" in names
+        assert "nested.7z" in names
+        # 子目录本身也作为条目返回
+        assert "汉化" in names
+        assert "deep" in names
+        assert len(entries) == 6
+
+    def test_batch_content_unit_association(
+        self, repo: ContentUnitRepository, service: ContentService, tmp_path: Path
+    ) -> None:
+        """批量预查：暂存区内多个 content_unit 一次性关联，无 N 次 DB 查询。"""
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        archive1 = staging / "mod1.7z"
+        archive2 = staging / "sub" / "mod2.zip"
+        archive1.write_bytes(b"\x00" * 10)
+        (staging / "sub").mkdir()
+        archive2.write_bytes(b"\x00" * 20)
+        # 在暂存区外创建一个内容单元，确认不会被错误关联
+        outside = tmp_path / "outside.7z"
+        outside.write_bytes(b"\x00")
+        repo.create(_make_unit("u1", str(archive1), title="mod1"))
+        repo.create(_make_unit("u2", str(archive2), title="mod2"))
+        repo.create(_make_unit("u3", str(outside), title="outside"))
+
+        entries = service.list_staging_entries(str(staging))
+        archive1_entry = next(e for e in entries if e.name == "mod1.7z")
+        archive2_entry = next(e for e in entries if e.name == "mod2.zip")
+        assert archive1_entry.content_unit is not None
+        assert archive1_entry.content_unit.id == "u1"
+        assert archive2_entry.content_unit is not None
+        assert archive2_entry.content_unit.id == "u2"
+
+    def test_non_content_unit_entry_has_none(
+        self, repo: ContentUnitRepository, service: ContentService, tmp_path: Path
+    ) -> None:
+        """未标记为内容单元的条目 content_unit 字段为 None。"""
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        (staging / "a.7z").write_bytes(b"\x00")
+        (staging / "readme.txt").write_text("hi", encoding="utf-8")
+        (staging / "sub").mkdir()
+        # 只为 a.7z 创建内容单元
+        repo.create(_make_unit("u1", str(staging / "a.7z"), title="a.7z"))
+
+        entries = service.list_staging_entries(str(staging))
+        a_entry = next(e for e in entries if e.name == "a.7z")
+        readme_entry = next(e for e in entries if e.name == "readme.txt")
+        sub_entry = next(e for e in entries if e.name == "sub")
+        assert a_entry.content_unit is not None
+        assert readme_entry.content_unit is None
+        assert sub_entry.content_unit is None
+
+    def test_chinese_path_and_filename(self, service: ContentService, tmp_path: Path) -> None:
+        """中文路径与文件名正确返回。"""
+        staging = tmp_path / "暂存区"
+        staging.mkdir()
+        (staging / "护甲").mkdir()
+        (staging / "护甲" / "寒霜之心.7z").write_bytes(b"\x00" * 100)
+
+        entries = service.list_staging_entries(str(staging))
+        names = {e.name for e in entries}
+        assert "护甲" in names
+        assert "寒霜之心.7z" in names
+
+    def test_dirs_sorted_before_files(self, service: ContentService, tmp_path: Path) -> None:
+        """文件夹在前，按名称不区分大小写升序。"""
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        (staging / "z_file.txt").write_text("z", encoding="utf-8")
+        (staging / "a_dir").mkdir()
+        (staging / "m_file.txt").write_text("m", encoding="utf-8")
+        (staging / "b_dir").mkdir()
+
+        entries = service.list_staging_entries(str(staging))
+        assert entries[0].is_dir
+        assert entries[1].is_dir
+        assert entries[0].name == "a_dir"
+        assert entries[1].name == "b_dir"
+        assert not entries[2].is_dir
+        assert not entries[3].is_dir
+
+    def test_entry_basic_fields(self, service: ContentService, tmp_path: Path) -> None:
+        """返回的 FileEntry 含正确 name/path/is_dir/size/modified_at。"""
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        (staging / "file.txt").write_text("hello world", encoding="utf-8")
+
+        entries = service.list_staging_entries(str(staging))
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry.name == "file.txt"
+        assert entry.path == str(staging / "file.txt")
+        assert entry.is_dir is False
+        assert entry.size == 11
+        assert entry.modified_at  # ISO 8601 字符串非空
+
+    def test_directory_size_is_none(self, service: ContentService, tmp_path: Path) -> None:
+        """文件夹的 size 字段为 None。"""
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        (staging / "subdir").mkdir()
+
+        entries = service.list_staging_entries(str(staging))
+        assert len(entries) == 1
+        assert entries[0].is_dir
+        assert entries[0].size is None
+
+    def test_returns_file_entry_instances(self, service: ContentService, tmp_path: Path) -> None:
+        """确保返回的是 FileEntry 实例。"""
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        (staging / "a.txt").write_text("a", encoding="utf-8")
+
+        entries = service.list_staging_entries(str(staging))
+        assert len(entries) == 1
+        assert isinstance(entries[0], FileEntry)
+
+    def test_symlink_skipped(self, service: ContentService, tmp_path: Path) -> None:
+        """符号链接应被跳过（避免循环）。"""
+        if os.name == "nt":
+            pytest.skip("Windows 上创建符号链接可能需要管理员权限")
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        target = tmp_path / "target.txt"
+        target.write_text("t", encoding="utf-8")
+        link = staging / "link.txt"
+        try:
+            link.symlink_to(target)
+        except OSError:
+            pytest.skip("无法创建符号链接")
+
+        entries = service.list_staging_entries(str(staging))
+        names = [e.name for e in entries]
+        assert "link.txt" not in names

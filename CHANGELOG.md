@@ -8,6 +8,108 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.17.0] - 2026-07-14
+
+阶段 3 Task 2：暂存区文件列表。整理模式中栏改为加载暂存区 `[S]` 节点的递归文件列表（含子目录），FileListModel 从单列 `QAbstractListModel` 重构为 4 列 `QAbstractTableModel` 支持列头排序。schema_version 维持 5。仅只读访问文件系统，不修改用户文件。
+
+### Added
+
+- **暂存区递归列表服务**：[src/application/content_service.py](src/application/content_service.py) 新增 `list_staging_entries(staging_path) -> list[FileEntry]`。
+  - 使用 `Path.rglob("*")` 递归遍历暂存区下所有文件和文件夹（与 `list_directory_entries` 的单层 `Path.iterdir` 区分）。
+  - 批量预查 content_unit：一次 `list_by_path_prefix` 取回所有相关 unit，构建 `path_key → ContentUnit` 映射，避免 N 次 DB 查询。
+  - 路径不存在/非目录返回空列表；递归读取失败记日志返回空；`OSError` 不崩溃。
+  - 跳过符号链接（避免循环）。
+  - 排序：文件夹在前，名称不区分大小写升序（与 `list_directory_entries` 一致，作为初始顺序；用户列头排序在 UI 层应用）。
+  - 辅助方法 `_build_entry_with_map(child, unit_map)` 提取条目构造逻辑，与 `list_directory_entries` 共享结构。
+- **UI 文案常量**：[src/app/ui_constants.py](src/app/ui_constants.py) 新增：
+  - `FILE_LIST_COLUMN_HEADERS = ("名称", "类型", "大小", "修改日期")`：4 列表头。
+  - `COL_TYPE_FOLDER = "文件夹"` / `COL_TYPE_FILE = "文件"`：类型列对无扩展名文件的回退文案。
+  - `STAGING_LIST_NO_STAGING_SELECTED = "整理模式：请在目录树中选中一个暂存区 [S] 节点。"`：非 [S] 节点提示。
+  - `STAGING_LIST_PATH_INVALID = "暂存区路径不存在或为空：{path}"`：路径无效提示模板。
+
+### Changed
+
+- **FileListModel 重构为 TableModel**：[src/app/file_list_model.py](src/app/file_list_model.py) 从 `QAbstractListModel`（单列）升级为 `QAbstractTableModel`（4 列）。
+  - 列常量：`COL_NAME=0, COL_TYPE=1, COL_SIZE=2, COL_MODIFIED=3, COLUMN_COUNT=4`。
+  - 排序键常量：`SORT_NAME, SORT_TYPE, SORT_SIZE, SORT_MODIFIED`。
+  - `data()` 按列返回：
+    - 名称列：`name` + 内容单元标记（沿用 `[内容单元 ✓]` / `[内容单元]`）；`ToolTipRole` 返回完整路径；`DecorationRole` 返回文件夹/文件图标（缓存复用）。
+    - 类型列：文件夹 → `"文件夹"`；文件 → 扩展名小写（无扩展名回退 `"文件"`）。
+    - 大小列：文件 → 字符串形式的字节数；文件夹 → 空字符串。
+    - 修改日期列：ISO 8601 UTC 原值。
+    - `UserRole`：任意列均返回 `FileEntry` 对象。
+  - `headerData()` 水平方向返回 `FILE_LIST_COLUMN_HEADERS[section]`；垂直/越界/非 DisplayRole 返回 None。
+  - 新增 `set_sort_key(sort_key, ascending)` 方法 + `current_sort_key()` / `is_sort_ascending()` 测试接口。
+  - **两步稳定排序**（修复降序时文件夹跑到最前的 bug）：
+    ```python
+    def _apply_sort(self) -> None:
+        # 1. 按值排序（受 ascending 影响）
+        self._entries.sort(
+            key=lambda e: _sort_value_key(e, self._sort_key),
+            reverse=not self._sort_ascending,
+        )
+        # 2. 稳定排序调整文件夹位置（不受 ascending 影响）
+        if self._sort_key in (SORT_NAME, SORT_TYPE):
+            self._entries.sort(key=lambda e: not e.is_dir)
+        else:
+            self._entries.sort(key=lambda e: e.is_dir)
+    ```
+    第一步按值升/降序，第二步稳定排序把文件夹固定在最前（名称/类型列）或最后（大小/日期列）。Python `sort` 稳定，第二步不破坏第一步的相对顺序。
+  - 默认排序：`SORT_NAME` + `ascending=True`。`refresh(entries)` 复制传入列表后立即应用当前排序。
+- **MainWindow 中栏从 QListView 改为 QTableView**：[src/app/main_window.py](src/app/main_window.py)
+  - 导入变更：移除 `QListView`，新增 `QAbstractItemView, QHeaderView, QTableView`。
+  - `_content_view` 配置：`SelectRows` / `NoEditTriggers` / 隐藏垂直表头 / 水平表头 `HighlightSections=False` / `StretchLastSection=False` / 名称列 `Stretch` / `SectionsClickable=True`。
+  - 新增 `_on_content_header_clicked(column)`：同列点击翻转升降序，不同列切换排序键默认升序。调用 `set_sort_key` 后立即刷新视图。
+  - 新增 `_refresh_staging_content_list(staging_path)`：调用 `list_staging_entries` 加载递归列表；路径不存在时中栏清空 + 显示 `STAGING_LIST_PATH_INVALID` 友好提示。
+- **整理模式新语义**：[src/app/main_window.py](src/app/main_window.py)
+  - **旧行为**：整理模式中栏冻结为切换前所在目录的单层文件列表。
+  - **新行为**：整理模式只加载 `[S]` 节点的递归列表；非 `[S]` 节点 → 中栏清空 + 显示 `STAGING_LIST_NO_STAGING_SELECTED` 提示。
+  - `_on_tree_selection_changed` 整理模式分支：`is_staging=True` → 调用 `_refresh_staging_content_list`；否则只更新目标提示，中栏保持空。
+  - `_on_mode_changed` 重构：调用 `_enter_organize_mode()` 替代 `_freeze_workarea_for_organize()`。
+  - 新增 `_enter_organize_mode()`：当前选中节点为 `[S]` → 加载递归列表；非 `[S]` 或无选中 → 中栏清空 + 显示提示。
+  - `_update_organize_hint` 更新：无工作区时显示 "请选中 [S] 节点" + 可选目标提示（如有选中节点）。
+  - `_refresh_content_list_after_scan` 更新：整理模式下调 `_refresh_staging_content_list`（仅当存在 `[S]` 工作区时刷新，否则保持空）。
+
+### Tests
+
+- 测试数量变化：338 passed, 2 skipped → 383 passed, 3 skipped（+45 新测试；3 skipped 均为 Windows 符号链接权限不足，与代码无关）。
+- [tests/test_content_service.py](tests/test_content_service.py)：新增 `TestListStagingEntries` 类（11 项）——递归遍历含子目录文件 / 批量 content_unit 关联（避免 N 次查询）/ 单层 vs 递归区别 / 中文路径 / 中文文件名 / 排序（文件夹优先 + 名称升序）/ 符号链接跳过 / 路径不存在返回空 / 非目录返回空 / FileEntry 实例字段验证 / path_key 归一化匹配。
+- [tests/test_file_list_model.py](tests/test_file_list_model.py)：完全重写适配 TableModel（约 38 项）——
+  - 空 model（rowCount / columnCount / data 返回 None）。
+  - refresh（加载 / 重置 / 复制列表 / 应用当前排序）。
+  - headerData（水平 4 列 / 垂直 None / 越界 None / 非 DisplayRole None）。
+  - DisplayRole（名称无标记 / 未整理标记 / 已整理标记 / 类型文件夹 / 类型文件带扩展名 / 类型文件无扩展名 / 类型大写扩展名转小写 / 大小文件 / 大小文件夹空 / 修改日期 / 中文名）。
+  - ToolTipRole（名称列返回路径 / 其他列 None）。
+  - UserRole（任意列返回 FileEntry）。
+  - DecorationRole（文件夹图标 / 文件图标 / 仅名称列）。
+  - 排序（默认名称升序 / 名称升降序 / 类型升降序 / 大小升降序 / 日期升降序 / 同列翻转 / 不同列切换 / 无效键忽略 / refresh 应用排序）。
+- [tests/test_main_window_staging_list.py](tests/test_main_window_staging_list.py)（新文件，9 项）——整理模式选中 `[S]` 节点显示递归列表 / 非 `[S]` 节点显示提示 / 切回浏览模式恢复单层列表 / 列头点击切换排序 / 列头同列翻转升降序 / 中文路径暂存区 / 扫描完成刷新暂存区列表 / 路径不存在友好提示 / 未选中节点切换到整理模式显示提示。
+- [tests/test_main_window_mode.py](tests/test_main_window_mode.py)：更新 6 项测试适配新整理模式语义——
+  - `test_switch_to_organize_freezes_content` → 中栏清空（非 [S] 节点）。
+  - `test_organize_mode_tree_click_does_not_refresh_content` → 中栏仍为空。
+  - `test_organize_mode_shows_target_hint` → 目标提示含 Weapons。
+  - `test_switch_back_to_browse_refreshes_content` → 中栏先空后刷新为 Weapons 节点内容。
+  - `test_scan_finished_refreshes_content_list_in_organize` → 无 [S] 工作区时不刷新（中栏保持空）。
+  - `test_organize_no_workarea_hint` → 提示 "暂存区 [S]" 或 "请选中"。
+
+### 安全限制
+
+- 暂存区列表数据源为文件系统（`Path.rglob` / `is_dir` / `is_symlink` / `stat`），仅只读，不修改用户文件。
+- 跳过符号链接，避免循环遍历。
+- 路径不存在 / 非目录 / 递归读取失败均返回空列表或友好提示，不崩溃。
+- 列头排序纯内存操作，不访问文件系统或数据库。
+- UI 不直接调用文件写 API（AGENTS 规则 3）；整理模式新语义不触发任何文件操作。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 58 files already formatted
+- `python -m pytest` → 383 passed, 3 skipped
+
+### Documentation
+
+- 更新 [docs/roadmap.md](docs/roadmap.md)：阶段 3 Task 2 验收项全部 `[ ]` → `[x]`，标题加 ✅ 标记。
+
 ## [0.16.0] - 2026-07-14
 
 阶段 3 Task 1：暂存区标记与管理。schema_version 从 4 升级至 5（新增 `staging_area` 表）。仅写应用数据库，不修改用户文件。
