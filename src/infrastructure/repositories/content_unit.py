@@ -153,8 +153,20 @@ class ContentUnitRepository:
         return self.get_by_id(unit.id)  # type: ignore[return-value]
 
     def delete(self, unit_id: str) -> None:
-        """按 ID 删除。不存在抛 NotFoundError。"""
+        """按 ID 删除。不存在抛 NotFoundError。
+
+        级联清理 content_unit_tag 表中所有引用该 unit_id 的关联记录，
+        避免 FK 违约（content_unit_tag.content_unit_id REFERENCES content_unit(id)，
+        但 schema 未声明 ON DELETE CASCADE）。
+
+        写操作不自提交，由 application 层控制事务边界。
+        """
         try:
+            # 先清理 content_unit_tag 关联（避免 FK 违约）
+            self._conn.execute(
+                "DELETE FROM content_unit_tag WHERE content_unit_id = ?",
+                (unit_id,),
+            )
             cur = self._conn.execute(
                 "DELETE FROM content_unit WHERE id = ?",
                 (unit_id,),

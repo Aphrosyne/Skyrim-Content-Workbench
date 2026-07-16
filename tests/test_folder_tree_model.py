@@ -607,3 +607,169 @@ def test_view_loads_root_children_without_crash(
 
     view.deleteLater()
     qapp.processEvents()
+
+
+# --- 展开状态保存/恢复（2026-07-16 修复） ---
+
+
+def test_save_and_restore_expanded_state(
+    db_connection: sqlite3.Connection, qapp: QApplication, tmp_path: Path
+) -> None:
+    """refresh 前保存展开状态，refresh 后恢复。
+
+    场景：用户展开了 Root/L1/L2，扫描触发 refresh，展开状态应恢复。
+    """
+    managed_service = _make_managed_root_service(db_connection)
+    scan_service = _make_scan_service(db_connection)
+    # 构造 Root/L1/L2/L3
+    deep = tmp_path / "Root" / "L1" / "L2" / "L3"
+    deep.mkdir(parents=True)
+    root_dir = tmp_path / "Root"
+    root = managed_service.add_root(root_dir)
+    scan_service.scan_root(root.id, incremental=False)
+    db_connection.commit()
+
+    model = FolderTreeModel(_make_tree_service(db_connection))
+    model.refresh()
+
+    view = QTreeView()
+    view.setModel(model)
+
+    # 逐级展开 Root → L1 → L2
+    root_idx = model.index(0, 0)
+    model.fetchMore(root_idx)
+    view.setExpanded(root_idx, True)
+    qapp.processEvents()
+
+    l1_idx = model.index(0, 0, root_idx)
+    assert l1_idx.isValid()
+    model.fetchMore(l1_idx)
+    view.setExpanded(l1_idx, True)
+    qapp.processEvents()
+
+    l2_idx = model.index(0, 0, l1_idx)
+    assert l2_idx.isValid()
+    model.fetchMore(l2_idx)
+    view.setExpanded(l2_idx, True)
+    qapp.processEvents()
+
+    # 选中 L2
+    view.setCurrentIndex(l2_idx)
+    qapp.processEvents()
+
+    # 保存展开状态与选中节点
+    expanded_paths = model.save_expanded_paths(view)
+    selected_path = model.save_selected_path(view)
+
+    # 应包含 Root、L1、L2 的路径
+    assert str(root_dir) in expanded_paths
+    assert str(root_dir / "L1") in expanded_paths
+    assert str(root_dir / "L1" / "L2") in expanded_paths
+    assert selected_path == str(root_dir / "L1" / "L2")
+
+    # refresh（模拟扫描后重置）
+    model.refresh()
+    qapp.processEvents()
+
+    # 恢复展开状态
+    model.restore_expanded_paths(view, expanded_paths, selected_path)
+    qapp.processEvents()
+
+    # 验证展开状态已恢复
+    # refresh 后旧索引失效，重新获取新索引
+    new_root_idx = model.index(0, 0)
+    assert view.isExpanded(new_root_idx)
+
+    # L1、L2 也应展开
+    new_l1_idx = model.index(0, 0, new_root_idx)
+    assert view.isExpanded(new_l1_idx)
+    new_l2_idx = model.index(0, 0, new_l1_idx)
+    assert view.isExpanded(new_l2_idx)
+
+    # 选中节点应恢复（L2）
+    sm = view.selectionModel()
+    assert sm is not None
+    selected = sm.selectedRows()
+    assert len(selected) == 1
+    selected_node = model.node_at(selected[0])
+    assert selected_node is not None
+    assert selected_node.real_path == str(root_dir / "L1" / "L2")
+
+    view.deleteLater()
+    qapp.processEvents()
+
+
+def test_restore_expanded_skips_deleted_nodes(
+    db_connection: sqlite3.Connection, qapp: QApplication, tmp_path: Path
+) -> None:
+    """refresh 后若节点已删除，恢复时跳过不崩溃。"""
+    managed_service = _make_managed_root_service(db_connection)
+    scan_service = _make_scan_service(db_connection)
+    root_dir = tmp_path / "Root"
+    sub_dir = root_dir / "Sub"
+    sub_dir.mkdir(parents=True)
+    root = managed_service.add_root(root_dir)
+    scan_service.scan_root(root.id, incremental=False)
+    db_connection.commit()
+
+    model = FolderTreeModel(_make_tree_service(db_connection))
+    model.refresh()
+
+    view = QTreeView()
+    view.setModel(model)
+
+    # 展开 Root 和 Sub
+    root_idx = model.index(0, 0)
+    model.fetchMore(root_idx)
+    view.setExpanded(root_idx, True)
+    sub_idx = model.index(0, 0, root_idx)
+    model.fetchMore(sub_idx)
+    view.setExpanded(sub_idx, True)
+    qapp.processEvents()
+
+    # 保存展开状态
+    expanded_paths = model.save_expanded_paths(view)
+    assert str(sub_dir) in expanded_paths
+
+    # 删除 Sub 目录并重新扫描（模拟节点删除）
+    import shutil
+
+    shutil.rmtree(sub_dir)
+    scan_service.scan_root(root.id, incremental=False)
+    db_connection.commit()
+
+    # refresh 后恢复（Sub 已删除，应跳过不崩溃）
+    model.refresh()
+    model.restore_expanded_paths(view, expanded_paths, None)
+    qapp.processEvents()
+
+    # Root 应展开，Sub 不存在
+    new_root_idx = model.index(0, 0)
+    assert view.isExpanded(new_root_idx)
+    # Sub 已删除，rowCount(root) 应为 0
+    assert model.rowCount(new_root_idx) == 0
+
+    view.deleteLater()
+    qapp.processEvents()
+
+
+def test_save_expanded_empty_model(db_connection: sqlite3.Connection, qapp: QApplication) -> None:
+    """空模型的 save/restore 不崩溃。"""
+    model = FolderTreeModel(_make_tree_service(db_connection))
+    model.refresh()
+
+    view = QTreeView()
+    view.setModel(model)
+
+    expanded = model.save_expanded_paths(view)
+    assert expanded == set()
+
+    selected = model.save_selected_path(view)
+    assert selected is None
+
+    # restore 不崩溃
+    model.restore_expanded_paths(view, expanded, selected)
+    qapp.processEvents()
+
+    view.deleteLater()
+    qapp.processEvents()

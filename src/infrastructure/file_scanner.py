@@ -49,14 +49,18 @@ class ScannedFolderEntry:
 class ScanResult:
     """扫描结果。
 
+    scanned_dirs：mtime 发生变化的目录（增量扫描仅记录变更目录）。
     archive_candidates：扫描发现的所有压缩包文件完整路径列表
     （spec §5.4 2026-07-13 修正：压缩包文件本身作为内容单元候选）。
+    all_visited_dirs：扫描过程中实际访问到的所有目录路径（无论 mtime 是否变化、
+    是否跳过）。用于 ScanService 对比 folder_cache 清理已删除目录的残留记录。
     """
 
     scanned_dirs: list[ScannedFolderEntry] = field(default_factory=list)
     archive_candidates: list[str] = field(default_factory=list)
     errors: list[ScanError] = field(default_factory=list)
     skipped_unchanged: int = 0
+    all_visited_dirs: list[str] = field(default_factory=list)
 
     @property
     def has_errors(self) -> bool:
@@ -137,6 +141,10 @@ class FileScanner:
         except OSError as e:
             result.errors.append(ScanError(path=dir_path_str, message=f"无法读取目录内容：{e}"))
             return
+
+        # 记录所有实际访问到的目录（无论 mtime 是否变化），供 ScanService
+        # 对比 folder_cache 清理已删除目录的残留记录。
+        result.all_visited_dirs.append(dir_path_str)
 
         # 分离子目录与压缩包文件
         subdirs: list[Path] = []

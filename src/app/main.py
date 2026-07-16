@@ -18,11 +18,14 @@ from app.main_window import MainWindow
 from application.content_service import ContentService
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
+from application.mod_group_service import ModGroupService
 from application.staging_service import StagingService
 from infrastructure.db import get_connection, init_db
+from infrastructure.file_operation_service import FileOperationService
 from infrastructure.repositories.content_unit import ContentUnitRepository
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
+from infrastructure.repositories.operation_history import OperationHistoryRepository
 from infrastructure.repositories.staging_area import StagingAreaRepository
 
 logger = logging.getLogger(__name__)
@@ -66,6 +69,9 @@ def main() -> int:
         staging_service=staging_service,
     )
     content_service = ContentService(ContentUnitRepository(conn))
+    file_operation_service = FileOperationService(OperationHistoryRepository(conn))
+    folder_cache_repo = FolderCacheRepository(conn)
+    mod_group_service = ModGroupService(file_operation_service, content_service, folder_cache_repo)
 
     app = QApplication(sys.argv)
     window = MainWindow(
@@ -75,6 +81,7 @@ def main() -> int:
         db_path,
         commit_callback=conn.commit,
         staging_service=staging_service,
+        mod_group_service=mod_group_service,
     )
     window.show()
     exit_code = app.exec()

@@ -36,3 +36,39 @@ class DuplicateStagingAreaError(ApplicationError):
 
 class StagingAreaNestingError(ApplicationError):
     """暂存区不允许嵌套：祖先目录或子目录已是暂存区。"""
+
+
+class FileOperationError(ApplicationError):
+    """文件操作基础错误。"""
+
+
+class ConflictError(FileOperationError):
+    """目标路径已存在（不覆盖，AGENTS 规则 2）。"""
+
+
+class CrossDriveError(FileOperationError):
+    """跨盘移动不支持。"""
+
+
+class SelfSubdirectoryError(FileOperationError):
+    """不能移动到自身子目录。"""
+
+
+class SourceNotFoundError(FileOperationError):
+    """源文件或目录不存在。"""
+
+
+class ModGroupSourceNotInStagingError(ApplicationError):
+    """创建 Mod 组失败：源文件不在暂存区下。"""
+
+
+class InvalidModGroupNameError(ApplicationError):
+    """创建 Mod 组失败：Mod 组名称无效（空或仅含空白）。"""
+
+
+class ContentUnitNotFoundError(ApplicationError):
+    """ContentUnit 不存在。"""
+
+
+class InvalidContentUnitPathError(ApplicationError):
+    """ContentUnit 路径非法：不存在或不可访问。"""

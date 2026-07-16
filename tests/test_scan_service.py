@@ -47,10 +47,16 @@ def scan_service(db_connection) -> ScanService:
 
 @pytest.fixture
 def managed_root_service(db_connection) -> ManagedRootService:
+    counter = {"n": 0}
+
+    def fake_uuid() -> str:
+        counter["n"] += 1
+        return f"root-{counter['n']}"
+
     return ManagedRootService(
         ManagedRootRepository(db_connection),
         now_provider=lambda: "2026-07-12T00:00:00Z",
-        uuid_provider=lambda: "root-uuid",
+        uuid_provider=fake_uuid,
     )
 
 
@@ -260,3 +266,131 @@ class TestRepeatScan:
         paths = [f.path for f in folders]
         # 无重复路径
         assert len(paths) == len(set(paths))
+
+
+class TestCleanupDeletedFolders:
+    """扫描后清理已删除目录的 folder_cache 残留记录（2026-07-16 修复）。"""
+
+    def test_full_scan_cleans_deleted_dir(
+        self,
+        scan_service: ScanService,
+        managed_root_service: ManagedRootService,
+        mod_tree: Path,
+        db_connection,
+    ) -> None:
+        """全量扫描后删除目录，重新扫描应清理 folder_cache 中的残留记录。"""
+        root = managed_root_service.add_root(mod_tree)
+        scan_service.scan_root(root.id, incremental=False)
+        db_connection.commit()
+
+        repo = FolderCacheRepository(db_connection)
+        before_count = len(repo.list_all())
+        assert before_count > 0
+
+        # 删除"普通文件夹"目录
+        import shutil
+
+        shutil.rmtree(mod_tree / "普通文件夹")
+
+        # 重新全量扫描
+        scan_service.scan_root(root.id, incremental=False)
+        db_connection.commit()
+
+        # folder_cache 中不应再有"普通文件夹"的记录
+        folders = repo.list_all()
+        paths = [f.path for f in folders]
+        deleted_path = str(mod_tree / "普通文件夹")
+        assert deleted_path not in paths
+
+    def test_incremental_scan_cleans_deleted_dir(
+        self,
+        scan_service: ScanService,
+        managed_root_service: ManagedRootService,
+        mod_tree: Path,
+        db_connection,
+    ) -> None:
+        """增量扫描也应清理已删除目录的残留记录。
+
+        增量扫描用 all_visited_dirs（实际访问到的所有目录）对比，
+        即使 mtime 未变的目录也会被访问到，已删除目录不在访问集合中，
+        会被清理。
+        """
+        root = managed_root_service.add_root(mod_tree)
+        scan_service.scan_root(root.id, incremental=False)
+        db_connection.commit()
+
+        # 删除"Weapons"目录
+        import shutil
+
+        shutil.rmtree(mod_tree / "Weapons")
+
+        # 增量扫描
+        scan_service.scan_root(root.id, incremental=True)
+        db_connection.commit()
+
+        repo = FolderCacheRepository(db_connection)
+        folders = repo.list_all()
+        paths = [f.path for f in folders]
+        assert str(mod_tree / "Weapons") not in paths
+        # 子目录也应被清理
+        assert str(mod_tree / "Weapons" / "sub") not in paths
+
+    def test_cleanup_only_affects_scanned_root(
+        self,
+        scan_service: ScanService,
+        managed_root_service: ManagedRootService,
+        mod_tree: Path,
+        tmp_path: Path,
+        db_connection,
+    ) -> None:
+        """清理只影响当前扫描的 root，不误删其他 root 的记录。"""
+        # 两个独立的 root
+        root1_dir = mod_tree  # 第一个 root
+        root2_dir = tmp_path / "other_root"
+        root2_dir.mkdir()
+        (root2_dir / "SubDir").mkdir()
+
+        root1 = managed_root_service.add_root(root1_dir)
+        root2 = managed_root_service.add_root(root2_dir)
+
+        # 扫描两个 root
+        scan_service.scan_root(root1.id, incremental=False)
+        scan_service.scan_root(root2.id, incremental=False)
+        db_connection.commit()
+
+        repo = FolderCacheRepository(db_connection)
+        assert len(repo.list_all()) > 0
+
+        # 删除 root1 下的目录
+        import shutil
+
+        shutil.rmtree(root1_dir / "普通文件夹")
+
+        # 只扫描 root1
+        scan_service.scan_root(root1.id, incremental=False)
+        db_connection.commit()
+
+        # root2 的记录应保留
+        folders = repo.list_all()
+        paths = [f.path for f in folders]
+        assert str(root2_dir / "SubDir") in paths
+
+    def test_all_visited_dirs_populated(
+        self,
+        scan_service: ScanService,
+        managed_root_service: ManagedRootService,
+        mod_tree: Path,
+        db_connection,
+    ) -> None:
+        """FileScanner 的 all_visited_dirs 收集所有访问到的目录。"""
+        from infrastructure.file_scanner import FileScanner
+
+        scanner = FileScanner()
+        result = scanner.scan_full(mod_tree)
+
+        # all_visited_dirs 应包含所有目录（含根、子目录）
+        assert str(mod_tree) in result.all_visited_dirs
+        assert str(mod_tree / "护甲") in result.all_visited_dirs
+        assert str(mod_tree / "Weapons") in result.all_visited_dirs
+        assert str(mod_tree / "Weapons" / "sub") in result.all_visited_dirs
+        assert str(mod_tree / "普通文件夹") in result.all_visited_dirs

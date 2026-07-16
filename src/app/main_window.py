@@ -3,12 +3,12 @@
 布局（顶部模式切换 + 三栏，与 spec §7.1 一致）：
 - 顶部：[浏览 | 整理] 模式切换按钮（默认浏览）。
 - 左栏：受管理根目录列表 + 添加/移除按钮 + 扫描按钮 + 扫描状态 + 目录树 + 选中目录详情。
-- 中栏：文件列表（浏览模式跟随目录树节点；整理模式冻结为切换前工作区）。
+- 中栏：文件列表（浏览模式跟随目录树节点；整理模式只加载 [S] 节点递归列表）。
 - 右栏：元数据面板（双击内容单元时显示；双击非内容单元不响应）。
 
 模式行为（spec §5.1/§5.2，roadmap 阶段 2 Task 5）：
 - 浏览模式：目录树点击节点 → 中栏刷新该目录文件列表 + 详情区更新。
-- 整理模式：中栏内容冻结（保留切换前的文件列表），目录树点击节点只高亮目标
+- 整理模式：中栏只加载 [S] 节点递归列表，目录树点击非 [S] 节点只高亮目标
   并在中栏顶部显示"目标：xxx"，不切换中栏内容。
 
 扫描联动（roadmap 阶段 2 Task 5 验收项 5）：
@@ -26,7 +26,13 @@
 读取条目并按 path 关联 content_unit 表。内容单元不是可见性门槛——
 所有文件系统条目均可见可操作（spec §5.1 关键设计）。
 元数据面板只读显示（编辑在阶段 4 Task 4）。
-双击非内容单元不响应（spec §5.1 L205）。
+
+交互行为（2026-07-16 调整）：
+- 单击选中内容单元 → 右侧立即显示元数据（详情面板交互方式）。
+- 浏览模式双击文件夹 → 进入该目录（无论是否内容单元，优先于元数据显示）。
+  文件夹的元数据通过单击查看。
+- 双击文件类型内容单元（压缩包）→ 显示元数据面板。
+- 整理模式双击文件夹 / 双击普通文件 → 不响应。
 """
 
 from __future__ import annotations
@@ -41,6 +47,9 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QButtonGroup,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -66,15 +75,22 @@ from app.mode_manager import ModeManager
 from app.scan_worker import ScanWorker
 from application.content_service import ContentService
 from application.errors import (
+    ConflictError,
+    ContentUnitNotFoundError,
     DuplicateManagedRootError,
     DuplicateStagingAreaError,
+    FileOperationError,
+    InvalidContentUnitPathError,
+    InvalidModGroupNameError,
     InvalidRootPathError,
     ManagedRootNotFoundError,
+    ModGroupSourceNotInStagingError,
     StagingAreaNestingError,
     StagingAreaNotFoundError,
 )
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
+from application.mod_group_service import ModGroupService
 from application.scan_service import ScanSummary
 from application.staging_service import StagingService
 from domain.models import AppMode, ContentUnit, FileEntry, ManagedRoot
@@ -103,6 +119,7 @@ class MainWindow(QMainWindow):
         db_path: Path,
         commit_callback: Callable[[], None] | None = None,
         staging_service: StagingService | None = None,
+        mod_group_service: ModGroupService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -112,6 +129,7 @@ class MainWindow(QMainWindow):
         self._db_path = db_path
         self._commit_callback = commit_callback
         self._staging_service = staging_service
+        self._mod_group_service = mod_group_service
         self._thread: QThread | None = None
         self._worker: ScanWorker | None = None
         self._is_scanning = False
@@ -286,7 +304,7 @@ class MainWindow(QMainWindow):
 
         self._content_view = QTableView()
         self._content_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._content_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._content_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._content_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._content_view.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
         self._content_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -303,6 +321,11 @@ class MainWindow(QMainWindow):
         self._content_view.customContextMenuRequested.connect(self._on_content_context_menu)
         self._content_view.horizontalHeader().sectionClicked.connect(
             self._on_content_header_clicked
+        )
+        # 单击选中内容单元 → 显示元数据（selectionChanged 在选中变化时触发）
+        # 延迟连接，确保 selectionModel 已创建
+        self._content_view.selectionModel().selectionChanged.connect(
+            self._on_content_selection_changed
         )
         content_layout.addWidget(self._content_view)
 
@@ -380,9 +403,19 @@ class MainWindow(QMainWindow):
     def _refresh_tree(self) -> None:
         """刷新目录树模型。
 
+        2026-07-16 优化：刷新前保存展开状态与选中节点，刷新后递归恢复，
+        避免每次扫描/创建 Mod 组后目录树全部折叠。
         整理模式下不清空中栏文件列表（保留冻结的工作区）。
         """
+        # 保存展开状态与选中节点
+        expanded_paths = self._tree_model.save_expanded_paths(self._tree_view)
+        selected_path = self._tree_model.save_selected_path(self._tree_view)
+
         self._tree_model.refresh()
+
+        # 恢复展开状态与选中节点
+        self._tree_model.restore_expanded_paths(self._tree_view, expanded_paths, selected_path)
+
         root_count = self._tree_model.root_node_count()
         self._tree_empty_hint.setVisible(root_count == 0)
         # 清空详情区
@@ -494,19 +527,59 @@ class MainWindow(QMainWindow):
     # --- 文件条目 ---
 
     def _on_entry_activated(self, index) -> None:  # noqa: ANN001 (Qt 信号)
-        """双击文件条目：仅内容单元响应（显示元数据），非内容单元不响应。
+        """双击文件条目。
 
-        spec §5.1 L205：双击非内容单元不响应。
+        交互行为（2026-07-16 调整）：
+        - 浏览模式下双击文件夹 → 进入该目录（无论是否内容单元，优先于元数据显示）。
+          文件夹的元数据通过单击选中查看（_on_content_selection_changed）。
+        - 双击文件类型内容单元（压缩包）→ 显示元数据面板。
+        - 整理模式下双击文件夹 / 普通文件 → 不响应。
         """
         entry = self._content_list_model.entry_at(index.row())
         if entry is None:
             return
 
+        # 浏览模式下双击文件夹 → 进入该目录（优先于内容单元判断）
+        # 文件夹即使被标记为内容单元（如 Mod 组），双击也进入目录；
+        # 元数据通过单击查看。
+        if entry.is_dir and self._mode_manager.is_browse():
+            self._refresh_content_list(entry.path)
+            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+            return
+
+        # 双击文件类型内容单元 → 显示元数据
         if entry.content_unit is not None:
             self._update_metadata(entry.content_unit)
             return
 
-        # 非内容单元（文件或文件夹）：不响应，右栏保持现状
+        # 其他情况（整理模式文件夹 / 普通文件）：不响应
+
+    def _on_content_selection_changed(self, *args) -> None:  # noqa: N802, ANN001 (Qt 信号)
+        """文件列表选中变化：单击选中内容单元 → 右侧立即显示元数据。
+
+        交互优化（2026-07-15）：元数据作为"详情面板"，单击查看更符合
+        资源管理器/IDE/DAM 软件的交互方式。
+        - 选中内容单元 → 显示元数据。
+        - 选中非内容单元 → 清空元数据面板（或保持现状，这里选择清空以避免误导）。
+        - 整理模式下同样生效（暂存区列表中的内容单元也响应）。
+        """
+        sm = self._content_view.selectionModel()
+        if sm is None:
+            return
+        indexes = sm.selectedRows()
+        if not indexes:
+            return
+        # 只在单选时显示元数据（多选时清空避免混淆）
+        if len(indexes) > 1:
+            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+            return
+        entry = self._content_list_model.entry_at(indexes[0].row())
+        if entry is None:
+            return
+        if entry.content_unit is not None:
+            self._update_metadata(entry.content_unit)
+        else:
+            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
 
     def _on_content_header_clicked(self, column: int) -> None:  # noqa: N802 (Qt 命名)
         """文件列表列头点击：切换排序键，同列再点切换升降序。
@@ -613,19 +686,79 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", "取消暂存区标记失败，请查看日志。")
 
     def _on_content_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
-        """文件列表右键菜单：本 Task 仅实现「复制路径」（决策问题 2）。"""
-        index = self._content_view.indexAt(pos)
-        if not index.isValid():
+        """文件列表右键菜单：根据选中条目与模式动态构造。
+
+        菜单项：
+        - 创建 Mod 组：仅整理模式 + 单选文件 + 注入了 ModGroupService 时显示。
+        - 标记为内容单元 / 把每个文件标记为内容单元：未标记条目。
+        - 取消标记：已标记 ContentUnit。
+        - 复制路径：始终显示。
+        """
+        # 取所有选中行（ExtendedSelection 支持多选）
+        sm = self._content_view.selectionModel()
+        if sm is None:
             return
-        entry = self._content_list_model.entry_at(index.row())
-        if entry is None:
+        selected_rows = sm.selectedRows()
+        if not selected_rows:
+            return
+
+        entries: list[FileEntry] = []
+        for idx in selected_rows:
+            entry = self._content_list_model.entry_at(idx.row())
+            if entry is not None:
+                entries.append(entry)
+        if not entries:
             return
 
         menu = QMenu(self)
-        action = menu.addAction(ui.CONTEXT_MENU_COPY_PATH)
+        actions: list[tuple[str, Callable[[], None]]] = []
+
+        # 创建 Mod 组：仅整理模式 + 单选 + 文件（非目录）+ 注入了 ModGroupService
+        if (
+            self._mod_group_service is not None
+            and self._mode_manager.is_organize()
+            and len(entries) == 1
+            and not entries[0].is_dir
+        ):
+            actions.append(
+                (ui.MENU_CREATE_MOD_GROUP, lambda: self._on_create_mod_group(entries[0]))
+            )
+
+        # 标记/取消标记
+        if len(entries) == 1:
+            entry = entries[0]
+            if entry.content_unit is None:
+                actions.append(
+                    (ui.MENU_MARK_CONTENT_UNIT, lambda: self._on_mark_content_unit(entry))
+                )
+            else:
+                actions.append(
+                    (ui.MENU_UNMARK_CONTENT_UNIT, lambda: self._on_unmark_content_unit(entry))
+                )
+        else:
+            # 多选：始终显示批量标记（已标记项在 handler 内跳过）
+            actions.append(
+                (
+                    ui.MENU_BATCH_MARK_CONTENT_UNIT,
+                    lambda: self._on_batch_mark_content_unit(entries),
+                )
+            )
+
+        # 复制路径（始终）
+        actions.append(
+            (ui.CONTEXT_MENU_COPY_PATH, lambda: self._copy_path_to_clipboard(entries[0].path))
+        )
+
+        for label, _ in actions:
+            menu.addAction(label)
+
         chosen = menu.exec(self._content_view.viewport().mapToGlobal(pos))
-        if chosen is action:
-            self._copy_path_to_clipboard(entry.path)
+        if chosen is None:
+            return
+        for label, handler in actions:
+            if chosen.text() == label:
+                handler()
+                break
 
     def _copy_path_to_clipboard(self, path: str) -> None:
         """复制路径到剪贴板。"""
@@ -633,6 +766,163 @@ class MainWindow(QMainWindow):
         if clipboard is not None:
             clipboard.setText(path)
         self.statusBar().showMessage(ui.CONTEXT_MENU_COPY_PATH_OK, 3000)
+
+    def _on_create_mod_group(self, entry: FileEntry) -> None:
+        """创建 Mod 组：弹出对话框选择/编辑名称，调用 ModGroupService。"""
+        if self._mod_group_service is None:
+            return
+        if self._organize_workarea_path is None:
+            QMessageBox.warning(self, ui.CREATE_MOD_GROUP_FAILED, "未选中暂存区工作区。")
+            return
+
+        # 提取两种命名选项
+        from application.mod_group_service import extract_mod_name
+
+        pure_name = extract_mod_name(entry.name)
+        # 完整原名：去扩展名
+        full_name = Path(entry.name).stem
+
+        # 弹出对话框
+        chosen_name = self._show_create_mod_group_dialog(pure_name, full_name)
+        if chosen_name is None:
+            return  # 用户取消
+
+        try:
+            self._mod_group_service.create_mod_group(
+                Path(entry.path),
+                Path(self._organize_workarea_path),
+                name=chosen_name,
+            )
+            self._commit()
+            # 刷新目录树（新文件夹已写入 folder_cache）
+            self._refresh_tree()
+            # 刷新暂存区文件列表
+            self._refresh_staging_content_list(self._organize_workarea_path)
+            self.statusBar().showMessage(
+                ui.CREATE_MOD_GROUP_DEFAULT_OK.format(name=chosen_name), 3000
+            )
+        except ConflictError:
+            QMessageBox.warning(
+                self, ui.CREATE_MOD_GROUP_FAILED, f"目标文件夹已存在：{chosen_name}"
+            )
+        except ModGroupSourceNotInStagingError as e:
+            QMessageBox.warning(self, ui.CREATE_MOD_GROUP_FAILED, f"源文件不在暂存区下：\n{e}")
+        except InvalidModGroupNameError as e:
+            QMessageBox.warning(self, ui.CREATE_MOD_GROUP_FAILED, f"名称无效：\n{e}")
+        except FileOperationError as e:
+            QMessageBox.warning(self, ui.CREATE_MOD_GROUP_FAILED, f"文件操作失败：\n{e}")
+        except Exception:  # noqa: BLE001
+            logger.exception("创建 Mod 组失败")
+            QMessageBox.critical(self, ui.CREATE_MOD_GROUP_FAILED, "创建 Mod 组失败，请查看日志。")
+
+    def _show_create_mod_group_dialog(self, pure_name: str, full_name: str) -> str | None:
+        """弹出创建 Mod 组对话框，返回用户选择的名称；取消返回 None。
+
+        下拉框直接以名称作为显示文本（不带"纯 Mod 名："等前缀），
+        避免前缀被写入最终名称。若 pure_name == full_name 只添加一项。
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle(ui.CREATE_MOD_GROUP_DIALOG_TITLE)
+        layout = QVBoxLayout(dialog)
+
+        label = QLabel(ui.CREATE_MOD_GROUP_DIALOG_LABEL)
+        layout.addWidget(label)
+
+        combo = QComboBox()
+        combo.setEditable(True)
+        # 显示文本直接用名称，data 也存名称；选择后编辑框即为纯名称
+        combo.addItem(pure_name, pure_name)
+        if full_name != pure_name:
+            combo.addItem(full_name, full_name)
+        combo.setCurrentIndex(0)
+        # 设置编辑框初始文本为纯 Mod 名
+        combo.setEditText(pure_name)
+        layout.addWidget(combo)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # 优先返回用户编辑后的文本
+            return combo.currentText().strip()
+        return None
+
+    def _on_mark_content_unit(self, entry: FileEntry) -> None:
+        """标记单个条目为内容单元。"""
+        try:
+            self._content_service.mark_as_content_unit(Path(entry.path))
+            self._commit()
+            self._refresh_content_list_for_current_mode()
+            self.statusBar().showMessage(ui.MARK_CONTENT_UNIT_OK, 3000)
+        except InvalidContentUnitPathError as e:
+            QMessageBox.warning(self, ui.MARK_CONTENT_UNIT_FAILED, f"路径无效：\n{e}")
+        except Exception:  # noqa: BLE001
+            logger.exception("标记内容单元失败")
+            QMessageBox.critical(self, ui.MARK_CONTENT_UNIT_FAILED, "标记失败，请查看日志。")
+
+    def _on_unmark_content_unit(self, entry: FileEntry) -> None:
+        """取消单个条目的内容单元标记。"""
+        if entry.content_unit is None:
+            return
+        try:
+            self._content_service.unmark_content_unit(entry.content_unit.id)
+            self._commit()
+            self._refresh_content_list_for_current_mode()
+            self.statusBar().showMessage(ui.UNMARK_CONTENT_UNIT_OK, 3000)
+        except ContentUnitNotFoundError:
+            QMessageBox.warning(
+                self, ui.UNMARK_CONTENT_UNIT_FAILED, "内容单元不存在（可能已被删除）。"
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("取消标记失败")
+            QMessageBox.critical(self, ui.UNMARK_CONTENT_UNIT_FAILED, "取消标记失败，请查看日志。")
+
+    def _on_batch_mark_content_unit(self, entries: list[FileEntry]) -> None:
+        """批量标记多个条目为内容单元（各自独立，已标记项跳过）。"""
+        success_count = 0
+        failure_count = 0
+        for entry in entries:
+            if entry.content_unit is not None:
+                continue  # 已标记，跳过
+            try:
+                self._content_service.mark_as_content_unit(Path(entry.path))
+                success_count += 1
+            except Exception:  # noqa: BLE001
+                logger.exception("批量标记失败：path=%s", entry.path)
+                failure_count += 1
+        if success_count > 0:
+            self._commit()
+            self._refresh_content_list_for_current_mode()
+            self.statusBar().showMessage(
+                ui.BATCH_MARK_CONTENT_UNIT_OK.format(count=success_count), 3000
+            )
+        if failure_count > 0:
+            QMessageBox.warning(
+                self,
+                ui.BATCH_MARK_CONTENT_UNIT_FAILED,
+                f"{failure_count} 个文件标记失败，请查看日志。",
+            )
+
+    def _refresh_content_list_for_current_mode(self) -> None:
+        """根据当前模式刷新中栏文件列表。"""
+        if self._mode_manager.is_organize():
+            if self._organize_workarea_path is not None:
+                self._refresh_staging_content_list(self._organize_workarea_path)
+        else:
+            # 浏览模式：刷新当前目录树节点
+            sm = self._tree_view.selectionModel()
+            if sm is None:
+                return
+            indexes = sm.selectedIndexes()
+            if not indexes:
+                return
+            node = self._tree_model.node_at(indexes[0])
+            if node is not None:
+                self._refresh_content_list(node.real_path)
 
     def _update_metadata(self, unit: ContentUnit) -> None:
         """更新元数据面板。"""

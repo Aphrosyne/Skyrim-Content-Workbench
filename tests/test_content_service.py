@@ -580,3 +580,312 @@ class TestListStagingEntries:
         entries = service.list_staging_entries(str(staging))
         names = [e.name for e in entries]
         assert "link.txt" not in names
+
+    def test_content_unit_folder_hides_children(
+        self, repo: ContentUnitRepository, service: ContentService, tmp_path: Path
+    ) -> None:
+        """spec §7.3：已标记为内容单元的文件夹，其子文件/子文件夹不显示在暂存区列表中。
+
+        这与 spec §5.4（标记文件夹时取消子项标记）的语义一致——
+        已收纳到 Mod 组的文件不再作为"零散文件"显示。
+        """
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        # 顶层：一个 Mod 组文件夹 + 一个零散文件
+        mod_folder = staging / "BDOR Black Knight"
+        mod_folder.mkdir()
+        (mod_folder / "BDOR Black Knight 1.0.7z").write_bytes(b"\x00" * 100)
+        (mod_folder / "preview.jpg").write_bytes(b"\x00" * 50)
+        # 子子目录
+        (mod_folder / "extra").mkdir()
+        (mod_folder / "extra" / "patch.7z").write_bytes(b"\x00" * 30)
+        # 顶层零散文件
+        (staging / "SkyUI 5.1 SE.zip").write_bytes(b"\x00" * 80)
+
+        # 标记 BDOR Black Knight 文件夹为内容单元
+        repo.create(_make_unit("u-mod", str(mod_folder), title="BDOR Black Knight"))
+
+        entries = service.list_staging_entries(str(staging))
+        names = {e.name for e in entries}
+
+        # Mod 组文件夹本身仍显示（它是内容单元）
+        assert "BDOR Black Knight" in names
+        mod_entry = next(e for e in entries if e.name == "BDOR Black Knight")
+        assert mod_entry.content_unit is not None
+
+        # 顶层零散文件仍显示
+        assert "SkyUI 5.1 SE.zip" in names
+
+        # Mod 组文件夹内部的子文件/子目录不显示（已收纳）
+        assert "BDOR Black Knight 1.0.7z" not in names
+        assert "preview.jpg" not in names
+        assert "extra" not in names
+        assert "patch.7z" not in names
+
+    def test_unmarked_folder_does_not_hide_children(
+        self, repo: ContentUnitRepository, service: ContentService, tmp_path: Path
+    ) -> None:
+        """普通文件夹（未标记为内容单元）的子文件仍正常显示。"""
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        subdir = staging / "普通文件夹"
+        subdir.mkdir()
+        (subdir / "readme.txt").write_text("hi", encoding="utf-8")
+        (staging / "top.7z").write_bytes(b"\x00" * 10)
+
+        entries = service.list_staging_entries(str(staging))
+        names = {e.name for e in entries}
+        assert "普通文件夹" in names
+        assert "readme.txt" in names
+        assert "top.7z" in names
+
+
+class TestCreateContentUnit:
+    def test_basic_create(self, db_connection, tmp_path: Path) -> None:
+        """基本创建：返回 ContentUnit，DB 中可查。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-14T00:00:00Z",
+            uuid_provider=lambda: "uuid-create-1",
+        )
+        path = tmp_path / "mod.7z"
+        path.write_bytes(b"data")
+
+        unit = svc.create_content_unit(path)
+
+        assert unit.id == "uuid-create-1"
+        assert unit.path == str(path)
+        assert unit.title is None
+        assert unit.content_type == "mod"
+        assert unit.status == "unorganized"
+        assert unit.created_at == "2026-07-14T00:00:00Z"
+        # DB 中可查
+        fetched = svc._repo.get_by_id("uuid-create-1")  # noqa: SLF001
+        assert fetched is not None
+        assert fetched.path == str(path)
+
+    def test_default_status_unorganized(self, db_connection, tmp_path: Path) -> None:
+        """默认 status=unorganized。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        svc = ContentService(ContentUnitRepository(db_connection))
+        path = tmp_path / "mod.7z"
+        path.write_bytes(b"data")
+
+        unit = svc.create_content_unit(path)
+
+        assert unit.status == "unorganized"
+
+    def test_duplicate_path_raises(self, db_connection, tmp_path: Path) -> None:
+        """path 唯一约束：重复创建抛 ConstraintViolationError。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+        from infrastructure.repositories.errors import ConstraintViolationError
+
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-14T00:00:00Z",
+            uuid_provider=lambda: "uuid-dup",
+        )
+        path = tmp_path / "mod.7z"
+        path.write_bytes(b"data")
+
+        svc.create_content_unit(path)
+
+        with pytest.raises(ConstraintViolationError):
+            svc.create_content_unit(path)
+
+    def test_chinese_path(self, db_connection, tmp_path: Path) -> None:
+        """中文路径可创建。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-14T00:00:00Z",
+            uuid_provider=lambda: "uuid-cn",
+        )
+        path = tmp_path / "汉化补丁.rar"
+        path.write_bytes(b"data")
+
+        unit = svc.create_content_unit(path)
+
+        assert "汉化补丁" in unit.path
+
+
+class TestMarkAsContentUnit:
+    def test_mark_file(self, db_connection, tmp_path: Path) -> None:
+        """标记文件为内容单元。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-14T00:00:00Z",
+            uuid_provider=lambda: "uuid-mark-file",
+        )
+        path = tmp_path / "mod.7z"
+        path.write_bytes(b"data")
+
+        unit = svc.mark_as_content_unit(path)
+
+        assert unit.path == str(path)
+        assert unit.id == "uuid-mark-file"
+
+    def test_mark_folder_cancels_children(self, db_connection, tmp_path: Path) -> None:
+        """spec §5.4：标记文件夹时，其内部子项 ContentUnit 自动取消。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        # uuid_provider 每次返回不同值：先用于子文件，再用于父文件夹
+        uuid_iter = iter(["uuid-child", "uuid-folder"])
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-14T00:00:00Z",
+            uuid_provider=lambda: next(uuid_iter),
+        )
+        folder = tmp_path / "ModGroup"
+        folder.mkdir()
+        child_file = folder / "mod.7z"
+        child_file.write_bytes(b"data")
+
+        # 先标记子文件
+        child_unit = svc.mark_as_content_unit(child_file)
+        assert svc._repo.get_by_id(child_unit.id) is not None  # noqa: SLF001
+
+        # 标记父文件夹
+        folder_unit = svc.mark_as_content_unit(folder)
+
+        # 子项 ContentUnit 应被删除
+        assert svc._repo.get_by_id(child_unit.id) is None  # noqa: SLF001
+        # 父文件夹 ContentUnit 应存在
+        assert svc._repo.get_by_id(folder_unit.id) is not None  # noqa: SLF001
+        assert folder_unit.path == str(folder)
+
+    def test_mark_already_marked_returns_existing(self, db_connection, tmp_path: Path) -> None:
+        """已标记的路径再次调用返回现有 ContentUnit（不重复创建）。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-14T00:00:00Z",
+            uuid_provider=lambda: "uuid-existing",
+        )
+        path = tmp_path / "mod.7z"
+        path.write_bytes(b"data")
+
+        first = svc.mark_as_content_unit(path)
+        second = svc.mark_as_content_unit(path)
+
+        assert first.id == second.id  # 同一个 unit
+
+    def test_mark_nonexistent_path_raises(self, db_connection, tmp_path: Path) -> None:
+        """路径不存在抛 InvalidContentUnitPathError。"""
+        from application.content_service import ContentService
+        from application.errors import InvalidContentUnitPathError
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        svc = ContentService(ContentUnitRepository(db_connection))
+        nonexistent = tmp_path / "nonexistent.7z"
+
+        with pytest.raises(InvalidContentUnitPathError):
+            svc.mark_as_content_unit(nonexistent)
+
+
+class TestUnmarkContentUnit:
+    def test_unmark_sets_status_unmarked(self, db_connection, tmp_path: Path) -> None:
+        """取消标记：将 status 设为 'unmarked'（而非删除记录）。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-14T00:00:00Z",
+            uuid_provider=lambda: "uuid-unmark",
+        )
+        path = tmp_path / "mod.7z"
+        path.write_bytes(b"data")
+        unit = svc.create_content_unit(path)
+
+        svc.unmark_content_unit(unit.id)
+
+        # 记录仍在 DB，但 status 为 "unmarked"
+        result = svc._repo.get_by_id(unit.id)  # noqa: SLF001
+        assert result is not None
+        assert result.status == "unmarked"
+
+    def test_unmark_preserves_content_unit_tag(self, db_connection, tmp_path: Path) -> None:
+        """取消标记：保留 content_unit_tag（用户重新标记后可恢复标签）。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-14T00:00:00Z",
+            uuid_provider=lambda: "uuid-tag-clean",
+        )
+        path = tmp_path / "mod.7z"
+        path.write_bytes(b"data")
+        unit = svc.create_content_unit(path)
+
+        # 插入一条 content_unit_tag 记录（构造 FK 引用）
+        # 注意：tag 表无记录，直接插 content_unit_tag 会 FK 违约，需先插 tag_category + tag
+        db_connection.execute(
+            "INSERT INTO tag_category (id, name, color_hue) VALUES (?, ?, ?)",
+            ("cat-1", "测试分类", 0),
+        )
+        db_connection.execute(
+            "INSERT INTO tag (id, name, category_id) VALUES (?, ?, ?)",
+            ("tag-1", "测试标签", "cat-1"),
+        )
+        db_connection.execute(
+            "INSERT INTO content_unit_tag (content_unit_id, tag_id) VALUES (?, ?)",
+            (unit.id, "tag-1"),
+        )
+        db_connection.commit()
+
+        # 取消标记应成功
+        svc.unmark_content_unit(unit.id)
+        db_connection.commit()
+
+        # content_unit_tag 记录应被保留（unmarked 仅改状态，不删关联）
+        rows = db_connection.execute(
+            "SELECT * FROM content_unit_tag WHERE content_unit_id = ?",
+            (unit.id,),
+        ).fetchall()
+        assert len(rows) == 1
+
+    def test_unmark_does_not_modify_real_file(self, db_connection, tmp_path: Path) -> None:
+        """取消标记不删除真实文件。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-14T00:00:00Z",
+            uuid_provider=lambda: "uuid-preserve",
+        )
+        path = tmp_path / "mod.7z"
+        path.write_bytes(b"keep-me")
+        unit = svc.create_content_unit(path)
+
+        svc.unmark_content_unit(unit.id)
+
+        assert path.exists()
+        assert path.read_bytes() == b"keep-me"
+
+    def test_unmark_nonexistent_raises(self, db_connection) -> None:
+        """取消不存在的 ContentUnit 抛 ContentUnitNotFoundError。"""
+        from application.content_service import ContentService
+        from application.errors import ContentUnitNotFoundError
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        svc = ContentService(ContentUnitRepository(db_connection))
+
+        with pytest.raises(ContentUnitNotFoundError):
+            svc.unmark_content_unit("nonexistent-id")

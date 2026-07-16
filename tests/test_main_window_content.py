@@ -313,7 +313,11 @@ def test_double_click_non_content_unit_file_no_response(qapp, main_window_env) -
 
 
 def test_double_click_non_content_unit_dir_no_response(qapp, main_window_env) -> None:
-    """双击非内容单元文件夹 → 不响应（spec §5.1 L205）。"""
+    """浏览模式下双击非内容单元文件夹 → 进入该目录（2026-07-15 交互调整）。
+
+    旧版 spec §5.1 L205 规定双击非内容单元不响应，但 2026-07-15 调整为：
+    浏览模式下双击文件夹进入目录（等价于目录树切换）。
+    """
     window, _, _ = main_window_env
     _select_root(qapp, window)
 
@@ -335,13 +339,134 @@ def test_double_click_non_content_unit_dir_no_response(qapp, main_window_env) ->
     qapp.processEvents()
     assert "标题" in window.metadata_full_text()
 
-    # 同目录内双击 预览图（非内容单元文件夹），元数据面板应保持不变
+    # 双击"预览图"文件夹 → 进入该目录，中栏列表切换到子目录内容
     idx_preview = _find_entry_index(window, "预览图")
     window._on_entry_activated(window._content_list_model.index(idx_preview, 0))  # noqa: SLF001
     qapp.processEvents()
-    # 元数据面板保持上一次状态（标题仍在，不响应）
+    # 中栏列表应切换到"预览图"目录内容（不再是"护甲"目录的内容）
+    # 预览图目录中不应有寒霜之心.7z
+    found_archive = False
+    for i in range(window.entry_count()):
+        entry = window.entry_at(i)
+        if entry is not None and entry.name == "寒霜之心.7z":
+            found_archive = True
+            break
+    assert not found_archive  # 寒霜之心.7z 不在预览图目录中
+
+
+def test_double_click_content_unit_folder_enters_dir(qapp, main_window_env) -> None:
+    """浏览模式下双击内容单元文件夹 → 进入该目录（2026-07-16 交互调整）。
+
+    旧版：双击内容单元（含文件夹）→ 显示元数据。
+    新版：双击文件夹（无论是否内容单元）→ 进入目录；元数据通过单击查看。
+    """
+    window, conn, root_dir = main_window_env
+    _select_root(qapp, window)
+
+    # 标记"Weapons"文件夹为内容单元（模拟 Mod 组文件夹）
+    weapons_path = root_dir / "Weapons"
+    from application.content_service import ContentService
+    from infrastructure.repositories.content_unit import ContentUnitRepository
+
+    content_svc = ContentService(ContentUnitRepository(conn))
+    content_svc.mark_as_content_unit(weapons_path)
+    conn.commit()
+
+    # 刷新中栏文件列表，使 FileEntry.content_unit 正确关联新标记的 ContentUnit
+    window._refresh_content_list_for_current_mode()  # noqa: SLF001
+    qapp.processEvents()
+
+    # 根目录下应有"Weapons"文件夹（已标记为内容单元）
+    weapons_idx = _find_entry_index(window, "Weapons")
+    weapons_entry = window.entry_at(weapons_idx)
+    assert weapons_entry is not None
+    assert weapons_entry.is_dir
+    assert weapons_entry.content_unit is not None  # 确认已标记为内容单元
+
+    # 双击"Weapons"文件夹 → 应进入该目录（而非显示元数据）
+    window._on_entry_activated(window._content_list_model.index(weapons_idx, 0))  # noqa: SLF001
+    qapp.processEvents()
+
+    # 中栏应切换到"Weapons"目录内容，显示 DragonSword.rar
+    found_dragon = False
+    for i in range(window.entry_count()):
+        entry = window.entry_at(i)
+        if entry is not None and entry.name == "DragonSword.rar":
+            found_dragon = True
+            break
+    assert found_dragon  # DragonSword.rar 在 Weapons 目录中
+
+    # 元数据面板应清空（双击文件夹进入目录，不显示元数据）
+    assert "标题" not in window.metadata_full_text()
+
+
+def test_single_click_content_unit_shows_metadata(qapp, main_window_env) -> None:
+    """单击选中内容单元 → 右侧立即显示元数据（2026-07-15 交互调整）。"""
+    window, _, _ = main_window_env
+    _select_root(qapp, window)
+
+    # 进入护甲子目录
+    model = window._tree_model  # noqa: SLF001
+    root_idx = model.index(0, 0)
+    model.fetchMore(root_idx)
+    for i in range(model.rowCount(root_idx)):
+        child_idx = model.index(i, 0, root_idx)
+        name = model.data(child_idx, Qt.DisplayRole)
+        if name and "护甲" in name:
+            window._tree_view.setCurrentIndex(child_idx)  # noqa: SLF001
+            qapp.processEvents()
+            break
+
+    # 初始状态：元数据面板无内容
+    assert "标题" not in window.metadata_full_text()
+
+    # 单击选中寒霜之心.7z（内容单元）→ 元数据立即显示
+    idx = _find_entry_index(window, "寒霜之心.7z")
+    content_idx = window._content_list_model.index(idx, 0)  # noqa: SLF001
+    sm = window._content_view.selectionModel()  # noqa: SLF001
+    sm.select(content_idx, sm.SelectionFlag.ClearAndSelect)
+    # 同时设置当前索引（某些 Qt 版本需要）
+    window._content_view.setCurrentIndex(content_idx)  # noqa: SLF001
+    qapp.processEvents()
+
+    metadata = window.metadata_full_text()
+    assert "标题" in metadata
+    assert "寒霜之心.7z" in metadata
+
+
+def test_single_click_non_content_unit_clears_metadata(qapp, main_window_env) -> None:
+    """单击选中非内容单元 → 元数据面板清空（避免误导）。"""
+    window, _, _ = main_window_env
+    _select_root(qapp, window)
+
+    # 进入护甲子目录
+    model = window._tree_model  # noqa: SLF001
+    root_idx = model.index(0, 0)
+    model.fetchMore(root_idx)
+    for i in range(model.rowCount(root_idx)):
+        child_idx = model.index(i, 0, root_idx)
+        name = model.data(child_idx, Qt.DisplayRole)
+        if name and "护甲" in name:
+            window._tree_view.setCurrentIndex(child_idx)  # noqa: SLF001
+            qapp.processEvents()
+            break
+
+    # 先选中内容单元寒霜之心.7z，元数据应显示
+    idx_archive = _find_entry_index(window, "寒霜之心.7z")
+    content_idx_archive = window._content_list_model.index(idx_archive, 0)  # noqa: SLF001
+    sm = window._content_view.selectionModel()  # noqa: SLF001
+    sm.select(content_idx_archive, sm.SelectionFlag.ClearAndSelect)
+    window._content_view.setCurrentIndex(content_idx_archive)  # noqa: SLF001
+    qapp.processEvents()
     assert "标题" in window.metadata_full_text()
-    assert "寒霜之心.7z" in window.metadata_full_text()
+
+    # 再选中非内容单元 readme.txt → 元数据应清空
+    idx_readme = _find_entry_index(window, "readme.txt")
+    content_idx_readme = window._content_list_model.index(idx_readme, 0)  # noqa: SLF001
+    sm.select(content_idx_readme, sm.SelectionFlag.ClearAndSelect)
+    window._content_view.setCurrentIndex(content_idx_readme)  # noqa: SLF001
+    qapp.processEvents()
+    assert "标题" not in window.metadata_full_text()
 
 
 def test_switching_tree_node_clears_metadata(qapp, main_window_env) -> None:

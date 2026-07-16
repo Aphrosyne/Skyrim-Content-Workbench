@@ -76,6 +76,28 @@ CONTENT_UNIT_MARKER_UNORGANIZED = " [内容单元]"
 CONTEXT_MENU_COPY_PATH = "复制路径"
 CONTEXT_MENU_COPY_PATH_OK = "路径已复制到剪贴板。"
 
+# 文件列表右键菜单（阶段 3 Task 3）
+MENU_CREATE_MOD_GROUP = "创建 Mod 组"
+MENU_MARK_CONTENT_UNIT = "标记为内容单元"
+MENU_UNMARK_CONTENT_UNIT = "取消标记"
+MENU_BATCH_MARK_CONTENT_UNIT = "把每个文件标记为内容单元"
+
+# 创建 Mod 组对话框
+CREATE_MOD_GROUP_DIALOG_TITLE = "创建 Mod 组"
+CREATE_MOD_GROUP_DIALOG_LABEL = "请选择或输入 Mod 组名称："
+CREATE_MOD_GROUP_OPTION_PURE = "纯 Mod 名：{name}"
+CREATE_MOD_GROUP_OPTION_FULL = "完整原名：{name}"
+CREATE_MOD_GROUP_DEFAULT_OK = "已创建 Mod 组：{name}"
+CREATE_MOD_GROUP_FAILED = "创建 Mod 组失败"
+
+# 标记/取消标记状态提示
+MARK_CONTENT_UNIT_OK = "已标记为内容单元"
+UNMARK_CONTENT_UNIT_OK = "已取消标记"
+BATCH_MARK_CONTENT_UNIT_OK = "已批量标记 {count} 个文件"
+MARK_CONTENT_UNIT_FAILED = "标记失败"
+UNMARK_CONTENT_UNIT_FAILED = "取消标记失败"
+BATCH_MARK_CONTENT_UNIT_FAILED = "批量标记失败"
+
 # 元数据面板区域
 METADATA_GROUP_TITLE = "元数据"
 METADATA_NOT_SELECTED = "双击内容单元查看元数据。"

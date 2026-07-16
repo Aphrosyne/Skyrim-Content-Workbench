@@ -197,6 +197,113 @@ class FolderTreeModel(QAbstractItemModel):
             self._root_nodes.append(node)
         self.endResetModel()
 
+    def save_expanded_paths(self, view) -> set[str]:
+        """收集当前 View 中所有展开节点的 real_path 集合。
+
+        在 refresh() 前调用，用于保存展开状态。递归遍历已加载的节点，
+        收集被展开的节点路径。未加载的节点（canFetchMore=True）若处于展开
+        状态，其子节点尚未 fetchMore，无法获取 real_path，但其自身路径
+        已在父节点的 children 中，可被收集。
+
+        Args:
+            view: QTreeView，用于查询展开状态。
+
+        Returns:
+            展开节点的 real_path 集合。
+        """
+        expanded: set[str] = set()
+        # 从根节点开始递归收集
+        for i in range(self.rowCount(QModelIndex())):
+            root_idx = self.index(i, 0, QModelIndex())
+            self._collect_expanded(view, root_idx, expanded)
+        return expanded
+
+    def _collect_expanded(self, view, index: QModelIndex, expanded: set[str]) -> None:
+        """递归收集展开节点的 real_path。"""
+        if not index.isValid():
+            return
+        node = self._node_at_index(index)
+        if node is None:
+            return
+
+        if view.isExpanded(index):
+            expanded.add(node.tree_node.real_path)
+            # 递归子节点（仅已加载的子节点）
+            for i in range(self.rowCount(index)):
+                child_idx = self.index(i, 0, index)
+                self._collect_expanded(view, child_idx, expanded)
+
+    def save_selected_path(self, view) -> str | None:
+        """收集当前 View 选中节点的 real_path（单选）。
+
+        在 refresh() 前调用，用于保存选中状态。
+        """
+        sm = view.selectionModel()
+        if sm is None:
+            return None
+        indexes = sm.selectedIndexes()
+        if not indexes:
+            return None
+        node = self._node_at_index(indexes[0])
+        if node is None:
+            return None
+        return node.tree_node.real_path
+
+    def restore_expanded_paths(
+        self, view, paths: set[str], selected_path: str | None = None
+    ) -> None:
+        """恢复展开状态与选中节点。
+
+        在 refresh() 后调用。递归加载并展开 real_path 在 paths 集合中的节点。
+        若 selected_path 不为 None，找到对应节点并选中。
+
+        Args:
+            view: QTreeView，用于设置展开状态。
+            paths: save_expanded_paths 返回的路径集合。
+            selected_path: save_selected_path 返回的路径，None 不恢复选中。
+        """
+        if not paths and selected_path is None:
+            return
+
+        # 递归恢复展开状态
+        for i in range(self.rowCount(QModelIndex())):
+            root_idx = self.index(i, 0, QModelIndex())
+            self._restore_expanded_recursive(view, root_idx, paths, selected_path)
+
+    def _restore_expanded_recursive(
+        self,
+        view,
+        index: QModelIndex,
+        paths: set[str],
+        selected_path: str | None,
+    ) -> None:
+        """递归恢复展开状态。返回是否找到 selected_path。"""
+        if not index.isValid():
+            return
+        node = self._node_at_index(index)
+        if node is None:
+            return
+
+        real_path = node.tree_node.real_path
+
+        # 恢复选中
+        if selected_path is not None and real_path == selected_path:
+            view.setCurrentIndex(index)
+
+        if real_path not in paths:
+            return  # 未展开，无需递归子节点
+
+        # 需要展开 → 先确保子节点已加载
+        if self.canFetchMore(index):
+            self.fetchMore(index)
+
+        view.setExpanded(index, True)
+
+        # 递归子节点
+        for i in range(self.rowCount(index)):
+            child_idx = self.index(i, 0, index)
+            self._restore_expanded_recursive(view, child_idx, paths, selected_path)
+
     # --- 测试接口 ---
 
     def node_at(self, index: QModelIndex) -> TreeNode | None:

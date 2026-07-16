@@ -8,6 +8,99 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### 2026-07-16 修复（阶段 3 Task 3 验收修复）
+
+- **目录树刷新逻辑修复**：
+  - **创建 Mod 组后新文件夹不可见**：`ModGroupService._resolve_parent_id_by_path` 改用 `make_path_key` 归一化路径比较（与 `ScanService._resolve_parent_id` 一致），避免 `staging_path` 字符串与 `folder_cache.path` 存储字符串的大小写/分隔符差异导致 `parent_id=None`（孤儿节点），新文件夹无法在目录树显示。
+  - **创建 Mod 组后 folder_cache 未写入（生产环境）**：`main.py` 构造 `ModGroupService` 时未传入 `FolderCacheRepository`，导致 `self._folder_cache_repo is None`，创建 Mod 组时跳过了 folder_cache 写入。修复后 `main.py` 注入 `FolderCacheRepository`，创建 Mod 组后目录树立即显示新文件夹（无需重新扫描）。
+  - **已删除目录残留清理**：`FileScanner.ScanResult` 新增 `all_visited_dirs` 字段（扫描过程中实际访问到的所有目录，含增量扫描跳过的目录）；`ScanService._cleanup_deleted_folders` 对比 `all_visited_dirs` 集合与 `folder_cache` 记录，清理已删除目录的残留记录。待删除记录按路径深度降序排序（子目录先于父目录），避免 `folder_cache.parent_id` 外键约束导致删除失败。只清理当前扫描 root 前缀下的记录，不误删其他 root。
+- **双击内容单元文件夹进入目录**：`MainWindow._on_entry_activated` 判断顺序调整——浏览模式下双击文件夹优先进入该目录（无论是否内容单元），先于 `content_unit` 判断。文件夹的元数据通过单击选中查看（`_on_content_selection_changed`）。文件类型内容单元（压缩包）双击仍显示元数据。
+- **扫描后保持目录树展开/选中状态**：`FolderTreeModel` 新增 `save_expanded_paths` / `save_selected_path` / `restore_expanded_paths` 方法；`MainWindow._refresh_tree` 刷新前保存展开节点 `real_path` 集合与选中节点路径，刷新后递归 `fetchMore` + `setExpanded` + `setCurrentIndex` 恢复。避免每次扫描/创建 Mod 组后目录树全部折叠。
+
+### 2026-07-15 修复（阶段 3 Task 3 验收修复）
+
+- **Nexus 命名规则适配**：`extract_mod_name` 新增 Nexus Mods 下载文件名识别（`Mod名称-数字ID-版本号-时间戳`），如 `Alt-Tab Fix-148466-1-0-0-1745430887.zip` → `Alt-Tab Fix`。非 Nexus 命名回退到通用版本号剔除。
+- **目录树刷新**：`ModGroupService` 新增可选依赖 `FolderCacheRepository`，创建 Mod 组文件夹后同步写入 `folder_cache` 表，目录树立即可见新文件夹。
+- **整理模式列表优化**：`list_staging_entries` 过滤已标记为内容单元的文件夹的子项（spec §7.3 暂存区列表显示"零散文件"，已收纳的子文件不显示）。
+- **浏览模式双击文件夹进入目录**：双击非内容单元文件夹 → 中栏切换到该目录内容（等价于目录树切换）。
+- **单击显示元数据**：单击选中内容单元 → 右侧立即显示元数据（详情面板交互方式，符合资源管理器/IDE/DAM 软件习惯）。
+
+## [0.18.0] - 2026-07-14
+
+阶段 3 Task 3：创建 Mod 组 + 手动修正。新增 `FileOperationService`（简化版 `new_folder` + `move`）、`OperationHistoryRepository`、`ModGroupService`，扩展 `ContentService` 写方法（`create_content_unit` / `mark_as_content_unit` / `unmark_content_unit`）。MainWindow 文件列表右键菜单支持「创建 Mod 组」「标记/取消标记」「批量标记」；`_content_view` 从 `SingleSelection` 改为 `ExtendedSelection` 支持多选。schema_version 维持 5。
+
+### Added
+
+- **OperationHistoryRepository**：[src/infrastructure/repositories/operation_history.py](src/infrastructure/repositories/operation_history.py) 新建，CRUD 模式参照 `staging_area.py`。
+  - `create(history) -> OperationHistory`：`can_undo` 字段做 `bool ↔ int` 转换。
+  - `get_by_id` / `list_all`（按 created_at 升序）/ `delete`。
+  - 写操作不自提交，由 application 层控制事务边界。
+- **FileOperationService（简化版）**：[src/infrastructure/file_operation_service.py](src/infrastructure/file_operation_service.py) 新建，Task 3 范围内最小实现 `new_folder` + `move`（`rename` / `delete` / `undo` 留待阶段 5）。
+  - `new_folder(folder_path) -> OperationHistory`：父目录存在性检查 + 不覆盖（`ConflictError`）+ 写 `operation_history`（type=`new_folder`，source=父目录，target=新文件夹）。
+  - `move(src, dst) -> OperationHistory`：源/目标存在性检查 + 不覆盖 + 跨盘检测（`CrossDriveError`）+ 自目录检测（`SelfSubdirectoryError`）+ `shutil.move` 保留元数据 + 写 `operation_history`（type=`move`）。
+  - 写历史在文件操作成功后；失败不写历史。不自提交。
+  - 注入 `now_provider` / `uuid_provider` 便于测试。
+- **ModGroupService**：[src/application/mod_group_service.py](src/application/mod_group_service.py) 新建，业务编排（不破坏 `StagingService` 纯标记定位）。
+  - `extract_mod_name(filename) -> str`：正则剔除末尾版本号（`\s*v?\d+(\.\d+)+( SE|LE|SSE|AE)?`），不剔除下划线分隔。示例：`BDOR Black Knight 1.0.7z` → `BDOR Black Knight`；`SkyUI 5.1 SE.zip` → `SkyUI`；`寒霜之心 1.0.7z` → `寒霜之心`。
+  - `create_mod_group(source_file, staging_path, name=None) -> ContentUnit`：校验源在暂存区下 → `new_folder` → `move`（失败回滚空文件夹）→ `create_content_unit`（status=`unorganized`）。
+- **ContentService 写方法**：[src/application/content_service.py](src/application/content_service.py) 模块从「只查询」扩展为「查询 + 元数据写入」（不触发文件操作）。
+  - `create_content_unit(path, title=None, content_type="mod", status="unorganized") -> ContentUnit`。
+  - `mark_as_content_unit(path) -> ContentUnit`：spec §5.4 关键规则——标记文件夹时取消子项标记（`list_by_path_prefix` 找子项，逐个 `delete`）；已标记返回现有。
+  - `unmark_content_unit(unit_id) -> None`：删除 ContentUnit，**不删真实文件**。
+  - `get_by_path(path) -> ContentUnit | None`：薄委托到 repository。
+  - 注入 `now_provider` / `uuid_provider` 便于测试。
+- **Application 层错误类型**：[src/application/errors.py](src/application/errors.py) 新增 7 个：
+  - `FileOperationError`（基类）/ `ConflictError` / `CrossDriveError` / `SelfSubdirectoryError` / `SourceNotFoundError`
+  - `ContentUnitNotFoundError` / `InvalidContentUnitPathError`
+  - `ModGroupSourceNotInStagingError` / `InvalidModGroupNameError`
+- **UI 文案常量**：[src/app/ui_constants.py](src/app/ui_constants.py) 新增 18 项：
+  - 菜单项：`MENU_CREATE_MOD_GROUP` / `MENU_MARK_CONTENT_UNIT` / `MENU_UNMARK_CONTENT_UNIT` / `MENU_BATCH_MARK_CONTENT_UNIT`
+  - 对话框：`CREATE_MOD_GROUP_DIALOG_TITLE` / `_LABEL` / `_OPTION_PURE` / `_OPTION_FULL` / `_DEFAULT_OK` / `_FAILED`
+  - 状态提示：`MARK_CONTENT_UNIT_OK` / `UNMARK_CONTENT_UNIT_OK` / `BATCH_MARK_CONTENT_UNIT_OK` + 对应 `_FAILED`
+
+### Changed
+
+- **ContentUnitRepository.delete 级联清理**：[src/infrastructure/repositories/content_unit.py](src/infrastructure/repositories/content_unit.py) `delete` 方法在事务内先 `DELETE FROM content_unit_tag WHERE content_unit_id = ?`，再 `DELETE FROM content_unit WHERE id = ?`，避免 FK 违约（schema 未声明 `ON DELETE CASCADE`）。`thumbnail_cache` 留待阶段 4 Task 5 处理。
+- **MainWindow 文件列表右键菜单**：[src/app/main_window.py](src/app/main_window.py)
+  - `_content_view` 从 `SingleSelection` 改为 `ExtendedSelection` 支持多选。
+  - `_on_content_context_menu` 重构：根据选中条目数 + 模式 + `entry.content_unit` 动态构造菜单：
+    - **创建 Mod 组**：仅整理模式 + 单选文件 + 注入了 `ModGroupService` 时显示。
+    - **标记为内容单元 / 取消标记**：单选时根据 `entry.content_unit is None` 切换。
+    - **把每个文件标记为内容单元**：多选时显示（仅未标记项）。
+    - **复制路径**：始终显示。
+  - 新增 6 个方法：`_on_create_mod_group` / `_show_create_mod_group_dialog`（`QDialog` + `QComboBox` 可编辑，预填纯 Mod 名 / 完整原名两种选项）/ `_on_mark_content_unit` / `_on_unmark_content_unit` / `_on_batch_mark_content_unit` / `_refresh_content_list_for_current_mode`。
+  - `__init__` 新增 `mod_group_service: ModGroupService | None = None` 注入参数。
+- **main.py 依赖注入**：[src/app/main.py](src/app/main.py) 构造 `OperationHistoryRepository` + `FileOperationService` + `ModGroupService`，传入 MainWindow。
+
+### Tests
+
+- 测试数量变化：383 passed → 439 passed（+56 新测试；3 skipped 均为 Windows 符号链接权限不足，与代码无关）。
+- [tests/test_operation_history_repository.py](tests/test_operation_history_repository.py)（新文件，约 8 项）——CRUD / 4 种 operation_type / target_path 可空 / can_undo bool↔int / 不自提交。
+- [tests/test_file_operation_service.py](tests/test_file_operation_service.py)（新文件，17 项）——new_folder 创建/父目录不存在/目标已存在/写历史/中文路径；move 移动文件/移动目录/源不存在/目标已存在/自目录检测/目标父目录不存在/保留内容/写历史/中文路径/不影响无关文件；跨盘模拟（monkeypatch Path.stat）；不自提交。
+- [tests/test_mod_group_service.py](tests/test_mod_group_service.py)（新文件，18 项）——文件名提取 8 种格式（含中文、多扩展名）；create_mod_group 完整流程 / 写 2 条历史 / 同名冲突 / move 失败回滚空文件夹 / 中文名 / 源不在暂存区 / 空名称 / 仅空白名称 / 显式名称覆盖提取 / 源文件内容保留。
+- [tests/test_content_service.py](tests/test_content_service.py)：扩展 12 项——`TestCreateContentUnit`（基本创建/默认 status/重复 path 抛异常/中文路径）、`TestMarkAsContentUnit`（标记文件/标记文件夹取消子项/已标记返回现有/路径不存在）、`TestUnmarkContentUnit`（删除记录/级联清理 content_unit_tag/不删真实文件/不存在抛异常）。
+- [tests/test_main_window_context_menu_task3.py](tests/test_main_window_context_menu_task3.py)（新文件，9 项）——ExtendedSelection 启用 / 标记后列表刷新 / 取消标记后列表刷新 / 创建 Mod 组完整流程（文件夹创建 + 文件移动 + ContentUnit 创建 + 2 条历史）/ 对话框取消不操作 / 同名冲突弹错误 / 批量标记 2 个文件 / 中文文件名 Mod 组。
+
+### 安全限制
+
+- 文件操作通过 `FileOperationService`，UI 不直接调用 `shutil` / `Path.rename`（AGENTS 规则 3）。
+- 不覆盖已有文件/目录（`ConflictError`，AGENTS 规则 2）。
+- 跨盘移动检测（`CrossDriveError`）+ 自目录移动检测（`SelfSubdirectoryError`）。
+- `unmark_content_unit` 仅删除 DB 记录，不删真实文件。
+- `mark_as_content_unit` 标记文件夹时取消子项标记（spec §5.4），避免父子同时标记。
+- 创建 Mod 组失败回滚：`move` 失败时清理已创建的空文件夹（仅当为空时）。
+- 操作历史写入在文件操作成功后；失败不写历史。不自提交。
+
+### Verification
+
+- `ruff check src tests` → All checks passed!
+- `ruff format --check src tests` → 64 files already formatted
+- `python -m pytest` → 439 passed, 3 skipped
+
+### Documentation
+
+- 更新 [docs/roadmap.md](docs/roadmap.md)：阶段 3 Task 3 验收项全部 `[ ]` → `[x]`，标题加 ✅ 标记。
+
 ## [0.17.0] - 2026-07-14
 
 阶段 3 Task 2：暂存区文件列表。整理模式中栏改为加载暂存区 `[S]` 节点的递归文件列表（含子目录），FileListModel 从单列 `QAbstractListModel` 重构为 4 列 `QAbstractTableModel` 支持列头排序。schema_version 维持 5。仅只读访问文件系统，不修改用户文件。

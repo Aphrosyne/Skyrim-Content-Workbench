@@ -157,7 +157,8 @@ class ScanService:
     def _persist_scan_result(self, result: ScanResult, summary: ScanSummary) -> None:
         """将扫描结果持久化到 folder_cache 和 content_unit 表。
 
-        - folder_cache：upsert（存在则更新 mtime，不存在则插入）
+        - folder_cache：upsert（存在则更新 mtime，不存在则插入）+
+          清理当前 root 下已删除目录的残留记录
         - content_unit：仅插入新候选（已存在 path 跳过）
 
         路径字典键/集合元素统一使用 make_path_key() 归一化，避免大小写/分隔符差异。
@@ -192,16 +193,27 @@ class ScanService:
                 created = self._folder_cache_repo.create(folder)
                 existing_folder_map[make_path_key(created.path)] = created
 
+        # 清理当前 root 下已删除目录的 folder_cache 残留记录。
+        # 只清理本次扫描 root 路径前缀下的记录，避免误删其他 root 的记录。
+        # 用 all_visited_dirs（实际访问到的所有目录）对比，避免误删增量扫描跳过的目录。
+        self._cleanup_deleted_folders(result, summary.root_path, existing_folder_map)
+
         summary.scanned_dirs = len(result.scanned_dirs)
 
         # 持久化 content_unit（仅插入新候选）
         # spec §5.4 2026-07-13 修正：压缩包文件本身作为内容单元候选
+        # spec §5.4：手动标记文件夹为内容单元时，其内部所有子项标记自动取消。
+        # 因此扫描时若某压缩包的祖先已是 ContentUnit（文件夹被标记），
+        # 不应为该压缩包创建新的 ContentUnit，避免与父文件夹标记冲突。
         existing_cu_paths: set[str] = {
             make_path_key(cu.path) for cu in self._content_unit_repo.list_all()
         }
         new_units_count = 0
         for archive_path in result.archive_candidates:
             if make_path_key(archive_path) in existing_cu_paths:
+                continue
+            # 祖先链检查：若任一祖先已是 ContentUnit，跳过（遵循 spec §5.4）
+            if self._has_ancestor_content_unit(archive_path, existing_cu_paths):
                 continue
             unit = ContentUnit(
                 id=self._new_uuid(),
@@ -222,6 +234,20 @@ class ScanService:
 
         summary.content_units_found = new_units_count
 
+    def _has_ancestor_content_unit(self, path: str | Path, cu_path_keys: set[str]) -> bool:
+        """检查 path 的任一祖先是否已是 ContentUnit。
+
+        基于 make_path_key 归一化后与 cu_path_keys 集合比较。
+        从 path.parent 逐级向上直到根目录（parent == self 表示已到根）。
+        """
+        p = Path(path)
+        parent = p.parent
+        while parent != parent.parent:
+            if make_path_key(parent) in cu_path_keys:
+                return True
+            parent = parent.parent
+        return False
+
     def _resolve_parent_id(
         self,
         parent_path: str | None,
@@ -237,3 +263,56 @@ class ScanService:
             return None
         parent = existing_folder_map.get(make_path_key(parent_path))
         return parent.id if parent is not None else None
+
+    def _cleanup_deleted_folders(
+        self,
+        result: ScanResult,
+        root_path: str,
+        existing_folder_map: dict[str, FolderCache],
+    ) -> None:
+        """清理当前扫描 root 下已删除目录的 folder_cache 残留记录。
+
+        扫描后，folder_cache 中该 root 前缀下、但不在 all_visited_dirs 集合中的
+        记录视为已删除目录的残留，予以删除。避免资源管理器删除目录后目录树残留。
+
+        只清理当前 root 路径前缀下的记录，避免误删其他 managed_root 的记录。
+        用 all_visited_dirs（实际访问到的所有目录，含增量跳过的目录）对比，
+        避免误删增量扫描未记录但实际存在的目录。
+
+        Args:
+            result: 扫描结果（用 all_visited_dirs 字段）。
+            root_path: 本次扫描的受管理根目录路径（限定清理范围）。
+            existing_folder_map: 全部 folder_cache 的 path_key → FolderCache 映射。
+        """
+        if not result.all_visited_dirs:
+            # 扫描未访问到任何目录（如根目录不存在），跳过清理避免误删
+            return
+
+        import os
+
+        visited_keys: set[str] = {make_path_key(p) for p in result.all_visited_dirs}
+        root_key = make_path_key(root_path)
+        # root 前缀边界：确保是目录层级前缀，避免 "D:/Mods" 误匹配 "D:/Mods2"
+        sep = os.sep
+        root_prefix = root_key.rstrip(sep) + sep
+
+        # 收集待删除记录，按路径深度降序排序（子目录先于父目录删除），
+        # 避免 folder_cache.parent_id 外键约束导致删除父目录失败。
+        to_delete: list[FolderCache] = []
+        for path_key, fc in existing_folder_map.items():
+            # 仅处理当前 root 下的记录（含 root 本身）
+            if path_key != root_key and not path_key.startswith(root_prefix):
+                continue
+            # 在访问集合中 → 仍存在，保留
+            if path_key in visited_keys:
+                continue
+            to_delete.append(fc)
+
+        # 路径深度降序：路径分隔符数量越多表示越深，深的先删
+        to_delete.sort(key=lambda f: f.path.count(os.sep), reverse=True)
+
+        for fc in to_delete:
+            try:
+                self._folder_cache_repo.delete(fc.id)
+            except Exception:  # noqa: BLE001 - 单条删除失败不中断整体流程
+                logger.warning("清理已删除目录的 folder_cache 记录失败：path=%s", fc.path)
