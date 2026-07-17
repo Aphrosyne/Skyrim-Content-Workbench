@@ -20,6 +20,7 @@ from application.content_service import ContentService
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from application.mod_group_service import ModGroupService
+from application.quick_insert_service import QuickInsertService
 from application.staging_service import StagingService
 from infrastructure.db import get_connection, init_db
 from infrastructure.file_operation_service import FileOperationService
@@ -79,6 +80,12 @@ def main() -> int:
         ContentUnitRepository(conn),
         folder_cache_repo,
     )
+    # 快速插入服务（阶段 3 Task 5）：复用 file_op / content_unit_repo / folder_cache_repo
+    quick_insert_service = QuickInsertService(
+        file_operation_service,
+        ContentUnitRepository(conn),
+        folder_cache_repo,
+    )
 
     app = QApplication(sys.argv)
     window = MainWindow(
@@ -90,6 +97,8 @@ def main() -> int:
         staging_service=staging_service,
         mod_group_service=mod_group_service,
         assembly_service=assembly_service,
+        quick_insert_service=quick_insert_service,
+        rollback_callback=conn.rollback,
     )
     window.show()
     exit_code = app.exec()

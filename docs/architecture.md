@@ -120,27 +120,44 @@ MainWindow
 
 | Service | 职责 | 主要方法 |
 |---------|------|---------|
-| `StagingService` | 暂存区标记与管理 | `set_staging(path)` / `list_staging_files()` / `create_mod_group(file)` |
-| `ContentService` | 内容单元元数据 | `list_by_directory(path)` / `update_metadata(...)` / `batch_tag(...)` |
-| `TagService` | 标签系统 | `get_categories()` / `search_tags(query)` / `filter_by_tags(tags)` |
-| `FileOperationService` | 文件操作（简化） | `move(src, dst)` / `rename(path, name)` / `delete(path)` / `undo(op_id)` |
-| `ScanService` | 增量/全量扫描 | `scan(managed_root)` / `scan_all()` |
-| `SearchService` | 全局搜索 | `search(query)` |
+| `ManagedRootService` | 受管理根目录 CRUD | `add_root(path)` / `remove_root(id)` / `list_roots()` |
+| `FolderTreeService` | 目录树数据源（folder_cache） | `list_root_nodes()` / `list_children(path)` / `count_children(path)` |
+| `StagingService` | 暂存区标记与管理 | `set_staging(path)` / `list_staging_files()` / `is_staging(path)` |
+| `ContentService` | 内容单元元数据 + 目录条目 | `mark_as_content_unit(path)` / `unmark_content_unit(id)` / `list_directory_entries(path)` |
+| `ModGroupService` | 创建 Mod 组（Task 3） | `create_mod_group(source_file, staging_path, name)` |
+| `AssemblyService` | 装配面板文件加入/移除（Task 4） | `add_file(src, mod_group)` / `remove_file(file, mod_group)` / `rename_preview(...)` |
+| `QuickInsertService` | 快速插入 Mod 组到目标分类目录（Task 5） | `quick_insert(unit_id, target_dir)` |
+| `FileOperationService` | 文件操作（简化） | `new_folder(path)` / `move(src, dst)` |
+| `ScanService` | 增量/全量扫描 | `scan_root(root_id, incremental)` / `scan_root_by_path(path, incremental)` |
+| `TagService` | 标签系统（阶段 4） | `get_categories()` / `search_tags(query)` / `filter_by_tags(tags)` |
+| `SearchService` | 全局搜索（阶段 5） | `search(query)` |
 
 ### 4.2 Service 依赖关系
 
 ```text
 MainWindow
   ↓
-StagingService ──→ FileOperationService (创建 Mod 组需要移动文件)
+ManagedRootService ──→ ManagedRootRepository
       │
-ContentService ───→ TagService (打标签需要查询标签)
+FolderTreeService ──→ FolderCacheRepository + ManagedRootRepository + StagingService
       │
-ScanService ──────→ ContentService (扫描后写入候选内容单元)
+StagingService ──→ StagingAreaRepository
       │
-FileOperationService ──→ OperationHistory (记录操作)
+ContentService ──→ ContentUnitRepository
       │
-SearchService ─────────→ ContentService + TagService (跨字段搜索)
+ModGroupService ──→ FileOperationService + ContentService + FolderCacheRepository
+      │
+AssemblyService ──→ FileOperationService + ContentUnitRepository + FolderCacheRepository
+      │
+QuickInsertService ──→ FileOperationService + ContentUnitRepository + FolderCacheRepository
+      │
+FileOperationService ──→ OperationHistoryRepository
+      │
+ScanService ──→ ManagedRootRepository + FolderCacheRepository + ContentUnitRepository + FileScanner
+      │
+TagService ──→ TagRepository（阶段 4）
+      │
+SearchService ──→ ContentService + TagService（阶段 5）
 ```
 
 ### 4.3 数据流示例
@@ -150,21 +167,47 @@ SearchService ─────────→ ContentService + TagService (跨字
 用户点击目录树节点
   → FolderTreeModel.fetchMore() 加载子节点
   → MainWindow._on_tree_selection_changed()
-  → ContentService.list_by_directory(path)
-  → ContentUnitRepository.list_by_path_prefix(path)
-  → 返回 ContentUnit[] → 更新 ContentUnitListModel
+  → ContentService.list_directory_entries(path)
+  → 文件系统 iterdir + ContentUnitRepository.get_by_path() 关联
+  → 返回 FileEntry[] → 更新 FileListModel
   → 同时查询已有缩略图缓存 → 显示封面图标
 ```
 
-**创建 Mod 组流程：**
+**创建 Mod 组流程（阶段 3 Task 3）：**
 ```
-用户选中文件 → 右键 "创建 Mod 组"
+用户选中暂存区文件 → 右键 "创建 Mod 组"
   → MainWindow._on_create_mod_group()
-  → StagingService.create_mod_group(file_path)
+  → ModGroupService.create_mod_group(source_file, staging_path, name)
   → 提取文件名 → 生成目标文件夹名
-  → FileOperationService.rename(file_path, target_path)  // 移动文件到新建文件夹
-  → ContentService 创建新 ContentUnit（路径指向新建文件夹）
+  → FileOperationService.new_folder(target_folder)
+  → 同步 folder_cache（插入新节点 + parent_id 关联）
+  → FileOperationService.move(source_file, target_file)
+  → ContentService.mark_as_content_unit(target_folder)
   → 刷新暂存区文件列表 + 显示装配面板
+```
+
+**装配面板加入文件流程（阶段 3 Task 4）：**
+```
+整理模式 + 装配面板已绑定 Mod 组 → 选中暂存区文件 → 右键 "加入装配"
+  → MainWindow._on_assembly_add_file()
+  → AssemblyService.add_file(src_file, mod_group_folder)
+  → FileOperationService.move(src_file, target_file)
+  → 同步 folder_cache（更新 Mod 组文件夹 mtime）
+  → 刷新装配面板 + 暂存区列表
+```
+
+**快速插入流程（阶段 3 Task 5）：**
+```
+整理模式 + 装配面板已绑定 Mod 组 + 目录树选中目标分类目录 → 点击「快速插入」
+  → MainWindow._on_quick_insert_clicked()
+  → 弹出确认对话框（源路径 → 目标路径）
+  → QuickInsertService.quick_insert(unit_id, target_dir)
+    1. cleanup：清理目标路径下的旧 ContentUnit 记录（list_all + make_path_key 归一化比较）
+    2. move：FileOperationService.move(src_folder, dst_folder)
+    3. update：ContentUnitRepository.update(unit.path = dst_folder)
+    4. sync：同步 folder_cache（删除旧节点 + 插入新节点 + 更新目标父目录 mtime）
+  → MainWindow._commit()
+  → 解绑装配面板 + 刷新目录树 + 刷新暂存区列表 + 状态栏提示
 ```
 
 ---

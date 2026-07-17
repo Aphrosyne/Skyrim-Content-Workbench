@@ -42,6 +42,14 @@
 - **位置**: [content_unit.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/repositories/content_unit.py) `list_by_path_prefix`
 - **修复**: 转义 `prefix + sep` 中的 `%`、`_`、`\`，使用 `ESCAPE '\\'` 子句。
 
+### TD-H7: list_by_path_prefix 的 LIKE 转义在 Windows 反斜杠路径下 broken
+
+- **位置**: [content_unit.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/repositories/content_unit.py) `list_by_path_prefix`
+- **问题**: TD-H6 修复了 LIKE 通配符转义，但 Windows 下 `os.sep = "\\"`，构造 `full_prefix = prefix + sep` 后做 `replace("\\", "\\\\")` 会让每个反斜杠翻倍，LIKE 模式期望路径中两个连续反斜杠，但实际 path 只有一个反斜杠，**子路径无法匹配**。原测试用 POSIX 路径（`/mods/armor`）掩盖了此 bug。
+- **影响**: 阶段 3 Task 5 第二轮验收时暴露——`QuickInsertService._cleanup_stale_content_units` 原实现依赖 `list_by_path_prefix` 清理目标路径子项旧记录，Windows 下子路径匹配失败，导致 `update` 时 UNIQUE 冲突。
+- **临时规避（阶段 3 Task 5 已实施）**: `QuickInsertService._cleanup_stale_content_units` 改用 `list_all + make_path_key` 归一化比较，不依赖 SQL LIKE（符合 AGENTS 规则 9）。
+- **建议**: 修复 `list_by_path_prefix` 的 LIKE 转义逻辑（或改为 `list_all + make_path_key` 归一化比较），并补充 Windows 路径测试覆盖。当前 `list_by_path_prefix` 仍被 `ContentService` 使用，潜在影响其他功能。
+
 ---
 
 ## Medium（影响可维护性、性能、测试质量）
@@ -266,11 +274,14 @@
    - ~~TD-H6（SQL LIKE 未转义，数据正确性）~~ ✅ 已修复
    - ~~TD-H4 + TD-H5（线程竞态，可致崩溃）~~ ✅ 已修复
 
-2. **阶段 3 开发中视情况处理**（影响性能/可用性）：
+2. **阶段 4 开发前优先处理**（影响正确性）：
+   - TD-H7（list_by_path_prefix Windows 下 LIKE 转义 broken，QuickInsertService 已规避但 ContentService 仍使用，潜在影响标签筛选/元数据加载）
+
+3. **阶段 4 开发中视情况处理**（影响性能/可用性）：
    - TD-H3（UI 冻结，影响基本可用性）
    - TD-H2（扫描事务边界）
    - TD-M17（连接泄漏，影响测试稳定性）
 
-3. **后续迭代批量处理**：
+4. **后续迭代批量处理**：
    - Medium 级别的代码质量/测试覆盖问题
    - Low 级别的风格/命名/文档问题

@@ -8,6 +8,61 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### 2026-07-17 阶段 3 Task 5：快速插入 (v0.20.0)
+
+实现整理模式下的「快速插入」功能：将当前装配面板绑定的 Mod 组文件夹整体移动到目录树中选中的目标分类目录。完成阶段 3 全部 Task。
+
+**设计决策（2026-07-17 用户确认）：**
+- **取消拖拽方案**：原 roadmap 中"拖拽到目录树节点触发文件移动"和"目录树内拖拽重新分类"取消，与 Task 4 拖拽取消决策一致。仅保留「快速插入」按钮入口。
+- **冲突处理范围**：Task 5 保持现有"冲突即拒绝"模式（ConflictError + 弹窗提示），覆盖/跳过/重命名选项留待阶段 5 通用冲突处理统一实现（AGENTS 规则 2：不覆盖）。
+- **跨盘移动**：当前阶段直接拒绝并提示，不执行跨盘 move（Windows 跨盘 move 退化为 copy+delete，风险较高）。
+
+**目录树刷新统一机制（2026-07-17 用户验收后修复）：**
+- 首轮验收发现快速插入后目标目录不刷新（需重新扫描才显示新节点）。
+- 根因：QuickInsertService 只清理旧路径 folder_cache，未在目标目录下插入新节点。
+- 修复：QuickInsertService._sync_folder_cache 现在执行完整同步——删除旧节点 + 插入新节点（parent_id 关联目标目录）+ 更新目标目录 mtime，与 ModGroupService.create_mod_group 步骤 1b 模式一致。
+- 统一机制确认：所有涉及真实文件夹移动/创建/删除的服务（ModGroupService / QuickInsertService）负责完整同步 folder_cache；UI 层只需调用一次 `_refresh_tree()` 即可立即刷新目录树，无需重新扫描。AssemblyService.add_file / remove_file 移动的是文件（非文件夹），folder_cache 只记录目录，因此只需更新 mtime（已正确实现）。
+
+**UNIQUE 约束冲突 + database is locked 根因修复（2026-07-17 第二轮验收后）：**
+- 第二轮验收发现两个阻塞问题：
+  1. 快速插入报 `UNIQUE constraint failed: content_unit.path`，文件已移动但数据库更新失败，文件系统与数据库状态不一致。
+  2. 快速插入失败后扫描报 `database is locked`，事务未正确释放。
+- **根因分析**（非目录树刷新逻辑直接引入，但被其暴露）：
+  1. **`list_by_path_prefix` 的 SQL LIKE 转义在 Windows 下 broken**：`os.sep = "\\"`，`replace("\\", "\\\\")` 让每个反斜杠翻倍，LIKE 模式期望路径中两个连续反斜杠，无法匹配子路径。原测试用 POSIX 路径（`/mods/armor`）掩盖了此 bug。
+  2. **操作顺序错误 + 事务回滚副作用**：原顺序 `move → cleanup → update`，若 `update` 失败，`main_window` 调用 `rollback` 会回滚 `cleanup` 的 delete，旧记录"复活"，下次重试 `update` 仍 UNIQUE 冲突 → 死循环。
+  3. **事务边界设计缺失**：`QuickInsertService` 没有事务管理，失败后事务挂起，SQLite 持有写锁。
+- **修复方案**：
+  1. **重写 `_cleanup_stale_content_units`**：用 `list_all + make_path_key` 归一化比较，不依赖 SQL LIKE（符合 AGENTS 规则 9）。清理范围：dst_folder 自身 + 其所有子路径。
+  2. **调整 `quick_insert` 顺序**：`cleanup → move → update → sync`。cleanup 在 move 之前，此时文件系统状态干净，若 cleanup 失败可安全 rollback；move 成功后，update 时数据库已无 UNIQUE 冲突记录。
+  3. **保留 `main_window` 的 rollback**：作为事务边界最后手段，释放写锁。若 update 失败（非 UNIQUE 原因），文件已移动但数据库回滚，状态不一致但不会死循环（下次重试 move 会因源不存在而失败，提示用户手动修复）。
+- **新增测试**：
+  - `test_quick_insert_cleans_stale_content_unit_with_path_normalization`：验证尾随分隔符差异（make_path_key 归一化后相同）的旧记录也能被清理。
+  - `test_quick_insert_cleanup_before_move_allows_safe_rollback`：验证 move 失败后 rollback 不死循环，第二次 quick_insert 可正常执行。
+- 测试数量变化：537 passed → 541 passed（+4：QuickInsertService 新增 4 项根因修复测试）。
+
+#### Added
+
+- **QuickInsertService**：[src/application/quick_insert_service.py](src/application/quick_insert_service.py) 新增快速插入服务。`quick_insert(unit_id, target_dir)` 调用 `FileOperationService.move` 执行移动（含跨盘/子目录/冲突检测），更新 `ContentUnit.path`，清理旧路径 `folder_cache` 记录。
+- **MainWindow 快速插入按钮**：[src/app/main_window.py](src/app/main_window.py) 顶部模式栏右侧新增「快速插入」按钮。
+  - 可用条件：整理模式 + 装配面板已绑定 Mod 组 + 目录树选中目标目录 + 目标与源不同 + 目标不是源子目录。
+  - 点击后弹出确认对话框（显示源路径 → 目标路径），用户确认后执行移动。
+  - 成功后 UI 刷新：解绑装配面板 + 刷新目录树 + 刷新暂存区列表 + 状态栏提示。
+  - 错误处理：ConflictError / CrossDriveError / SelfSubdirectoryError 各自转为用户可读提示。
+- **UI 文案常量**：[src/app/ui_constants.py](src/app/ui_constants.py) 新增快速插入相关常量（按钮文本 / tooltip / 确认对话框 / 状态栏提示 / 错误提示）。
+- **依赖注入**：[src/app/main.py](src/app/main.py) 注入 QuickInsertService 到 MainWindow。
+
+#### Tests
+
+- 测试数量变化：519 passed → 541 passed（+22：QuickInsertService 12 项单元测试 + MainWindow 10 项集成测试）。
+- [tests/test_quick_insert_service.py](tests/test_quick_insert_service.py) 新增 12 项单元测试：快速插入成功 / operation_history 记录 / folder_cache 完整同步 / 冲突 / 子目录阻止 / 跨盘 / ContentUnit 不存在 / 中文路径 / 旧记录清理（目标路径自身）/ 旧记录清理（子路径）/ 路径归一化清理 / cleanup-before-move 安全回滚。
+- [tests/test_main_window_quick_insert.py](tests/test_main_window_quick_insert.py) 新增 10 项集成测试：按钮显隐（浏览/整理模式）/ 按钮禁用（无绑定/无目标/目标为源父目录）/ 按钮启用（绑定 + 目标）/ 快速插入成功 + UI 刷新 / 取消确认不移动 / 冲突提示 / 子目录阻止提示 / 中文路径。
+- [tests/test_main_window_assembly.py](tests/test_main_window_assembly.py) fixture 注入 QuickInsertService（不影响现有测试）。
+
+#### Docs
+
+- [docs/spec.md](docs/spec.md) §6.1 移动安全规则更新（冲突/跨盘当前阶段策略）；§7.3 整理模式新增「快速插入」按钮详细说明（可用条件 / 交互 / 底层 / UI 刷新 / 取消拖拽方案）。
+- [docs/roadmap.md](docs/roadmap.md) Task 5 标记为 ✅，验收项全部勾选，新增设计决策记录。
+
 ### 2026-07-17 阶段 3 Task 4：装配面板交互调整
 
 用户手动验收后提出两项设计调整：取消拖拽加入装配方案、Mod 组切换改为双击触发。仅修改交互方式，底层业务逻辑（AssemblyService）不变。

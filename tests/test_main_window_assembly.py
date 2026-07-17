@@ -99,6 +99,11 @@ def main_window_env(qapp, tmp_path: Path):
     assembly_service = AssemblyService(
         file_op_service, ContentUnitRepository(conn), folder_cache_repo
     )
+    from application.quick_insert_service import QuickInsertService
+
+    quick_insert_service = QuickInsertService(
+        file_op_service, ContentUnitRepository(conn), folder_cache_repo
+    )
 
     root_dir = _make_mod_tree(tmp_path)
     root = managed_service.add_root(root_dir)
@@ -112,9 +117,11 @@ def main_window_env(qapp, tmp_path: Path):
         content_service,
         db_path,
         commit_callback=conn.commit,
+        rollback_callback=conn.rollback,
         staging_service=staging_service,
         mod_group_service=mod_group_service,
         assembly_service=assembly_service,
+        quick_insert_service=quick_insert_service,
     )
     yield window, conn, root_dir, root
 

@@ -79,6 +79,7 @@ from application.content_service import ContentService
 from application.errors import (
     ConflictError,
     ContentUnitNotFoundError,
+    CrossDriveError,
     DuplicateManagedRootError,
     DuplicateStagingAreaError,
     FileOperationError,
@@ -87,12 +88,14 @@ from application.errors import (
     InvalidRootPathError,
     ManagedRootNotFoundError,
     ModGroupSourceNotInStagingError,
+    SelfSubdirectoryError,
     StagingAreaNestingError,
     StagingAreaNotFoundError,
 )
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from application.mod_group_service import ModGroupService
+from application.quick_insert_service import QuickInsertService
 from application.scan_service import ScanSummary
 from application.staging_service import StagingService
 from domain.models import AppMode, ContentUnit, FileEntry, ManagedRoot
@@ -123,6 +126,8 @@ class MainWindow(QMainWindow):
         staging_service: StagingService | None = None,
         mod_group_service: ModGroupService | None = None,
         assembly_service: AssemblyService | None = None,
+        quick_insert_service: QuickInsertService | None = None,
+        rollback_callback: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -131,9 +136,11 @@ class MainWindow(QMainWindow):
         self._content_service = content_service
         self._db_path = db_path
         self._commit_callback = commit_callback
+        self._rollback_callback = rollback_callback
         self._staging_service = staging_service
         self._mod_group_service = mod_group_service
         self._assembly_service = assembly_service
+        self._quick_insert_service = quick_insert_service
         self._thread: QThread | None = None
         self._worker: ScanWorker | None = None
         self._is_scanning = False
@@ -168,6 +175,18 @@ class MainWindow(QMainWindow):
             except Exception:  # noqa: BLE001
                 logger.exception("数据库提交失败")
 
+    def _rollback(self) -> None:
+        """回滚当前数据库事务。
+
+        文件操作失败时调用，释放 SQLite 写锁，避免后续操作 "database is locked"。
+        注意：文件系统层面的变更无法回滚（文件已移动），仅回滚数据库事务。
+        """
+        if self._rollback_callback is not None:
+            try:
+                self._rollback_callback()
+            except Exception:  # noqa: BLE001
+                logger.exception("数据库回滚失败")
+
     # --- UI 构建 ---
 
     def _setup_ui(self) -> None:
@@ -198,6 +217,13 @@ class MainWindow(QMainWindow):
 
         top_layout.addStretch(1)
         # 右侧预留空间（搜索框、置顶按钮等属后续 Task）
+
+        # 快速插入按钮（阶段 3 Task 5）：仅整理模式 + 装配面板已绑定 + 目录树选中目标时可用
+        self._quick_insert_button = QPushButton(ui.QUICK_INSERT_BUTTON)
+        self._quick_insert_button.setToolTip(ui.QUICK_INSERT_TOOLTIP)
+        self._quick_insert_button.clicked.connect(self._on_quick_insert_clicked)
+        self._quick_insert_button.setVisible(False)  # 默认浏览模式隐藏
+        top_layout.addWidget(self._quick_insert_button)
 
         # === 三栏 Splitter ===
         splitter = QSplitter(Qt.Horizontal)
@@ -514,6 +540,8 @@ class MainWindow(QMainWindow):
             # 整理模式下：选中 Mod 组文件夹 → 绑定装配面板
             # （非 Mod 组节点保持当前绑定，便于用户从其他目录拖入文件）
             self._maybe_bind_assembly_panel_for_tree_node(node)
+            # 同步快速插入按钮可用性（目标路径可能已变）
+            self._update_quick_insert_button_state()
 
     def _refresh_content_list(self, dir_path: str) -> None:
         """刷新文件列表（数据源为文件系统，content_unit 表仅作标记）。"""
@@ -859,16 +887,21 @@ class MainWindow(QMainWindow):
                 ui.CREATE_MOD_GROUP_DEFAULT_OK.format(name=chosen_name), 3000
             )
         except ConflictError:
+            self._rollback()
             QMessageBox.warning(
                 self, ui.CREATE_MOD_GROUP_FAILED, f"目标文件夹已存在：{chosen_name}"
             )
         except ModGroupSourceNotInStagingError as e:
+            self._rollback()
             QMessageBox.warning(self, ui.CREATE_MOD_GROUP_FAILED, f"源文件不在暂存区下：\n{e}")
         except InvalidModGroupNameError as e:
+            self._rollback()
             QMessageBox.warning(self, ui.CREATE_MOD_GROUP_FAILED, f"名称无效：\n{e}")
         except FileOperationError as e:
+            self._rollback()
             QMessageBox.warning(self, ui.CREATE_MOD_GROUP_FAILED, f"文件操作失败：\n{e}")
         except Exception:  # noqa: BLE001
+            self._rollback()
             logger.exception("创建 Mod 组失败")
             QMessageBox.critical(self, ui.CREATE_MOD_GROUP_FAILED, "创建 Mod 组失败，请查看日志。")
 
@@ -1000,6 +1033,8 @@ class MainWindow(QMainWindow):
         )
         self._assembly_panel.bind_mod_group(unit, staging_path)
         self._assembly_panel.setVisible(unit is not None)
+        # 同步快速插入按钮可用性（Task 5）
+        self._update_quick_insert_button_state()
 
     def _maybe_bind_assembly_panel_for_tree_node(self, node) -> None:  # noqa: ANN001 (内部)
         """整理模式下：若目录树节点对应一个 Mod 组 ContentUnit（文件夹类型），
@@ -1046,14 +1081,17 @@ class MainWindow(QMainWindow):
                 self._refresh_staging_content_list(self._organize_workarea_path)
             self.statusBar().showMessage(ui.ASSEMBLY_ADD_FILE_OK.format(name=src_path.name), 3000)
         except ConflictError:
+            self._rollback()
             QMessageBox.warning(
                 self,
                 ui.ASSEMBLY_ADD_FILE_FAILED,
                 f"目标已存在同名文件：{src_path.name}",
             )
         except FileOperationError as e:
+            self._rollback()
             QMessageBox.warning(self, ui.ASSEMBLY_ADD_FILE_FAILED, f"文件操作失败：\n{e}")
         except Exception:  # noqa: BLE001
+            self._rollback()
             logger.exception("装配面板加入文件失败")
             QMessageBox.critical(self, ui.ASSEMBLY_ADD_FILE_FAILED, "加入文件失败，请查看日志。")
 
@@ -1078,14 +1116,17 @@ class MainWindow(QMainWindow):
             self._refresh_staging_content_list(self._organize_workarea_path)
             self.statusBar().showMessage(ui.ASSEMBLY_REMOVE_FILE_OK.format(name=filename), 3000)
         except ConflictError:
+            self._rollback()
             QMessageBox.warning(
                 self,
                 ui.ASSEMBLY_REMOVE_FILE_FAILED,
                 f"暂存区已存在同名文件：{filename}",
             )
         except FileOperationError as e:
+            self._rollback()
             QMessageBox.warning(self, ui.ASSEMBLY_REMOVE_FILE_FAILED, f"文件操作失败：\n{e}")
         except Exception:  # noqa: BLE001
+            self._rollback()
             logger.exception("装配面板移除文件失败")
             QMessageBox.critical(self, ui.ASSEMBLY_REMOVE_FILE_FAILED, "移除文件失败，请查看日志。")
 
@@ -1108,16 +1149,20 @@ class MainWindow(QMainWindow):
                 ui.ASSEMBLY_RENAME_COVER_OK.format(name=new_path.name), 3000
             )
         except ConflictError:
+            self._rollback()
             QMessageBox.warning(
                 self,
                 ui.ASSEMBLY_RENAME_COVER_FAILED,
                 f"目标名称已存在：{image_path.name}",
             )
         except InvalidContentUnitPathError as e:
+            self._rollback()
             QMessageBox.warning(self, ui.ASSEMBLY_RENAME_COVER_FAILED, f"无法重命名：\n{e}")
         except FileOperationError as e:
+            self._rollback()
             QMessageBox.warning(self, ui.ASSEMBLY_RENAME_COVER_FAILED, f"文件操作失败：\n{e}")
         except Exception:  # noqa: BLE001
+            self._rollback()
             logger.exception("装配面板重命名失败")
             QMessageBox.critical(self, ui.ASSEMBLY_RENAME_COVER_FAILED, "重命名失败，请查看日志。")
 
@@ -1125,6 +1170,145 @@ class MainWindow(QMainWindow):
         """关闭装配面板：隐藏（不解绑，便于用户再次打开时恢复）。"""
         if self._assembly_panel is not None:
             self._assembly_panel.setVisible(False)
+
+    # --- 快速插入（阶段 3 Task 5） ---
+
+    def _update_quick_insert_button_state(self) -> None:
+        """根据当前状态更新「快速插入」按钮可用性。
+
+        可用条件（全部满足）：
+        - 整理模式
+        - 装配面板已绑定 Mod 组（current_unit 不为 None）
+        - 目录树选中了目标路径（_organize_target_path 不为 None）
+        - 目标路径与源 Mod 组位置不同
+        - 目标路径是目录
+        - 目标路径不是源 Mod 组的子目录（不能移到自身内部）
+        """
+        if not self._mode_manager.is_organize():
+            self._quick_insert_button.setEnabled(False)
+            return
+        if self._assembly_panel is None or self._assembly_panel.current_unit() is None:
+            self._quick_insert_button.setEnabled(False)
+            return
+        if self._organize_target_path is None:
+            self._quick_insert_button.setEnabled(False)
+            return
+        # 目标与源相同 / 目标不是目录 / 目标在源子树内：按钮禁用
+        unit = self._assembly_panel.current_unit()
+        src_folder = Path(unit.path)
+        target = Path(self._organize_target_path)
+        try:
+            if not target.is_dir():
+                self._quick_insert_button.setEnabled(False)
+                return
+            # 源父目录 == 目标 → 已经在该目录下，无需移动
+            if src_folder.parent == target:
+                self._quick_insert_button.setEnabled(False)
+                return
+            # 目标在源子树内 → 禁用（SelfSubdirectoryError）
+            import os
+
+            sep = os.sep
+            src_str = str(src_folder).rstrip(sep) + sep
+            if str(target).startswith(src_str):
+                self._quick_insert_button.setEnabled(False)
+                return
+        except OSError:
+            self._quick_insert_button.setEnabled(False)
+            return
+        self._quick_insert_button.setEnabled(True)
+
+    def _on_quick_insert_clicked(self) -> None:
+        """快速插入按钮点击：弹出确认 → 调用 QuickInsertService → 刷新 UI。
+
+        安全规则（spec §6.1）：
+        - 移动前弹出确认对话框（显示源路径 → 目标路径）。
+        - 跨盘 / 子目录 / 冲突等错误转为用户可读提示。
+        - 成功后：解绑装配面板 + 刷新目录树 + 刷新暂存区列表 + 状态栏提示。
+        """
+        if self._quick_insert_service is None or self._assembly_panel is None:
+            return
+        unit = self._assembly_panel.current_unit()
+        if unit is None:
+            QMessageBox.information(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_NO_BINDING)
+            return
+        if self._organize_target_path is None:
+            QMessageBox.information(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_NO_TARGET)
+            return
+
+        src_folder = Path(unit.path)
+        target_dir = Path(self._organize_target_path)
+
+        # 二次校验目标有效性（按钮状态可能因文件系统变化而过时）
+        try:
+            if not target_dir.is_dir():
+                QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_TARGET_NOT_DIR)
+                return
+            if src_folder.parent == target_dir:
+                QMessageBox.information(
+                    self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_SAME_AS_SOURCE
+                )
+                return
+        except OSError as e:
+            QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, f"无法访问路径：\n{e}")
+            return
+
+        dst_folder = target_dir / src_folder.name
+
+        # 弹出确认对话框
+        confirm_text = ui.QUICK_INSERT_CONFIRM_TEXT.format(src=str(src_folder), dst=str(dst_folder))
+        reply = QMessageBox.question(
+            self,
+            ui.QUICK_INSERT_CONFIRM_TITLE,
+            confirm_text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # 调用 QuickInsertService
+        try:
+            updated_unit = self._quick_insert_service.quick_insert(unit.id, target_dir)
+            self._commit()
+        except ConflictError:
+            self._rollback()
+            QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_CONFLICT_HINT)
+            return
+        except CrossDriveError:
+            self._rollback()
+            QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_CROSS_DRIVE_HINT)
+            return
+        except SelfSubdirectoryError:
+            self._rollback()
+            QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_SELF_SUBDIR_HINT)
+            return
+        except FileOperationError as e:
+            self._rollback()
+            QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, f"文件操作失败：\n{e}")
+            return
+        except Exception:  # noqa: BLE001
+            self._rollback()
+            logger.exception("快速插入失败")
+            QMessageBox.critical(self, ui.QUICK_INSERT_FAILED, "快速插入失败，请查看日志。")
+            return
+
+        # 成功后 UI 刷新：
+        # 1. 解绑装配面板（Mod 组已移走，原路径不再有效）
+        self._assembly_panel.bind_mod_group(None, None)
+        self._assembly_panel.setVisible(False)
+        # 2. 刷新目录树（源目录和目标目录都变了）
+        self._refresh_tree()
+        # 3. 刷新暂存区列表（Mod 组已离开暂存区）
+        if self._organize_workarea_path is not None:
+            self._refresh_staging_content_list(self._organize_workarea_path)
+        # 4. 更新按钮状态
+        self._update_quick_insert_button_state()
+        # 5. 状态栏提示
+        self.statusBar().showMessage(
+            ui.QUICK_INSERT_OK.format(name=updated_unit.title, target=str(target_dir)),
+            5000,
+        )
 
     def _update_metadata(self, unit: ContentUnit) -> None:
         """更新元数据面板。"""
@@ -1477,6 +1661,8 @@ class MainWindow(QMainWindow):
         阶段 3 Task 4（2026-07-17 调整：取消拖拽方案）：
         - 整理模式：装配面板按当前绑定显隐。
         - 浏览模式：隐藏装配面板（spec §7.4）。
+
+        阶段 3 Task 5：快速插入按钮在整理模式可见，浏览模式隐藏。
         """
         if mode == AppMode.organize:
             # 切换到整理模式：若当前选中节点是 [S] 则加载暂存区递归列表
@@ -1485,6 +1671,9 @@ class MainWindow(QMainWindow):
             # 装配面板显隐：根据当前绑定（无绑定时隐藏）
             if self._assembly_panel is not None:
                 self._assembly_panel.setVisible(self._assembly_panel.current_unit() is not None)
+            # 快速插入按钮：整理模式可见（可用性由 _update_quick_insert_button_state 控制）
+            self._quick_insert_button.setVisible(True)
+            self._update_quick_insert_button_state()
         else:
             # 切换回浏览模式：恢复跟随目录树刷新
             self._organize_workarea_path = None
@@ -1495,6 +1684,8 @@ class MainWindow(QMainWindow):
             # 隐藏装配面板
             if self._assembly_panel is not None:
                 self._assembly_panel.setVisible(False)
+            # 隐藏快速插入按钮
+            self._quick_insert_button.setVisible(False)
 
     def _enter_organize_mode(self) -> None:
         """进入整理模式：根据当前选中节点状态加载中栏。

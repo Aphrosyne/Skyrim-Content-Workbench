@@ -118,6 +118,26 @@ ASSEMBLY_RENAME_COVER_FAILED = "重命名失败"
 ASSEMBLY_NOT_IMAGE_HINT = "仅图片文件可重命名为 Mod 组同名。"
 ASSEMBLY_NO_SELECTION = "请先在装配面板中选中一个文件。"
 
+# 快速插入（阶段 3 Task 5）
+QUICK_INSERT_BUTTON = "快速插入"
+QUICK_INSERT_TOOLTIP = "将当前装配面板绑定的 Mod 组移入选中的目标目录"
+QUICK_INSERT_CONFIRM_TITLE = "确认快速插入"
+QUICK_INSERT_CONFIRM_TEXT = (
+    "将把当前 Mod 组文件夹移动到目标目录：\n\n"
+    "源路径：{src}\n"
+    "目标路径：{dst}\n\n"
+    "此操作会真实移动文件，可通过操作历史撤销。是否继续？"
+)
+QUICK_INSERT_OK = "已快速插入：{name} → {target}"
+QUICK_INSERT_FAILED = "快速插入失败"
+QUICK_INSERT_NO_BINDING = "请先双击选中一个 Mod 组后再快速插入。"
+QUICK_INSERT_NO_TARGET = "请先在目录树中选中目标目录后再快速插入。"
+QUICK_INSERT_SAME_AS_SOURCE = "目标目录与源 Mod 组位置相同，无需移动。"
+QUICK_INSERT_TARGET_NOT_DIR = "选中的目标不是目录，无法快速插入。"
+QUICK_INSERT_CONFLICT_HINT = "目标目录已存在同名文件夹，请重命名或移除后重试。"
+QUICK_INSERT_CROSS_DRIVE_HINT = "跨盘移动暂不支持，请将 Mod 组和目标放在同一磁盘。"
+QUICK_INSERT_SELF_SUBDIR_HINT = "不能将 Mod 组移动到自身子目录内。"
+
 # 元数据面板区域
 METADATA_GROUP_TITLE = "元数据"
 METADATA_NOT_SELECTED = "双击内容单元查看元数据。"
