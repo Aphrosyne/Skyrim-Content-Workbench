@@ -81,6 +81,7 @@ MENU_CREATE_MOD_GROUP = "创建 Mod 组"
 MENU_MARK_CONTENT_UNIT = "标记为内容单元"
 MENU_UNMARK_CONTENT_UNIT = "取消标记"
 MENU_BATCH_MARK_CONTENT_UNIT = "把每个文件标记为内容单元"
+MENU_ADD_TO_ASSEMBLY = "加入装配"
 
 # 创建 Mod 组对话框
 CREATE_MOD_GROUP_DIALOG_TITLE = "创建 Mod 组"
@@ -97,6 +98,25 @@ BATCH_MARK_CONTENT_UNIT_OK = "已批量标记 {count} 个文件"
 MARK_CONTENT_UNIT_FAILED = "标记失败"
 UNMARK_CONTENT_UNIT_FAILED = "取消标记失败"
 BATCH_MARK_CONTENT_UNIT_FAILED = "批量标记失败"
+
+# 装配面板（阶段 3 Task 4）
+ASSEMBLY_PANEL_TITLE = "装配面板"
+ASSEMBLY_PANEL_HINT = "当前 Mod 组：{name}"
+ASSEMBLY_PANEL_EMPTY = "请先创建或双击选中一个 Mod 组。"
+ASSEMBLY_PANEL_NO_FILES = "Mod 组文件夹为空。可右键暂存区文件「加入装配」。"
+ASSEMBLY_PANEL_REMOVE_BUTTON = "移除选中文件"
+ASSEMBLY_PANEL_CLOSE_BUTTON = "关闭装配面板"
+ASSEMBLY_MENU_RENAME_COVER = "重命名为与 Mod 组同名"
+ASSEMBLY_MENU_REMOVE = "移除（移回暂存区）"
+ASSEMBLY_MENU_COPY_PATH = "复制路径"
+ASSEMBLY_ADD_FILE_OK = "已加入文件：{name}"
+ASSEMBLY_ADD_FILE_FAILED = "加入文件失败"
+ASSEMBLY_REMOVE_FILE_OK = "已移除文件：{name}"
+ASSEMBLY_REMOVE_FILE_FAILED = "移除文件失败"
+ASSEMBLY_RENAME_COVER_OK = "已重命名为：{name}"
+ASSEMBLY_RENAME_COVER_FAILED = "重命名失败"
+ASSEMBLY_NOT_IMAGE_HINT = "仅图片文件可重命名为 Mod 组同名。"
+ASSEMBLY_NO_SELECTION = "请先在装配面板中选中一个文件。"
 
 # 元数据面板区域
 METADATA_GROUP_TITLE = "元数据"

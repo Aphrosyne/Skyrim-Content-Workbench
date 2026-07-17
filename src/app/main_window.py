@@ -69,10 +69,12 @@ from PySide6.QtWidgets import (
 )
 
 from app import ui_constants as ui
+from app.assembly_panel import AssemblyPanel
 from app.file_list_model import FileListModel
 from app.folder_tree_model import FolderTreeModel
 from app.mode_manager import ModeManager
 from app.scan_worker import ScanWorker
+from application.assembly_service import AssemblyService
 from application.content_service import ContentService
 from application.errors import (
     ConflictError,
@@ -120,6 +122,7 @@ class MainWindow(QMainWindow):
         commit_callback: Callable[[], None] | None = None,
         staging_service: StagingService | None = None,
         mod_group_service: ModGroupService | None = None,
+        assembly_service: AssemblyService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -130,6 +133,7 @@ class MainWindow(QMainWindow):
         self._commit_callback = commit_callback
         self._staging_service = staging_service
         self._mod_group_service = mod_group_service
+        self._assembly_service = assembly_service
         self._thread: QThread | None = None
         self._worker: ScanWorker | None = None
         self._is_scanning = False
@@ -285,7 +289,7 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(left)
 
-        # === 中栏：文件列表（roadmap Task 4 2026-07-13 设计修正） ===
+        # === 中栏：文件列表 + 装配面板（roadmap Task 4 + 阶段 3 Task 4） ===
         middle = QWidget()
         middle_layout = QVBoxLayout(middle)
         middle_layout.setContentsMargins(0, 0, 0, 0)
@@ -299,9 +303,13 @@ class MainWindow(QMainWindow):
         self._mode_hint_full_text = ui.MODE_BROWSE_HINT
         middle_layout.addWidget(self._mode_hint_label)
 
+        # 上下分割：上方文件列表，下方装配面板（仅整理模式可见）
+        self._middle_splitter = QSplitter(Qt.Vertical)
+
         self._content_group = QGroupBox(ui.CONTENT_LIST_GROUP_TITLE)
         content_layout = QVBoxLayout(self._content_group)
 
+        # 文件列表（整理模式下右键菜单「加入装配」替代原拖拽方案）
         self._content_view = QTableView()
         self._content_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._content_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -333,7 +341,25 @@ class MainWindow(QMainWindow):
         self._content_empty_hint.setWordWrap(True)
         content_layout.addWidget(self._content_empty_hint)
 
-        middle_layout.addWidget(self._content_group)
+        self._middle_splitter.addWidget(self._content_group)
+
+        # 装配面板（阶段 3 Task 4）：默认隐藏，创建/双击 Mod 组时显示
+        if self._assembly_service is not None:
+            self._assembly_panel = AssemblyPanel(
+                self._assembly_service,
+                on_file_removed=self._on_assembly_remove_file,
+                on_cover_renamed=self._on_assembly_rename_cover,
+                on_panel_closed=self._on_assembly_closed,
+            )
+            self._assembly_panel.setVisible(False)
+            self._middle_splitter.addWidget(self._assembly_panel)
+            # 初始拉伸比例：文件列表占大头，装配面板占小头
+            self._middle_splitter.setStretchFactor(0, 3)
+            self._middle_splitter.setStretchFactor(1, 1)
+        else:
+            self._assembly_panel = None  # type: ignore[assignment]
+
+        middle_layout.addWidget(self._middle_splitter)
 
         splitter.addWidget(middle)
 
@@ -485,6 +511,9 @@ class MainWindow(QMainWindow):
             else:
                 self._organize_target_path = node.real_path
             self._update_organize_hint()
+            # 整理模式下：选中 Mod 组文件夹 → 绑定装配面板
+            # （非 Mod 组节点保持当前绑定，便于用户从其他目录拖入文件）
+            self._maybe_bind_assembly_panel_for_tree_node(node)
 
     def _refresh_content_list(self, dir_path: str) -> None:
         """刷新文件列表（数据源为文件系统，content_unit 表仅作标记）。"""
@@ -529,11 +558,13 @@ class MainWindow(QMainWindow):
     def _on_entry_activated(self, index) -> None:  # noqa: ANN001 (Qt 信号)
         """双击文件条目。
 
-        交互行为（2026-07-16 调整）：
+        交互行为（2026-07-17 调整）：
         - 浏览模式下双击文件夹 → 进入该目录（无论是否内容单元，优先于元数据显示）。
           文件夹的元数据通过单击选中查看（_on_content_selection_changed）。
         - 双击文件类型内容单元（压缩包）→ 显示元数据面板。
-        - 整理模式下双击文件夹 / 普通文件 → 不响应。
+        - 整理模式下双击 Mod 组文件夹（ContentUnit + is_dir）→ 绑定装配面板。
+          （单击仅选中显示元数据，不切换装配面板，避免误触）
+        - 整理模式下双击普通文件 / 普通文件夹 → 不响应。
         """
         entry = self._content_list_model.entry_at(index.row())
         if entry is None:
@@ -547,12 +578,18 @@ class MainWindow(QMainWindow):
             self._set_metadata_text(ui.METADATA_NOT_SELECTED)
             return
 
+        # 整理模式下双击 Mod 组文件夹 → 绑定装配面板
+        # spec §7.4（2026-07-17 调整）：装配面板通过双击切换，单击仅选中
+        if entry.is_dir and self._mode_manager.is_organize() and entry.content_unit is not None:
+            self._bind_assembly_panel(entry.content_unit)
+            return
+
         # 双击文件类型内容单元 → 显示元数据
         if entry.content_unit is not None:
             self._update_metadata(entry.content_unit)
             return
 
-        # 其他情况（整理模式文件夹 / 普通文件）：不响应
+        # 其他情况（整理模式普通文件 / 普通文件夹）：不响应
 
     def _on_content_selection_changed(self, *args) -> None:  # noqa: N802, ANN001 (Qt 信号)
         """文件列表选中变化：单击选中内容单元 → 右侧立即显示元数据。
@@ -562,6 +599,9 @@ class MainWindow(QMainWindow):
         - 选中内容单元 → 显示元数据。
         - 选中非内容单元 → 清空元数据面板（或保持现状，这里选择清空以避免误导）。
         - 整理模式下同样生效（暂存区列表中的内容单元也响应）。
+
+        注（2026-07-17 调整）：单击不再切换装配面板绑定。装配面板切换
+        通过双击 Mod 组文件夹触发（_on_entry_activated）。
         """
         sm = self._content_view.selectionModel()
         if sm is None:
@@ -690,6 +730,7 @@ class MainWindow(QMainWindow):
 
         菜单项：
         - 创建 Mod 组：仅整理模式 + 单选文件 + 注入了 ModGroupService 时显示。
+        - 加入装配：仅整理模式 + 单选文件（非目录）+ 装配面板已绑定 Mod 组时显示。
         - 标记为内容单元 / 把每个文件标记为内容单元：未标记条目。
         - 取消标记：已标记 ContentUnit。
         - 复制路径：始终显示。
@@ -722,6 +763,20 @@ class MainWindow(QMainWindow):
         ):
             actions.append(
                 (ui.MENU_CREATE_MOD_GROUP, lambda: self._on_create_mod_group(entries[0]))
+            )
+
+        # 加入装配：仅整理模式 + 单选 + 文件（非目录）+ 装配面板已绑定 Mod 组
+        # spec §7.4（2026-07-17 调整）：取消拖拽方案，改用右键菜单触发 add_file
+        if (
+            self._assembly_service is not None
+            and self._assembly_panel is not None
+            and self._mode_manager.is_organize()
+            and self._assembly_panel.current_unit() is not None
+            and len(entries) == 1
+            and not entries[0].is_dir
+        ):
+            actions.append(
+                (ui.MENU_ADD_TO_ASSEMBLY, lambda: self._on_assembly_add_file(Path(entries[0].path)))
             )
 
         # 标记/取消标记
@@ -788,7 +843,7 @@ class MainWindow(QMainWindow):
             return  # 用户取消
 
         try:
-            self._mod_group_service.create_mod_group(
+            unit = self._mod_group_service.create_mod_group(
                 Path(entry.path),
                 Path(self._organize_workarea_path),
                 name=chosen_name,
@@ -798,6 +853,8 @@ class MainWindow(QMainWindow):
             self._refresh_tree()
             # 刷新暂存区文件列表
             self._refresh_staging_content_list(self._organize_workarea_path)
+            # 绑定装配面板到新创建的 Mod 组
+            self._bind_assembly_panel(unit)
             self.statusBar().showMessage(
                 ui.CREATE_MOD_GROUP_DEFAULT_OK.format(name=chosen_name), 3000
             )
@@ -923,6 +980,151 @@ class MainWindow(QMainWindow):
             node = self._tree_model.node_at(indexes[0])
             if node is not None:
                 self._refresh_content_list(node.real_path)
+
+    # --- 装配面板（阶段 3 Task 4） ---
+
+    def _bind_assembly_panel(self, unit: ContentUnit | None) -> None:
+        """绑定/解绑装配面板到指定 Mod 组 ContentUnit。
+
+        - 整理模式：绑定 unit 时显示装配面板并刷新文件列表；unit 为 None 时隐藏面板。
+        - 浏览模式：始终隐藏装配面板（spec §7.4：装配功能仅存在于整理模式）。
+        - staging_path 取 self._organize_workarea_path（移除文件时移回该路径）。
+        """
+        if self._assembly_panel is None:
+            return
+        if not self._mode_manager.is_organize():
+            self._assembly_panel.setVisible(False)
+            return
+        staging_path = (
+            Path(self._organize_workarea_path) if self._organize_workarea_path is not None else None
+        )
+        self._assembly_panel.bind_mod_group(unit, staging_path)
+        self._assembly_panel.setVisible(unit is not None)
+
+    def _maybe_bind_assembly_panel_for_tree_node(self, node) -> None:  # noqa: ANN001 (内部)
+        """整理模式下：若目录树节点对应一个 Mod 组 ContentUnit（文件夹类型），
+        则绑定装配面板到该 ContentUnit；否则保持当前绑定不变。
+
+        通过 ContentService.get_by_path 查询节点路径对应的 ContentUnit。
+        仅当节点是文件夹且存在 ContentUnit 时绑定（spec §7.4）。
+        """
+        if self._assembly_panel is None:
+            return
+        if not self._mode_manager.is_organize():
+            return
+        try:
+            unit = self._content_service.get_by_path(node.real_path)
+        except Exception:  # noqa: BLE001
+            logger.exception("查询 ContentUnit 失败：path=%s", node.real_path)
+            return
+        if unit is None or unit.status == "unmarked":
+            return  # 非 Mod 组节点：保持当前绑定
+        # 仅绑定文件夹类型的 ContentUnit（Mod 组本质是文件夹）
+        try:
+            is_dir = Path(unit.path).is_dir()
+        except OSError:
+            return
+        if is_dir:
+            self._bind_assembly_panel(unit)
+
+    def _on_assembly_add_file(self, src_path: Path) -> None:
+        """装配面板拖入文件：调用 AssemblyService.add_file + 刷新双方 + 提交。
+
+        add_file 不自动重命名（spec §7.4：自动整理阶段不修改任何文件名）。
+        """
+        if self._assembly_service is None or self._assembly_panel is None:
+            return
+        unit = self._assembly_panel.current_unit()
+        if unit is None:
+            return
+        try:
+            self._assembly_service.add_file(unit.id, src_path)
+            self._commit()
+            self._assembly_panel.refresh_current()
+            # 刷新暂存区文件列表（源文件已离开暂存区）
+            if self._organize_workarea_path is not None:
+                self._refresh_staging_content_list(self._organize_workarea_path)
+            self.statusBar().showMessage(ui.ASSEMBLY_ADD_FILE_OK.format(name=src_path.name), 3000)
+        except ConflictError:
+            QMessageBox.warning(
+                self,
+                ui.ASSEMBLY_ADD_FILE_FAILED,
+                f"目标已存在同名文件：{src_path.name}",
+            )
+        except FileOperationError as e:
+            QMessageBox.warning(self, ui.ASSEMBLY_ADD_FILE_FAILED, f"文件操作失败：\n{e}")
+        except Exception:  # noqa: BLE001
+            logger.exception("装配面板加入文件失败")
+            QMessageBox.critical(self, ui.ASSEMBLY_ADD_FILE_FAILED, "加入文件失败，请查看日志。")
+
+    def _on_assembly_remove_file(self, filename: str) -> None:
+        """装配面板移除文件：移回暂存区根目录 + 刷新双方 + 提交。
+
+        remove_file 不保留原子目录结构（统一移到 staging_path 根目录）。
+        """
+        if self._assembly_service is None or self._assembly_panel is None:
+            return
+        unit = self._assembly_panel.current_unit()
+        if unit is None:
+            return
+        if self._organize_workarea_path is None:
+            QMessageBox.warning(self, ui.ASSEMBLY_REMOVE_FILE_FAILED, "未选中暂存区工作区。")
+            return
+        staging_path = Path(self._organize_workarea_path)
+        try:
+            self._assembly_service.remove_file(unit.id, filename, staging_path)
+            self._commit()
+            self._assembly_panel.refresh_current()
+            self._refresh_staging_content_list(self._organize_workarea_path)
+            self.statusBar().showMessage(ui.ASSEMBLY_REMOVE_FILE_OK.format(name=filename), 3000)
+        except ConflictError:
+            QMessageBox.warning(
+                self,
+                ui.ASSEMBLY_REMOVE_FILE_FAILED,
+                f"暂存区已存在同名文件：{filename}",
+            )
+        except FileOperationError as e:
+            QMessageBox.warning(self, ui.ASSEMBLY_REMOVE_FILE_FAILED, f"文件操作失败：\n{e}")
+        except Exception:  # noqa: BLE001
+            logger.exception("装配面板移除文件失败")
+            QMessageBox.critical(self, ui.ASSEMBLY_REMOVE_FILE_FAILED, "移除文件失败，请查看日志。")
+
+    def _on_assembly_rename_cover(self, image_path: Path) -> None:
+        """装配面板右键重命名预览图：rename_as_cover + 刷新 + 提交。
+
+        命名规则：单张 {Mod组名}.{扩展名}；多张 {Mod组名}_2、_3……；
+        冲突走 ConflictError 流程（spec §7.4）。
+        """
+        if self._assembly_service is None or self._assembly_panel is None:
+            return
+        unit = self._assembly_panel.current_unit()
+        if unit is None:
+            return
+        try:
+            new_path = self._assembly_service.rename_as_cover(unit.id, image_path)
+            self._commit()
+            self._assembly_panel.refresh_current()
+            self.statusBar().showMessage(
+                ui.ASSEMBLY_RENAME_COVER_OK.format(name=new_path.name), 3000
+            )
+        except ConflictError:
+            QMessageBox.warning(
+                self,
+                ui.ASSEMBLY_RENAME_COVER_FAILED,
+                f"目标名称已存在：{image_path.name}",
+            )
+        except InvalidContentUnitPathError as e:
+            QMessageBox.warning(self, ui.ASSEMBLY_RENAME_COVER_FAILED, f"无法重命名：\n{e}")
+        except FileOperationError as e:
+            QMessageBox.warning(self, ui.ASSEMBLY_RENAME_COVER_FAILED, f"文件操作失败：\n{e}")
+        except Exception:  # noqa: BLE001
+            logger.exception("装配面板重命名失败")
+            QMessageBox.critical(self, ui.ASSEMBLY_RENAME_COVER_FAILED, "重命名失败，请查看日志。")
+
+    def _on_assembly_closed(self) -> None:
+        """关闭装配面板：隐藏（不解绑，便于用户再次打开时恢复）。"""
+        if self._assembly_panel is not None:
+            self._assembly_panel.setVisible(False)
 
     def _update_metadata(self, unit: ContentUnit) -> None:
         """更新元数据面板。"""
@@ -1270,11 +1472,19 @@ class MainWindow(QMainWindow):
         self._mode_manager.set_mode(mode)
 
     def _on_mode_changed(self, mode: AppMode) -> None:
-        """模式变化时更新 UI 状态与中栏提示。"""
+        """模式变化时更新 UI 状态与中栏提示。
+
+        阶段 3 Task 4（2026-07-17 调整：取消拖拽方案）：
+        - 整理模式：装配面板按当前绑定显隐。
+        - 浏览模式：隐藏装配面板（spec §7.4）。
+        """
         if mode == AppMode.organize:
             # 切换到整理模式：若当前选中节点是 [S] 则加载暂存区递归列表
             self._enter_organize_mode()
             self._update_organize_hint()
+            # 装配面板显隐：根据当前绑定（无绑定时隐藏）
+            if self._assembly_panel is not None:
+                self._assembly_panel.setVisible(self._assembly_panel.current_unit() is not None)
         else:
             # 切换回浏览模式：恢复跟随目录树刷新
             self._organize_workarea_path = None
@@ -1282,6 +1492,9 @@ class MainWindow(QMainWindow):
             self._set_mode_hint_text(ui.MODE_BROWSE_HINT)
             # 恢复显示当前选中目录树节点的内容
             self._refresh_content_for_current_tree_selection()
+            # 隐藏装配面板
+            if self._assembly_panel is not None:
+                self._assembly_panel.setVisible(False)
 
     def _enter_organize_mode(self) -> None:
         """进入整理模式：根据当前选中节点状态加载中栏。
@@ -1364,3 +1577,29 @@ class MainWindow(QMainWindow):
     def organize_workarea_path(self) -> str | None:
         """返回整理模式冻结的工作区路径（供测试）。"""
         return self._organize_workarea_path
+
+    # --- 装配面板测试接口（阶段 3 Task 4） ---
+
+    def assembly_panel_visible(self) -> bool:
+        """返回装配面板当前是否可见（供测试）。
+
+        使用 not isHidden() 而非 isVisible()：isVisible() 要求父组件也可见，
+        在测试环境中主窗口未 show() 时始终返回 False；isHidden() 仅反映
+        setVisible(False) 的显式调用，符合测试需求。
+        """
+        if self._assembly_panel is None:
+            return False
+        return not self._assembly_panel.isHidden()
+
+    def assembly_panel_current_unit_id(self) -> str | None:
+        """返回装配面板当前绑定的 Mod 组 ContentUnit ID（供测试）。"""
+        if self._assembly_panel is None:
+            return None
+        unit = self._assembly_panel.current_unit()
+        return unit.id if unit is not None else None
+
+    def assembly_panel_entry_count(self) -> int:
+        """返回装配面板当前文件列表条数（供测试）。"""
+        if self._assembly_panel is None:
+            return 0
+        return self._assembly_panel.entry_count()

@@ -8,6 +8,89 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### 2026-07-17 阶段 3 Task 4：装配面板交互调整
+
+用户手动验收后提出两项设计调整：取消拖拽加入装配方案、Mod 组切换改为双击触发。仅修改交互方式，底层业务逻辑（AssemblyService）不变。
+
+**设计决策（2026-07-17 用户确认）：**
+- **取消拖拽加入装配**：Qt ListView 默认拖拽反馈不理想，改为整理模式下中栏文件列表右键菜单「加入装配」。条件：整理模式 + 单选 + 文件（非目录）+ 装配面板已绑定 Mod 组。点击后调用原有 `_on_assembly_add_file`，文件真实移动、列表刷新、operation_history 记录、状态栏提示均保持不变。
+- **Mod 组切换改为双击**：原单击中栏 Mod 组文件夹立即切换装配面板容易误触。改为单击仅选中 + 显示元数据（不切换绑定），双击才绑定装配面板到该 Mod 组。目录树行为不变。
+
+#### Changed
+
+- **AssemblyPanel**：[src/app/assembly_panel.py](src/app/assembly_panel.py) 移除全部拖拽相关代码（`create_drag_mime_data` / `DragSourceTableView` / `dragEnterEvent` / `dragMoveEvent` / `dropEvent` / `on_file_added` 回调参数 / `QMimeData` 导入）；文件列表 `setAcceptDrops(False)` + `setDragDropMode(NoDragDrop)`；空提示文案更新为引导用户右键「加入装配」或双击选中 Mod 组。
+- **MainWindow**：[src/app/main_window.py](src/app/main_window.py)
+  - `_content_view` 从 `DragSourceTableView` 改回 `QTableView`，`setDragDropMode(NoDragDrop)`（所有模式一致）。
+  - AssemblyPanel 构造移除 `on_file_added` 回调。
+  - `_on_content_context_menu` 新增「加入装配」菜单项（条件：整理模式 + 单选 + 文件非目录 + 装配面板已绑定 Mod 组）。
+  - `_on_entry_activated` 新增整理模式双击 Mod 组文件夹 → `_bind_assembly_panel` 分支。
+  - `_on_content_selection_changed` 移除装配面板绑定逻辑（单击不再切换绑定）。
+  - `_on_mode_changed` 移除拖拽模式切换（不再设置 `DragOnly` / `NoDragDrop`）。
+  - 移除测试接口 `content_view_drag_enabled()`。
+- **UI 文案常量**：[src/app/ui_constants.py](src/app/ui_constants.py) 新增 `MENU_ADD_TO_ASSEMBLY = "加入装配"`；`ASSEMBLY_PANEL_EMPTY` / `ASSEMBLY_PANEL_NO_FILES` 文案更新；移除 `ASSEMBLY_DRAG_MIME_TYPE`。
+
+#### Tests
+
+- 测试数量变化：523 passed → 519 passed（-7 拖拽测试 +4 新交互测试 = -3 净变化；3 skipped 不变）。
+- [tests/test_assembly_panel.py](tests/test_assembly_panel.py) 移除 5 项拖拽测试（`test_create_drag_mime_data` / `test_create_drag_mime_data_chinese_path` / `test_panel_drop_event_invokes_callback` / `test_panel_drop_event_no_binding_ignored` / `test_drag_source_table_view_instantiation`）。
+- [tests/test_main_window_assembly.py](tests/test_main_window_assembly.py) 移除 2 项拖拽测试（`test_assembly_panel_drag_disabled_in_browse_mode` / `test_assembly_panel_drag_enabled_in_organize_mode`）；新增 4 项：双击 Mod 组绑定 / 单击 Mod 组不绑定 / 右键菜单「加入装配」移动文件 / 未绑定 Mod 组时菜单不显示「加入装配」。新增 `_patch_qmenu` 辅助函数（在模块命名空间替换 `QMenu` 类，因 PySide6 `QMenu.exec` 为 C++ 实现无法通过 `monkeypatch.setattr(QMenu, "exec", ...)` 在实例方法层级替换）。
+
+#### Docs
+
+- [docs/spec.md](docs/spec.md) §5.2 整理模式流程图：拖入 → 右键「加入装配」；§7.3 整理模式新增交互方式（单击不切换 / 双击绑定）；§7.4 装配面板：拖入 → 右键菜单；§7.5 右键菜单表：暂存区文件新增「加入装配」。
+- [docs/roadmap.md](docs/roadmap.md) Task 4 验收项更新：拖拽项替换为右键菜单项 + 新增双击/单击切换验收项。
+
+### 2026-07-16 阶段 3 Task 4：装配面板
+
+新增装配面板（AssemblyPanel）+ 装配服务（AssemblyService），实现整理模式下从暂存区拖入附加文件到 Mod 组、移除已加入文件回暂存区根目录、右键图片手动重命名为 Mod 组同名（不破坏用户已有命名）。schema_version 维持 5。
+
+**设计决策（2026-07-16 用户确认）：**
+- **不自动重命名图片**：自动整理阶段不修改任何文件名（`add_file` 保留原文件名），避免破坏用户已整理好的命名。仅提供手动「重命名为与 Mod 组同名」操作。
+- **移除文件统一移回暂存区根目录**：不保留原子目录结构（spec §7.4）。
+- **装配面板绑定当前选中 Mod 组**：整理模式下切换不同 Mod 组时同步刷新装配面板内容。
+- **浏览模式不显示装配面板**：装配功能仅存在于整理模式。
+- **手动重命名规则**：单张 `{Mod组名}.{扩展名}`；多张 `{Mod组名}_2`、`{Mod组名}_3`……后缀；命名冲突走现有 `ConflictError` 流程（弹窗提示，不覆盖，AGENTS 规则 2）。
+
+#### Added
+
+- **AssemblyService**：[src/application/assembly_service.py](src/application/assembly_service.py) 新建，装配面板业务逻辑。
+  - `list_mod_group_files(unit_id) -> list[FileEntry]`：读取 Mod 组文件夹内容（Path.iterdir + stat），不关联 content_unit。
+  - `add_file(unit_id, src_path) -> FileEntry`：从暂存区拖入文件到 Mod 组文件夹（真实移动，保留原文件名）；目标冲突抛 `ConflictError`。
+  - `remove_file(unit_id, filename, staging_path) -> Path`：从 Mod 组移除文件，统一移回暂存区根目录（不保留原子目录结构）；冲突抛 `ConflictError`。
+  - `rename_as_cover(unit_id, image_path) -> Path`：手动重命名图片为 Mod 组同名。单张 `{mod_name}.ext`；多张 `_2`、`_3` 后缀（已在文件夹内的同名图片自动跳过）；image_path 必须在 Mod 组文件夹内且为支持的图片格式（spec §9 扩展名集合），否则抛 `InvalidContentUnitPathError`。
+  - `_sync_folder_mtime(folder_path)`：装配操作后同步 `folder_cache.last_scanned_mtime`（与 ModGroupService 一致，避免下次增量扫描重复处理）；写入失败不阻塞主流程。
+- **AssemblyPanel**：[src/app/assembly_panel.py](src/app/assembly_panel.py) 新建，QWidget 装配面板 UI 组件。
+  - `AssemblyListModel`：QAbstractListModel 单列实现，支持 `DisplayRole`/`ToolTipRole`/`UserRole`/`DecorationRole`。
+  - `AssemblyPanel`：显示 Mod 组文件列表 + 移除按钮 + 关闭按钮；支持拖拽接收（mime type `application/x-scw-assembly-file`）；右键菜单提供「重命名为与 Mod 组同名」（仅图片）、「移除」、「复制路径」。
+  - `bind_mod_group(unit, staging_path)` / `refresh_current()` / `current_unit()` / `current_unit_id()`：绑定/刷新/查询当前 Mod 组。
+  - `create_drag_mime_data(src_path) -> QMimeData`：构造拖拽数据（携带源文件路径 UTF-8 字符串）。
+  - `DragSourceTableView`：QTableView 子类，重写 `startDrag` 支持拖拽文件到装配面板。
+- **MainWindow 集成**：[src/app/main_window.py](src/app/main_window.py) 中栏改为 `QSplitter(Vertical)` 上下分割（文件列表 + 装配面板）；`_content_view` 从 `QTableView` 改为 `DragSourceTableView`。
+  - `__init__` 新增 `assembly_service: AssemblyService | None = None` 注入参数。
+  - 新增 4 个回调方法：`_on_assembly_add_file` / `_on_assembly_remove_file` / `_on_assembly_rename_cover` / `_on_assembly_closed`。
+  - 新增 2 个绑定辅助方法：`_bind_assembly_panel` / `_maybe_bind_assembly_panel_for_tree_node`。
+  - `_on_create_mod_group` 完成后自动绑定装配面板；`_on_content_selection_changed` / `_on_tree_selection_changed` 在整理模式下选中 Mod 组文件夹时同步绑定；`_on_mode_changed` 切换拖拽模式（浏览 `NoDragDrop` / 整理 `DragOnly`）+ 装配面板显隐。
+  - 测试接口：`assembly_panel_visible()`（使用 `not isHidden()` 而非 `isVisible()`，避免测试环境主窗口未 show() 时始终返回 False）/ `assembly_panel_current_unit_id()` / `assembly_panel_entry_count()` / `content_view_drag_enabled()`。
+- **UI 文案常量**：[src/app/ui_constants.py](src/app/ui_constants.py) 新增装配面板相关文案 18 项（`ASSEMBLY_PANEL_TITLE` / `ASSEMBLY_PANEL_HINT` / `ASSEMBLY_PANEL_EMPTY` / `ASSEMBLY_PANEL_NO_FILES` / `ASSEMBLY_PANEL_REMOVE_BUTTON` / `ASSEMBLY_PANEL_CLOSE_BUTTON` / `ASSEMBLY_MENU_RENAME_COVER` / `ASSEMBLY_MENU_REMOVE` / `ASSEMBLY_MENU_COPY_PATH` / `ASSEMBLY_ADD_FILE_OK` / `ASSEMBLY_ADD_FILE_FAILED` / `ASSEMBLY_REMOVE_FILE_OK` / `ASSEMBLY_REMOVE_FILE_FAILED` / `ASSEMBLY_RENAME_COVER_OK` / `ASSEMBLY_RENAME_COVER_FAILED` / `ASSEMBLY_NOT_IMAGE_HINT` / `ASSEMBLY_NO_SELECTION` / `ASSEMBLY_DRAG_MIME_TYPE`）。
+
+#### Changed
+
+- **main.py 依赖注入**：[src/app/main.py](src/app/main.py) 构造 `AssemblyService`（共用 `FileOperationService` + 新建 `ContentUnitRepository` + `FolderCacheRepository`），传入 MainWindow。
+- **MainWindow 中栏布局**：[src/app/main_window.py](src/app/main_window.py) 中栏从单一 `QGroupBox` 改为 `QSplitter(Vertical)` 上下分割：上半部分文件列表，下半部分装配面板（默认隐藏，整理模式 + 选中 Mod 组时显示）。初始拉伸比例 3:1。
+- **MainWindow 拖拽模式**：`_content_view` 默认 `NoDragDrop`（浏览模式）；整理模式切换为 `DragOnly`，支持拖拽文件到装配面板。
+
+#### Tests
+
+- 测试数量变化：439 passed → 523 passed（+84 新测试；3 skipped 均为 Windows 符号链接权限不足，与代码无关）。
+- [tests/test_assembly_service.py](tests/test_assembly_service.py)（新文件，23 项）——`list_mod_group_files`（空/非空/中文/不存在/非目录）；`add_file`（成功/写历史/同步 mtime/目标冲突/源不存在/中文路径/保留原名）；`remove_file`（成功/移回暂存区根目录/写历史/目标冲突/源不存在）；`rename_as_cover`（单张/多张 `_2`、`_3`/幂等返回/非图片拒绝/不在 Mod 组内拒绝/冲突）；`_sync_folder_mtime`（folder_cache_repo=None 跳过/写入失败不阻塞）。
+- [tests/test_assembly_panel.py](tests/test_assembly_panel.py)（新文件，20 项）——`AssemblyListModel`（初始空/refresh/data roles/清空旧条目）；`AssemblyPanel`（初始状态/bind/refresh/current_unit/无选中移除禁用）；拖拽 mime 数据构造与解析；`DragSourceTableView` 实例化；右键菜单回调路径；回调注入路径。
+- [tests/test_main_window_assembly.py](tests/test_main_window_assembly.py)（新文件，19 项）——装配面板显隐（浏览隐藏/浏览拖拽禁用/整理拖拽启用/整理无 Mod 组隐藏/切回浏览隐藏）；创建 Mod 组后自动绑定 + 切换 Mod 组刷新；`add_file` 回调（成功 + 冲突）；`remove_file` 回调（成功 + 冲突）；`rename_as_cover` 回调（单张/多张 `_2`/非图片拒绝）；`closed` 回调；选中 Mod 组绑定（中栏 + 目录树）；浏览模式不绑定；中文 Mod 组。
+
+#### Docs
+
+- [docs/spec.md](docs/spec.md) §7.4：装配面板描述与实现一致——明确「不自动重命名图片」原则；手动重命名冲突处理改为「弹窗提示冲突，不覆盖」（原描述「覆盖/跳过/重命名」与 AGENTS 规则 2 冲突，覆盖/跳过/重命名选项留待阶段 5 通用冲突处理统一实现）。
+- [docs/roadmap.md](docs/roadmap.md) Task 4 验收项全部 ✅。
+
 ### 2026-07-16 修复（阶段 3 Task 3 验收修复）
 
 - **目录树刷新逻辑修复**：

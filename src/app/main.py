@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication
 from app.app_paths import ensure_app_directories, get_app_db_path
 from app.logging_setup import setup_logging
 from app.main_window import MainWindow
+from application.assembly_service import AssemblyService
 from application.content_service import ContentService
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
@@ -72,6 +73,12 @@ def main() -> int:
     file_operation_service = FileOperationService(OperationHistoryRepository(conn))
     folder_cache_repo = FolderCacheRepository(conn)
     mod_group_service = ModGroupService(file_operation_service, content_service, folder_cache_repo)
+    # 装配服务（阶段 3 Task 4）：使用同一个 file_operation_service 和 content_unit_repo
+    assembly_service = AssemblyService(
+        file_operation_service,
+        ContentUnitRepository(conn),
+        folder_cache_repo,
+    )
 
     app = QApplication(sys.argv)
     window = MainWindow(
@@ -82,6 +89,7 @@ def main() -> int:
         commit_callback=conn.commit,
         staging_service=staging_service,
         mod_group_service=mod_group_service,
+        assembly_service=assembly_service,
     )
     window.show()
     exit_code = app.exec()
