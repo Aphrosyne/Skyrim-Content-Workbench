@@ -3,6 +3,7 @@
 > 本文档记录 Code Review 中发现但未在第一批修复的问题。
 > 第一批已修复：C1-C4、H2、H5、H6、M8、M12（详见 CHANGELOG v0.15.0）。
 > 第二批已修复：TD-H4、TD-H5、TD-H6（详见 CHANGELOG v0.15.1）。
+> 第三批已修复：TD-H7（收敛为 normalized 接口）、TD-H8（folder_cache 同步事务一致性）。
 > 以下问题按严重级别排列，将在阶段 3 及后续迭代中逐步处理。
 
 ---
@@ -42,13 +43,48 @@
 - **位置**: [content_unit.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/repositories/content_unit.py) `list_by_path_prefix`
 - **修复**: 转义 `prefix + sep` 中的 `%`、`_`、`\`，使用 `ESCAPE '\\'` 子句。
 
-### TD-H7: list_by_path_prefix 的 LIKE 转义在 Windows 反斜杠路径下 broken
+### TD-H7: list_by_path_prefix 在分隔符分歧场景下漏匹配子路径 ✅ 已修复（v0.16.0）
 
-- **位置**: [content_unit.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/repositories/content_unit.py) `list_by_path_prefix`
-- **问题**: TD-H6 修复了 LIKE 通配符转义，但 Windows 下 `os.sep = "\\"`，构造 `full_prefix = prefix + sep` 后做 `replace("\\", "\\\\")` 会让每个反斜杠翻倍，LIKE 模式期望路径中两个连续反斜杠，但实际 path 只有一个反斜杠，**子路径无法匹配**。原测试用 POSIX 路径（`/mods/armor`）掩盖了此 bug。
-- **影响**: 阶段 3 Task 5 第二轮验收时暴露——`QuickInsertService._cleanup_stale_content_units` 原实现依赖 `list_by_path_prefix` 清理目标路径子项旧记录，Windows 下子路径匹配失败，导致 `update` 时 UNIQUE 冲突。
-- **临时规避（阶段 3 Task 5 已实施）**: `QuickInsertService._cleanup_stale_content_units` 改用 `list_all + make_path_key` 归一化比较，不依赖 SQL LIKE（符合 AGENTS 规则 9）。
-- **建议**: 修复 `list_by_path_prefix` 的 LIKE 转义逻辑（或改为 `list_all + make_path_key` 归一化比较），并补充 Windows 路径测试覆盖。当前 `list_by_path_prefix` 仍被 `ContentService` 使用，潜在影响其他功能。
+- **位置**: [content_unit.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/repositories/content_unit.py)
+- **原描述更正**：原 TD-H7 描述"LIKE 翻倍导致 Windows 反斜杠路径下 broken"
+  在机制上不准确。经实测验证：原 `list_by_path_prefix` 用 `LIKE ... ESCAPE '\'`，
+  `\\` 在模式中匹配单个字面反斜杠，因此**同分隔符路径下（Windows 均反斜杠）
+  实际能正常工作**。真正的失败场景是**分隔符分歧**——当数据库存储的路径与
+  查询路径分隔符不一致时（如 FileScanner 存正斜杠、service 传反斜杠），
+  LIKE 无法匹配，子路径记录被漏掉。
+- **影响**：`ContentService.mark_as_content_unit` 的子项取消逻辑（spec §5.4）
+  在分隔符分歧下静默失效；`list_staging_entries` 批量预查漏掉子项；
+  `list_by_directory` / `list_direct_children` 同样受影响。
+- **修复（v0.16.0）**：新增 `ContentUnitRepository.list_by_path_prefix_normalized`，
+  用 `make_path_key` 归一化后做字符串前缀比较，跨平台一致。`ContentService`
+  所有调用点（`list_by_directory` / `list_direct_children` / `mark_as_content_unit`
+  / `list_staging_entries`）及 `QuickInsertService._cleanup_stale_content_units`
+  统一切换到新接口，消除 service 层散落的 `list_all + make_path_key` 绕行方案。
+  原 `list_by_path_prefix` 标记 deprecated 保留，待所有外部调用点迁移后删除。
+- **回归测试**：`tests/test_content_service.py::TestListByPathPrefixNormalized`
+  覆盖分隔符分歧、同分隔符、兄弟目录排除、`mark_as_content_unit` 子项取消
+  分隔符分歧场景；含一条对照测试固化"原方法在分隔符分歧下返回空"的事实。
+
+### TD-H8: folder_cache 同步采用"吞异常 + 上层 commit"模式导致部分提交态 ✅ 已修复（v0.16.0）
+
+- **位置**: [quick_insert_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/quick_insert_service.py) `_sync_folder_cache` / [mod_group_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/mod_group_service.py) `create_mod_group` 步骤 1b
+- **问题**：原实现用 `except Exception: logger.exception(...)` 吞掉 folder_cache
+  同步中的所有异常，但同步内部包含多步写操作（删除旧 → 插入新 → 更新父 mtime）。
+  一旦中间步骤失败、异常被外层吞掉，MainWindow 随后调用 `_commit` 会把
+  "删除旧记录成功 + 插入新记录失败" 的部分提交态持久化进数据库，
+  导致目录树出现静默缺节点，且无错误提示给用户。
+- **修复（v0.16.0）**：
+  - `QuickInsertService._sync_folder_cache` 不再吞异常，任一步失败立即抛出
+    `FileOperationError`，由上层（MainWindow `_on_quick_insert_clicked`）
+    捕获后调用 `_rollback` 回滚整个事务。
+  - `ModGroupService.create_mod_group` 步骤 1b 同样改为抛出异常，
+    并在抛出前调用 `_try_cleanup_empty_folder` 清理已创建的空文件夹。
+  - MainWindow 已有的 `except FileOperationError: self._rollback()` 分支
+    无需修改即可正确处理新行为。
+- **回归测试**：`tests/test_quick_insert_service.py` 新增
+  `test_quick_insert_sync_folder_cache_failure_rolls_back_transaction`
+  和 `test_mod_group_create_folder_cache_failure_rolls_back`，用
+  `_FlakyFolderCacheRepository` 模拟插入失败，验证事务回滚 + 数据库一致性。
 
 ---
 
@@ -268,20 +304,182 @@
 
 ---
 
+## 第三批新增（Stage 3 Code Review 2026-07-17 确认暂缓）
+
+> 以下问题来自 Stage 3 正式 Code Review，经评估不阻塞 Stage 4 启动，
+> 但建议在对应阶段择机处理。编号接续既有 TD 序列。
+
+### TD-M21: MainWindow God Object 趋势（1570 行 / 76 方法）
+
+- **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
+- **背景**: Stage 3 Code Review 发现 MainWindow 已增长到 1570 行 / 76 方法，
+  承担 UI 搭建、信号槽、扫描线程生命周期、装配面板绑定、快速插入流程、
+  元数据展示、Elide 渲染、模式切换、DB 事务边界（`_commit`/`_rollback`）等
+  多重职责。Stage 4 还要加搜索栏、标签筛选、评分控件、备注编辑器；
+  Stage 5 还要加删除确认、重命名对话框、撤销栈 UI。按当前增长趋势，
+  MainWindow 会迅速突破 2500 行。
+- **影响范围**: 仅影响 UI 层可维护性，不影响正确性。但 Stage 4/5 的 UI 改动
+  都要在巨型文件里找上下文，开发成本显著上升。
+- **推荐修复方案**: 至少拆出 `ScanController`（封装 ScanWorker 生命周期 +
+  信号转发）、`AssemblyController`（装配面板绑定 / 回调 / 快速插入流程）、
+  `MetadataView`（元数据 + Elide 渲染）、`ModeController`（模式切换 + hint）。
+  `_commit` / `_rollback` 移到 `UnitOfWork` 或 `TransactionScope`，UI 持有
+  其引用而非裸 connection。
+- **建议修复阶段**: **Stage 4 中期**（在加搜索/标签 UI 之前先拆分，
+  避免新功能继续堆进 MainWindow）。
+
+### TD-M22: folder_cache 同步辅助逻辑在多个 Service 中重复
+
+- **位置**: [mod_group_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/mod_group_service.py) `_resolve_parent_id_by_path` / [quick_insert_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/quick_insert_service.py) `_resolve_parent_id_by_path` / `_delete_folder_cache_by_path` / `_create_folder_cache_for_new_path` / `_update_parent_mtime` / [assembly_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/assembly_service.py) `_sync_folder_mtime`
+- **背景**: `_resolve_parent_id_by_path` / `_new_folder_cache_id` / `_now_iso`
+  在 `ModGroupService` 和 `QuickInsertService` 中逐字重复；`_is_in_directory`
+  在 `ModGroupService` 和 `AssemblyService` 中重复；`_default_now_utc` /
+  `_default_uuid_provider` / `_mtime_to_iso` 在 4 个 service 中各自重复。
+- **影响范围**: Stage 5 加 undo 时需要反向同步 folder_cache（删新 + 插旧 +
+  更新两个父 mtime），如果不抽公共方法，undo 路径会再次复制一份，届时
+  4 份重复。任何一处修 bug 都要同步改 4 处。
+- **推荐修复方案**: 抽 `FolderCacheSyncHelper`（application 层），提供
+  `on_folder_moved(old, new, parent)` / `on_folder_created(new, parent)` /
+  `on_folder_deleted(old)` / `on_folder_mtime_changed(folder)` 等语义化方法。
+  各 Service 调用它，不再直接操作 `FolderCacheRepository`。
+- **建议修复阶段**: **Stage 5 前**（undo 实现前必须收敛，否则反向同步逻辑
+  会复制粘贴出 4 份）。
+
+### TD-M23: folder_cache 同步中多次 list_all() 全表扫描
+
+- **位置**: [quick_insert_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/quick_insert_service.py) `_delete_folder_cache_by_path` / `_create_folder_cache_for_new_path` / `_resolve_parent_id_by_path` / `_update_parent_mtime`
+- **背景**: 单次 `quick_insert` 调用会触发至少 5 次 `folder_cache_repo.list_all()`
+  全表扫描。当前 folder_cache 规模小，无感；当用户管理几千个文件夹时，
+  每次快速插入都要全表扫描 5 次。
+- **影响范围**: 性能问题，不影响正确性。
+- **推荐修复方案**: `FolderCacheRepository` 加 `get_by_path_key(path_key)` /
+  `find_by_path_prefix(prefix)` 方法，用 SQL 直接查。归一化比较仍可用
+  `make_path_key`，但只对结果集做，不对全表做。
+- **建议修复阶段**: **Stage 4 后**（性能优化，非阻塞）。
+
+### TD-M24: AssemblyService.rename_as_cover 的 9999 上限抛 ConflictError 语义错位
+
+- **位置**: [assembly_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/assembly_service.py) `rename_as_cover`
+- **背景**: 当后缀编号超过 9999 时抛 `ConflictError`，但这是"命名空间耗尽"
+  而非"目标已存在冲突"。`ConflictError` 在 UI 层会被当作"目标已存在，
+  请用户改名"处理，但这里实际上是无法生成唯一名。
+- **影响范围**: 实际场景下 9999 几乎不会触发，但语义错位会让 Stage 5 的
+  错误提示体系混乱。
+- **推荐修复方案**: 用新的异常类型（如 `CoverRenameLimitError`）或
+  `FileOperationError`。
+- **建议修复阶段**: **Stage 4 后**（非阻塞，但建议在 Stage 5 错误提示
+  体系统一时一并处理）。
+
+### TD-M25: 多处 except Exception 吞掉编程错误
+
+- **位置**: [content_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/content_service.py) 第 184/286/340 行 / [scan_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/scan_service.py) 第 219 行 / [quick_insert_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/quick_insert_service.py) 第 136/178 行 等
+- **背景**: 多处 `except Exception: # noqa: BLE001` 会吞掉 `TypeError` /
+  `AttributeError` / `KeyError` 等编程错误，让 bug 以"日志里一条 traceback
+  + 用户看到功能异常"的形式存在，而不是"快速失败暴露问题"。
+- **影响范围**: Stage 4 加标签 / 评分时，如果 dataclass 字段拼错导致
+  `TypeError`，会被这类 except 吞掉，表现为"标签偶尔加不上"，极难定位。
+- **推荐修复方案**: 区分"预期外部错误"（`sqlite3.Error` / `OSError`）和
+  "编程错误"（其他）。预期错误用具体异常类型捕获并降级；编程错误让它在
+  开发期直接抛出。
+- **建议修复阶段**: **Stage 4 中期**（在加标签/评分功能前收窄异常捕获，
+  避免新功能的编程错误被静默吞掉）。
+
+### TD-M26: MainWindow 信号槽 / 状态同步 / 扫描线程生命周期无集成测试
+
+- **位置**: `tests/`
+- **背景**: Stage 3 Code Review 指出 `_update_quick_insert_button_state`、
+  `_bind_assembly_panel` 切换 Mod 组时旧 panel 状态清理、扫描完成后
+  `_refresh_content_list_after_scan` 是否保留当前选中等都无自动化测试，
+  纯靠手动验收。Stage 4 加更多状态（标签筛选、评分编辑）后，手动验收
+  成本会爆炸。
+- **影响范围**: 不影响当前正确性，但影响回归保障。
+- **推荐修复方案**: 至少加 `MainWindow` 的轻量级集成测试（用 `QTest`
+  模拟点击 / 选中），覆盖快速插入按钮状态机和装配面板绑定流程。
+- **建议修复阶段**: **Stage 4 中期**（与 TD-M21 拆分同步进行，
+  拆分后更易为各 Controller 写测试）。
+
+### TD-M27: SQLite 并发写未测试（ScanWorker 独立连接 vs 主线程连接）
+
+- **位置**: `tests/`
+- **背景**: `ScanWorker` 用独立 connection，与主线程 connection 并发写
+  folder_cache。没有测试覆盖"扫描进行中用户点击快速插入"的场景。
+  SQLite 默认 isolation 下可能出现 `database is locked`。
+- **影响范围**: 极端场景下的稳定性风险。
+- **推荐修复方案**: 加集成测试覆盖"扫描进行中触发快速插入"的并发场景，
+  验证是否出现 `database is locked` 或数据损坏。
+- **建议修复阶段**: **Stage 4 后**（非阻塞，但建议在 Stage 5 undo
+  实现前验证并发安全）。
+
+### TD-L18: AssemblyService._sync_folder_mtime 与 H2 修复后的同步策略不一致
+
+- **位置**: [assembly_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/assembly_service.py) `_sync_folder_mtime`
+- **背景**: H2 修复后 `QuickInsertService._sync_folder_cache` 和
+  `ModGroupService.create_mod_group` 的 folder_cache 同步失败都改为抛异常，
+  但 `AssemblyService._sync_folder_mtime` 仍保留 `except Exception: 吞异常`
+  模式。因为 `_sync_folder_mtime` 只更新单字段（mtime），不涉及多步写，
+  部分提交风险低，最坏情况是下次扫描重新处理该文件夹——不会数据不一致。
+  但策略不一致本身是认知负担。
+- **影响范围**: 无数据一致性风险，仅策略一致性。
+- **推荐修复方案**: 在 TD-M22 抽 `FolderCacheSyncHelper` 时统一策略：
+  单字段 mtime 更新可保留 best-effort（记日志），多步同步必须抛异常。
+  在 helper 的方法签名 / docstring 中明确区分两类契约。
+- **建议修复阶段**: **Stage 5 前**（与 TD-M22 一并处理）。
+
+### TD-L19: OperationHistory.can_undo 恒为 True，但 undo 未实现
+
+- **位置**: [file_operation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/file_operation_service.py) `new_folder` / `move`
+- **背景**: 写历史时 `can_undo=True`，但 Stage 3 没有 undo 实现。
+  这是已知的 Stage 5 范围，但 `can_undo` 字段语义在 Stage 3 期间是
+  "承诺可撤销"而非"实际可撤销"。UI 若基于此字段显示"可撤销"标识会误导用户。
+- **影响范围**: 当前 UI 未使用该字段，无实际影响。
+- **推荐修复方案**: Stage 5 实现 undo 时校验 `can_undo` 并实际执行撤销；
+  或在 Stage 3 期间将该字段默认设为 False，Stage 5 实现时再改 True。
+- **建议修复阶段**: **Stage 5**（undo 实现时）。
+
+### TD-L20: list_by_path_prefix（旧 broken 方法）保留待删除
+
+- **位置**: [content_unit.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/repositories/content_unit.py) `list_by_path_prefix`
+- **背景**: TD-H7 修复新增 `list_by_path_prefix_normalized`，但旧的
+  `list_by_path_prefix`（LIKE + ESCAPE，分隔符分歧下 broken）保留为
+  deprecated，因为有测试直接调用它（`test_content_service.py::TestListByPathPrefix`
+  及 `TestListByPathPrefixNormalized::test_separator_divergence_old_method_returns_empty`
+  对照测试）。
+- **影响范围**: 旧方法若被新代码误用会重现分隔符分歧 bug。
+- **推荐修复方案**: 检查所有调用点迁移完成后，删除旧方法及其对照测试。
+- **建议修复阶段**: **Stage 4 中期**（确认无外部调用后删除）。
+
+---
+
 ## 处理优先级建议
 
 1. ~~**阶段 3 开发前优先处理**（影响安全/正确性）~~：
    - ~~TD-H6（SQL LIKE 未转义，数据正确性）~~ ✅ 已修复
    - ~~TD-H4 + TD-H5（线程竞态，可致崩溃）~~ ✅ 已修复
 
-2. **阶段 4 开发前优先处理**（影响正确性）：
-   - TD-H7（list_by_path_prefix Windows 下 LIKE 转义 broken，QuickInsertService 已规避但 ContentService 仍使用，潜在影响标签筛选/元数据加载）
+2. ~~**阶段 4 开发前优先处理**（影响正确性）~~ ✅ 已修复（v0.16.0）：
+   - ~~TD-H7（list_by_path_prefix 分隔符分歧漏匹配，已收敛为 normalized 接口）~~ ✅
+   - ~~TD-H8（folder_cache 同步吞异常导致部分提交态，已改为抛 FileOperationError 触发上层回滚）~~ ✅
+   - **结论**：截至 v0.16.0，无阻塞 Stage 4 启动的 High 级别技术债。
 
 3. **阶段 4 开发中视情况处理**（影响性能/可用性）：
    - TD-H3（UI 冻结，影响基本可用性）
    - TD-H2（扫描事务边界）
    - TD-M17（连接泄漏，影响测试稳定性）
 
-4. **后续迭代批量处理**：
-   - Medium 级别的代码质量/测试覆盖问题
+4. **阶段 4 中期建议处理**（与 Stage 4 新功能同步进行，避免新代码堆进旧结构）：
+   - TD-M21（MainWindow God Object 拆分，加搜索/标签 UI 前先拆分）
+   - TD-M25（except Exception 吞掉编程错误，加标签/评分功能前收窄）
+   - TD-M26（MainWindow 集成测试，与拆分同步进行）
+   - TD-L20（删除旧 list_by_path_prefix，确认无外部调用后）
+
+5. **Stage 5 前/Stage 5 中处理**（undo 实现相关，必须在反向同步逻辑落地前收敛）：
+   - TD-M22（folder_cache 同步辅助逻辑抽公共 helper，避免 undo 路径复制粘贴 4 份）
+   - TD-L18（AssemblyService._sync_folder_mtime 策略统一，与 TD-M22 一并处理）
+   - TD-M24（rename_as_cover 9999 上限错误类型语义错位，Stage 5 错误提示体系统一时处理）
+   - TD-L19（OperationHistory.can_undo 恒为 True，Stage 5 实现 undo 时校验）
+   - TD-M27（SQLite 并发写测试，Stage 5 undo 前验证并发安全）
+
+6. **后续迭代批量处理**（非阻塞，性能优化为主）：
+   - TD-M23（folder_cache 同步多次 list_all() 全表扫描）
+   - 其余 Medium 级别的代码质量/测试覆盖问题
    - Low 级别的风格/命名/文档问题

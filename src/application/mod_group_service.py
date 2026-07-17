@@ -187,6 +187,12 @@ class ModGroupService:
         # 注意：不能用 get_by_path（精确字符串匹配），因为 staging_path 字符串
         # 与 folder_cache.path 存储的字符串可能存在大小写/分隔符差异。
         # 改用 make_path_key 归一化后比较，与 ScanService._resolve_parent_id 一致。
+        #
+        # H2 修复（2026-07-17 Code Review）：folder_cache 写入失败不再吞异常。
+        # 原实现 ``except Exception: logger.exception(...)`` 让上层 _commit 把
+        # 部分成功状态提交进数据库，导致目录树静默缺节点。新契约：写入失败立即抛出
+        # FileOperationError，由上层 rollback 回滚 new_folder + move（move 尚未执行，
+        # 可安全回滚）。回滚后 _try_cleanup_empty_folder 由调用方在 move 失败路径处理。
         if self._folder_cache_repo is not None:
             try:
                 parent_id = self._resolve_parent_id_by_path(str(staging_path))
@@ -200,8 +206,14 @@ class ModGroupService:
                     created_at=self._now_iso(),
                 )
                 self._folder_cache_repo.create(folder)
-            except Exception:  # noqa: BLE001 - folder_cache 写入失败不阻塞主流程
-                logger.exception("写入 folder_cache 失败：path=%s", target_folder)
+            except Exception as fc_err:  # noqa: BLE001
+                logger.exception(
+                    "写入 folder_cache 失败（将回滚 new_folder）：path=%s",
+                    target_folder,
+                )
+                # 清理已创建的空文件夹，避免遗留
+                _try_cleanup_empty_folder(target_folder)
+                raise FileOperationError(f"写入 folder_cache 失败：{fc_err}") from fc_err
 
         # 步骤 2：移入源文件
         # 若 move 失败，回滚：删除刚创建的空文件夹（仅当为空时）

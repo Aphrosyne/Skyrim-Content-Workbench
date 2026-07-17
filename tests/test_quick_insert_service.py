@@ -22,6 +22,7 @@ from application.errors import (
     ConflictError,
     ContentUnitNotFoundError,
     CrossDriveError,
+    FileOperationError,
     SelfSubdirectoryError,
 )
 from application.quick_insert_service import QuickInsertService
@@ -546,3 +547,151 @@ def test_quick_insert_cleanup_before_move_allows_safe_rollback(db_env, tmp_path:
     unit_ids = [u.id for u in all_units]
     assert "stale-before-move" not in unit_ids  # 旧记录被清理
     assert unit.id in unit_ids
+
+
+# === H2 修复：folder_cache 同步失败不得吞异常后让上层 commit ===
+
+
+class _FlakyFolderCacheRepository:
+    """模拟 folder_cache 同步中间步骤失败的 Repository。
+
+    在 ``_create_folder_cache_for_new_path`` 阶段（步骤 2：插入新记录）
+    抛出异常，模拟 UNIQUE 约束冲突或磁盘错误。用于验证 H2 修复：
+    同步失败应立即抛出让上层 rollback，而不是吞异常后让 _commit 提交
+    "删除旧记录成功 + 插入新记录失败" 的部分提交态。
+    """
+
+    def __init__(self, real_repo, fail_on_create: bool = False) -> None:
+        self._real = real_repo
+        self.fail_on_create = fail_on_create
+        self.create_call_count = 0
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def create(self, folder):
+        self.create_call_count += 1
+        if self.fail_on_create:
+            # 模拟插入新 folder_cache 记录时失败
+            raise RuntimeError("模拟 folder_cache 插入失败（H2 测试）")
+        return self._real.create(folder)
+
+
+def test_quick_insert_sync_folder_cache_failure_rolls_back_transaction(
+    db_env, tmp_path: Path
+) -> None:
+    """H2 修复验证：folder_cache 同步失败时整个事务应被回滚。
+
+    场景：
+    1. quick_insert 成功执行 cleanup → move → update（文件已移动 + ContentUnit.path 已更新）。
+    2. _sync_folder_cache 步骤 2（插入新 folder_cache 记录）失败。
+    3. 旧实现：吞异常 → quick_insert 返回成功 → 上层 _commit 提交
+       → folder_cache 中"旧记录已删除、新记录未插入"的部分提交态被持久化
+       → 目录树静默缺节点。
+    4. 新实现（H2 修复）：抛出 FileOperationError → 上层 rollback
+       → cleanup（ContentUnit.delete）被回滚、ContentUnit.path 更新被回滚
+       → 数据库回到操作前状态（虽然文件已移动，但 DB 一致）。
+
+    本测试验证：
+    - 抛出 FileOperationError（而非静默成功）。
+    - rollback 后 ContentUnit.path 仍指向旧路径（未提交更新）。
+    - rollback 后旧 folder_cache 记录仍在（未提交删除）。
+    """
+    service, content_service, conn, _, _ = db_env
+
+    # 用 FlakyFolderCacheRepository 包装真实 repo，注入失败
+    from infrastructure.repositories.folder_cache import FolderCacheRepository
+
+    real_fc_repo = FolderCacheRepository(conn)
+    flaky_fc_repo = _FlakyFolderCacheRepository(real_fc_repo, fail_on_create=True)
+    # 替换 service 的 folder_cache_repo
+    service._folder_cache_repo = flaky_fc_repo  # noqa: SLF001
+
+    staging = tmp_path / "Stash"
+    staging.mkdir()
+    mod_folder = staging / "MyMod"
+    mod_folder.mkdir()
+    (mod_folder / "source.7z").write_bytes(b"\x00" * 100)
+
+    target_dir = tmp_path / "Armor"
+    target_dir.mkdir()
+
+    unit = content_service.mark_as_content_unit(mod_folder)
+    conn.commit()
+
+    # 预先写入源 folder_cache 记录（让步骤 1 删除能成功，步骤 2 插入失败）
+    from domain.models import FolderCache
+
+    source_fc = FolderCache(
+        id="fc-source",
+        path=str(mod_folder),
+        parent_id=None,
+        last_scanned_mtime=1000.0,
+        created_at="2026-07-17T00:00:00Z",
+    )
+    real_fc_repo.create(source_fc)
+    conn.commit()
+
+    # 执行 quick_insert：应抛出 FileOperationError（H2 修复）
+    with pytest.raises(FileOperationError, match="同步 folder_cache 失败"):
+        service.quick_insert(unit.id, target_dir)
+
+    # 模拟 MainWindow 的 rollback
+    conn.rollback()
+
+    # 验证数据库一致性：ContentUnit.path 未被提交更新（仍指向旧路径）
+    db_unit = content_service.get_by_id(unit.id)
+    assert db_unit is not None
+    assert db_unit.path == str(mod_folder)  # 旧路径（rollback 回滚了 update）
+
+    # 验证旧 folder_cache 记录仍在（rollback 回滚了步骤 1 的删除）
+    all_fcs = real_fc_repo.list_all()
+    old_keys = [make_path_key(fc.path) for fc in all_fcs]
+    assert make_path_key(str(mod_folder)) in old_keys  # 旧记录复活
+
+    # 文件已移动（文件系统操作无法回滚），这是已知的不一致点
+    # 下次重试 move 会因源不存在而失败，提示用户手动修正（不会死循环）
+    assert not mod_folder.exists()
+    assert (target_dir / mod_folder.name).is_dir()
+
+
+def test_mod_group_create_folder_cache_failure_rolls_back(db_env, tmp_path: Path) -> None:
+    """H2 修复验证：ModGroupService.create_mod_group 的 folder_cache 写入失败时回滚。
+
+    场景：create_mod_group 步骤 1（new_folder）成功后，步骤 1b（folder_cache.create）
+    失败。新实现（H2 修复）应：清理已创建的空文件夹 + 抛出 FileOperationError，
+    让上层 rollback。旧实现会吞异常继续 move，最终把部分提交态 commit 进数据库。
+    """
+    from application.mod_group_service import ModGroupService
+
+    service, content_service, conn, _, _ = db_env
+
+    # 构造 ModGroupService，注入 Flaky folder_cache_repo
+    from infrastructure.repositories.folder_cache import FolderCacheRepository
+
+    real_fc_repo = FolderCacheRepository(conn)
+    flaky_fc_repo = _FlakyFolderCacheRepository(real_fc_repo, fail_on_create=True)
+    mod_group_svc = ModGroupService(service._file_op, content_service, flaky_fc_repo)  # noqa: SLF001
+
+    staging = tmp_path / "Stash"
+    staging.mkdir()
+    src = staging / "mod 1.0.7z"
+    src.write_bytes(b"data")
+
+    # 执行 create_mod_group：应抛出 FileOperationError（H2 修复）
+    with pytest.raises(FileOperationError, match="写入 folder_cache 失败"):
+        mod_group_svc.create_mod_group(src, staging)
+
+    # 模拟 MainWindow 的 rollback
+    conn.rollback()
+
+    # 验证：空文件夹已被清理（H2 修复中的 _try_cleanup_empty_folder）
+    assert not (staging / "mod").exists()
+
+    # 验证：源文件未移动（move 未执行，因为 folder_cache 写入在 move 之前失败）
+    assert src.is_file()
+
+    # 验证：folder_cache 中无新记录（rollback + 未成功插入）
+    all_fcs = real_fc_repo.list_all()
+    new_keys = [make_path_key(fc.path) for fc in all_fcs]
+    assert make_path_key(str(staging / "mod")) not in new_keys

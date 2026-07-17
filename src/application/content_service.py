@@ -60,9 +60,10 @@ class ContentService:
     def list_by_directory(self, dir_path: str) -> list[ContentUnit]:
         """返回 dir_path 及其所有子目录下的内容单元。
 
-        委托 ContentUnitRepository.list_by_path_prefix。
+        委托 ContentUnitRepository.list_by_path_prefix_normalized（TD-H7 修复：
+        原 list_by_path_prefix 在 Windows 反斜杠路径下 broken）。
         """
-        return self._repo.list_by_path_prefix(dir_path)
+        return self._repo.list_by_path_prefix_normalized(dir_path)
 
     def list_direct_children(self, dir_path: str) -> list[ContentUnit]:
         """只返回 path 直接属于 dir_path 的内容单元。
@@ -73,7 +74,7 @@ class ContentService:
         特别地，当 unit.path 本身就是 dir_path（内容单元路径等于目录路径）时，
         也视为直接子项返回。
         """
-        all_units = self._repo.list_by_path_prefix(dir_path)
+        all_units = self._repo.list_by_path_prefix_normalized(dir_path)
         if not all_units:
             return []
 
@@ -173,8 +174,8 @@ class ContentService:
             raise InvalidContentUnitPathError(f"无法访问路径：{e}") from e
 
         if is_dir:
-            children = self._repo.list_by_path_prefix(str(path))
-            # 排除 path 自身（list_by_path_prefix 含 prefix 自身）
+            children = self._repo.list_by_path_prefix_normalized(str(path))
+            # 排除 path 自身（list_by_path_prefix_normalized 含 prefix 自身）
             for child in children:
                 if make_path_key(child.path) != make_path_key(str(path)):
                     if child.status == "unmarked":
@@ -276,9 +277,11 @@ class ContentService:
 
         # 批量预查 content_unit：一次 SQL 拿回所有相关单元，构建 path_key 映射
         # "unmarked" 状态的单元不纳入映射（视为无内容单元）
+        # 使用 list_by_path_prefix_normalized（TD-H7 修复：Windows 反斜杠路径下
+        # 原 list_by_path_prefix 的 LIKE 转义 broken，会漏掉子路径记录）
         unit_map: dict[str, ContentUnit] = {}
         try:
-            units = self._repo.list_by_path_prefix(staging_path)
+            units = self._repo.list_by_path_prefix_normalized(staging_path)
             for unit in units:
                 if unit.status == "unmarked":
                     continue

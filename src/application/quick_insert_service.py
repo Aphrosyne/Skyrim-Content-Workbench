@@ -7,12 +7,15 @@
 2. 目标路径 = target_dir / mod_folder.name。
 3. **先清理**目标路径下的旧 ContentUnit 记录（避免 update 时 UNIQUE 冲突）。
    清理在 move 之前，此时文件系统状态干净，若清理失败可安全 rollback。
+   使用 ContentUnitRepository.list_by_path_prefix_normalized（TD-H7 修复：
+   原 list_by_path_prefix 在 Windows 反斜杠路径下 broken）。
 4. 调用 FileOperationService.move 执行移动（含跨盘/子目录/冲突检测）。
 5. 更新 ContentUnit.path 指向新路径。
 6. 同步 folder_cache（与 ModGroupService 模式一致）：
    a. 删除旧路径的 folder_cache 记录。
    b. 在目标目录下插入新路径的 folder_cache 记录（path=新路径, parent_id=目标目录的 id）。
    c. 更新目标目录的 last_scanned_mtime（让下次扫描知道该目录变了）。
+   d. 任一步失败立即抛出异常，由上层 rollback 保证事务一致性（H2 修复）。
 
 顺序设计原理（避免死循环）：
 - 旧顺序 move → cleanup → update：若 update 失败，rollback 会回滚 cleanup 的 delete，
@@ -45,7 +48,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 from application.errors import ContentUnitNotFoundError, FileOperationError
@@ -147,79 +149,88 @@ class QuickInsertService:
 
         # 步骤 4：同步 folder_cache：删除旧节点 + 插入新节点 + 更新目标父目录 mtime
         # （与 ModGroupService.create_mod_group 步骤 1b 模式一致，确保目录树立即刷新）
-        self._sync_folder_cache(src_folder, dst_folder, target_dir)
+        # H2 修复：同步失败不再吞异常，立即抛出让上层 rollback 保证事务一致性。
+        try:
+            self._sync_folder_cache(src_folder, dst_folder, target_dir)
+        except Exception as sync_err:  # noqa: BLE001
+            # 文件已移动 + ContentUnit.path 已更新，但 folder_cache 同步失败：
+            # 抛出 FileOperationError 让上层 rollback。rollback 会回滚 ContentUnit.path
+            # 更新与 cleanup（旧记录复活）。文件已移动无法回滚，下次重试 move 会因
+            # 源不存在而失败，提示用户手动修正（不会死循环）。
+            logger.exception(
+                "同步 folder_cache 失败（文件已移动到 %s，ContentUnit 已更新），"
+                "请手动刷新目录树或重新扫描",
+                dst_folder,
+            )
+            raise FileOperationError(f"同步 folder_cache 失败：{sync_err}") from sync_err
 
         return updated_unit
 
     def _cleanup_stale_content_units(self, dst_folder: Path, current_unit_id: str) -> None:
         """清理目标路径下的旧 ContentUnit 记录（避免 update 时 UNIQUE 约束冲突）。
 
-        2026-07-17 根因修复：原实现使用 list_by_path_prefix 的 SQL LIKE 匹配，
-        但 LIKE 转义在 Windows 反斜杠路径下是 broken 的（每个 \\ 被翻倍，
-        导致 LIKE 模式期望两个连续反斜杠，无法匹配子路径）。
-        现改为 list_all + make_path_key 归一化比较，符合 AGENTS 规则 9
-        （路径比较统一使用 make_path_key）。
+        TD-H7 修复收敛：原实现用 list_all + make_path_key 在 service 层内做归一化
+        比较以绕开 broken 的 list_by_path_prefix。现已将该归一化查询下沉到
+        ContentUnitRepository.list_by_path_prefix_normalized，service 层直接调用，
+        避免该规避方案散落在多个 service 中。
 
         清理范围：dst_folder 自身 + 其所有子路径。
         排除当前 unit（current_unit_id），因为后续要更新它的 path。
 
         清理失败不阻塞主流程（记日志），交由上层事务回滚处理。
         """
-        target_key = make_path_key(str(dst_folder))
-        sep = os.sep
-        # 子路径前缀：确保是目录层级前缀，避免 "D:/Mods" 误匹配 "D:/Mods2"
-        target_prefix = target_key.rstrip(sep) + sep
-
         try:
-            all_units = self._content_repo.list_all()
-            for stale in all_units:
-                if stale.id == current_unit_id:
-                    continue  # 不删除当前要更新的 unit
-                stale_key = make_path_key(stale.path)
-                # 匹配 dst_folder 自身或其子路径
-                if stale_key == target_key or stale_key.startswith(target_prefix):
-                    try:
-                        self._content_repo.delete(stale.id)
-                    except Exception:  # noqa: BLE001 - 单条清理失败不中断
-                        logger.warning(
-                            "清理旧 ContentUnit 记录失败：id=%s path=%s",
-                            stale.id,
-                            stale.path,
-                        )
+            stale_units = self._content_repo.list_by_path_prefix_normalized(str(dst_folder))
         except Exception:  # noqa: BLE001 - 整体清理失败不阻塞，交由上层处理
             logger.exception("清理目标路径旧 ContentUnit 记录失败：path=%s", dst_folder)
+            return
+
+        for stale in stale_units:
+            if stale.id == current_unit_id:
+                continue  # 不删除当前要更新的 unit
+            try:
+                self._content_repo.delete(stale.id)
+            except Exception:  # noqa: BLE001 - 单条清理失败不中断
+                logger.warning(
+                    "清理旧 ContentUnit 记录失败：id=%s path=%s",
+                    stale.id,
+                    stale.path,
+                )
 
     def _sync_folder_cache(
         self, old_folder_path: Path, new_folder_path: Path, target_dir: Path
     ) -> None:
         """同步 folder_cache：删除旧节点 + 插入新节点 + 更新目标父目录 mtime。
 
-        与 ModGroupService 模式一致：folder_cache 写入失败不阻塞主流程，仅记日志。
-        确保目录树在 _refresh_tree 后立即显示新位置，无需重新扫描。
+        H2 修复（2026-07-17 Code Review）：原实现采用 ``except Exception: 吞异常``
+        的 best-effort 模式，但同步内部包含多步写操作（删除旧 → 插入新 → 更新父
+        mtime）。一旦中间步骤失败、异常被外层吞掉，MainWindow 随后调用 ``_commit``
+        会把这种"部分成功"的状态提交进数据库，导致目录树出现静默缺节点。
+
+        新契约：任一步失败立即抛出 ``FileOperationError``，由上层（MainWindow）
+        捕获后调用 ``_rollback`` 回滚整个事务。文件已移动但数据库回滚后，
+        ContentUnit.path 仍指向旧路径——下次重试时 move 会因源不存在而失败，
+        提示用户手动修正（不会死循环，与 cleanup→move→update 顺序设计一致）。
 
         Args:
             old_folder_path: 源 Mod 组文件夹路径（已移走）。
             new_folder_path: 目标路径（已存在）。
             target_dir: 目标分类目录（new_folder_path 的父目录）。
+
+        Raises:
+            FileOperationError: folder_cache 同步任一步失败。
         """
         if self._folder_cache_repo is None:
             return
-        try:
-            # 1. 删除旧路径的 folder_cache 记录
-            self._delete_folder_cache_by_path(old_folder_path)
+        # 不再吞异常：任一步失败立即抛出，让上层 rollback 保证事务一致性。
+        # 1. 删除旧路径的 folder_cache 记录
+        self._delete_folder_cache_by_path(old_folder_path)
 
-            # 2. 在目标目录下插入新路径的 folder_cache 记录
-            self._create_folder_cache_for_new_path(new_folder_path, target_dir)
+        # 2. 在目标目录下插入新路径的 folder_cache 记录
+        self._create_folder_cache_for_new_path(new_folder_path, target_dir)
 
-            # 3. 更新目标目录的 last_scanned_mtime（让下次扫描知道该目录变了）
-            self._update_parent_mtime(target_dir)
-        except Exception:  # noqa: BLE001 - folder_cache 同步失败不阻塞主流程
-            logger.exception(
-                "同步 folder_cache 失败：old=%s new=%s target=%s",
-                old_folder_path,
-                new_folder_path,
-                target_dir,
-            )
+        # 3. 更新目标目录的 last_scanned_mtime（让下次扫描知道该目录变了）
+        self._update_parent_mtime(target_dir)
 
     def _delete_folder_cache_by_path(self, folder_path: Path) -> None:
         """删除指定路径的 folder_cache 记录（按 path_key 归一化匹配）。"""

@@ -144,7 +144,7 @@
 
 ## 阶段 3：暂存区 + 整理工作流 ✅
 
-> 完成于 2026-07-17，版本 v0.20.0。
+> 完成于 2026-07-17，版本 v0.20.0；Code Review 收尾修复 v0.20.1。
 
 目标：实现从暂存区整理文件到分类目录的完整工作流。
 
@@ -278,6 +278,16 @@
 - [x] 用户在确认对话框点击「否」时不执行移动
 - [x] 每次成功操作写入 operation_history
 - [x] 中文路径（Mod 组名 + 目标目录名）正常工作
+
+### Code Review 收尾修复 ✅（v0.20.1，2026-07-17）
+
+> Stage 3 正式 Code Review 后的收尾修复，不新增功能。详见 [CHANGELOG.md](../CHANGELOG.md) v0.20.1 与 [technical-debt.md](technical-debt.md)。
+
+- [x] **TD-H7（H1）修复**：`list_by_path_prefix` 分隔符分歧漏匹配 → 新增 `list_by_path_prefix_normalized` 用 `make_path_key` 归一化比较，ContentService / QuickInsertService 所有调用点统一切换。
+- [x] **TD-H8（H2）修复**：folder_cache 同步"吞异常 + 上层 commit"导致部分提交态 → 改为抛 `FileOperationError` 触发上层 `_rollback`，保证事务一致性。
+- [x] **浏览模式双击导航 UI 状态保持修复**：`_on_entry_activated` 双击文件夹时同步 `tree_view` 选中节点，避免后续刷新逻辑误用陈旧的父目录节点导致中栏"退回"父目录。
+- [x] **Technical Debt 第三批整理**：新增 10 项 TD（TD-M21 ~ TD-M27、TD-L18 ~ TD-L20），均含编号、背景、影响范围、推荐修复方案、建议修复阶段。截至 v0.20.1，无阻塞 Stage 4 启动的 High 级别技术债。
+- [x] 测试：541 passed → 551 passed（+10：H1 回归 5 项 + H2 失败场景 2 项 + UI 状态保持 3 项）。
 
 ---
 

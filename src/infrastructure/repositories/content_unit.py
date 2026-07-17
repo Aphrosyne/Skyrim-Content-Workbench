@@ -11,6 +11,7 @@ import os
 import sqlite3
 
 from domain.models import ContentUnit
+from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.errors import (
     ConstraintViolationError,
     NotFoundError,
@@ -85,12 +86,11 @@ class ContentUnitRepository:
     def list_by_path_prefix(self, prefix: str) -> list[ContentUnit]:
         """返回 path 以 prefix 开头（含 prefix 自身）的 ContentUnit。
 
-        用于"目录下的内容单元"查询。prefix 应为目录路径（不含尾部分隔符）。
-        匹配规则：path == prefix OR path LIKE 'prefix{sep}%' ESCAPE '\\\\'。
-        使用 os.sep 构造 LIKE 模式，适配 Windows（反斜杠）与 Linux（正斜杠）。
-
-        LIKE 通配符（%、_、\\\\）在 prefix 和 sep 中会被转义，避免路径中的
-        特殊字符（如 my_mods 中的 _）被误认为通配符导致错误匹配（TD-H6 修复）。
+        .. deprecated:: TD-H7
+            该方法在 Windows 反斜杠路径下 broken：构造 LIKE 模式时每个 ``\\`` 被翻倍，
+            模式期望两个连续反斜杠，无法匹配真实子路径。新代码应改用
+            :meth:`list_by_path_prefix_normalized`。本方法保留仅为兼容已有调用点
+            与测试，待所有调用点迁移完成后删除。
         """
         sep = os.sep
         full_prefix = f"{prefix}{sep}"
@@ -105,6 +105,40 @@ class ContentUnitRepository:
         except sqlite3.Error as e:
             raise RepositoryError(f"无法列出 ContentUnit：{e}") from e
         return [self._row_to_model(r) for r in rows]
+
+    def list_by_path_prefix_normalized(self, prefix: str) -> list[ContentUnit]:
+        """返回 path 等于 prefix 或位于 prefix 子树下的 ContentUnit（含 prefix 自身）。
+
+        TD-H7 修复：原 :meth:`list_by_path_prefix` 在 Windows 反斜杠路径下 broken
+        （LIKE 转义让每个 ``\\`` 翻倍，模式期望两个连续反斜杠，无法匹配真实子路径）。
+        本方法用 ``make_path_key`` 归一化后做字符串前缀比较，符合 AGENTS 规则 9
+        （路径比较统一使用 ``make_path_key()``），跨平台一致。
+
+        匹配规则：
+            unit.path 归一化后 == prefix 归一化后
+            或 unit.path 归一化后以 ``{prefix}{sep}`` 开头（目录层级前缀，避免
+            "D:/Mods" 误匹配 "D:/Mods2"）。
+
+        Args:
+            prefix: 目录路径（不含尾部分隔符）。
+
+        Returns:
+            匹配的 ContentUnit 列表，按 path 排序。
+        """
+        target_key = make_path_key(prefix)
+        sep = os.sep
+        target_prefix = target_key.rstrip(sep) + sep
+        try:
+            rows = self._conn.execute("SELECT * FROM content_unit ORDER BY path").fetchall()
+        except sqlite3.Error as e:
+            raise RepositoryError(f"无法列出 ContentUnit：{e}") from e
+        result: list[ContentUnit] = []
+        for row in rows:
+            unit = self._row_to_model(row)
+            unit_key = make_path_key(unit.path)
+            if unit_key == target_key or unit_key.startswith(target_prefix):
+                result.append(unit)
+        return result
 
     def list_all(self) -> list[ContentUnit]:
         """返回全部 ContentUnit，按 path 排序。"""

@@ -616,3 +616,97 @@ def test_elide_applies_to_long_path(qapp, main_window_env) -> None:
         or "..." in path_line_display
         or "…" in path_line_display
     )
+
+
+# === 双击导航 selection 同步（2026-07-17 修复） ===
+
+
+def test_double_click_folder_syncs_tree_selection(qapp, main_window_env) -> None:
+    """浏览模式下双击中栏文件夹进入子目录 → 目录树选中节点应同步到该子目录。
+
+    2026-07-17 修复回归：原实现 _on_entry_activated 只刷新中栏，不更新
+    tree_view.selectionModel()，导致后续依赖该 selection 的刷新逻辑
+    （_refresh_content_list_for_current_mode）误用陈旧的父目录节点，
+    中栏"退回"父目录显示。
+    """
+    window, _, _ = main_window_env
+    _select_root(qapp, window)
+
+    # 双击"Weapons"文件夹进入子目录
+    weapons_idx = _find_entry_index(window, "Weapons")
+    window._on_entry_activated(window._content_list_model.index(weapons_idx, 0))  # noqa: SLF001
+    qapp.processEvents()
+
+    # 中栏应显示 DragonSword.rar（已进入 Weapons 目录）
+    found_dragon = False
+    for i in range(window.entry_count()):
+        entry = window.entry_at(i)
+        if entry is not None and entry.name == "DragonSword.rar":
+            found_dragon = True
+            break
+    assert found_dragon
+
+    # 关键回归点：目录树选中节点应已同步到 Weapons（而非仍停留在根目录 mods）
+    sm = window._tree_view.selectionModel()  # noqa: SLF001
+    assert sm is not None
+    indexes = sm.selectedIndexes()
+    assert len(indexes) >= 1
+    selected_node = window._tree_model.node_at(indexes[0])  # noqa: SLF001
+    assert selected_node is not None
+    assert selected_node.display_name == "Weapons"
+
+
+def test_mark_content_unit_after_double_click_keeps_current_dir(qapp, main_window_env) -> None:
+    """双击进入子目录后标记内容单元 → 中栏应保持当前目录，不退回父目录。
+
+    2026-07-17 修复的核心验收场景：用户报告"双击进入 Stash/MyMod1 →
+    右键 source.7z 标记 → 中栏刷新后自动退回 Stash"。根因是双击导航
+    未同步 tree_view selection，导致 _refresh_content_list_for_current_mode
+    从陈旧的 selection 拿到父目录节点。
+    """
+    window, _, _ = main_window_env
+    _select_root(qapp, window)
+
+    # 双击"Weapons"文件夹进入子目录
+    weapons_idx = _find_entry_index(window, "Weapons")
+    window._on_entry_activated(window._content_list_model.index(weapons_idx, 0))  # noqa: SLF001
+    qapp.processEvents()
+
+    # 确认已进入 Weapons 目录（中栏显示 DragonSword.rar）
+    assert any(
+        window.entry_at(i) is not None and window.entry_at(i).name == "DragonSword.rar"
+        for i in range(window.entry_count())
+    )
+
+    # 右键标记 DragonSword.rar 为内容单元
+    dragon_idx = _find_entry_index(window, "DragonSword.rar")
+    dragon_entry = window.entry_at(dragon_idx)
+    assert dragon_entry is not None
+    window._on_mark_content_unit(dragon_entry)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 关键回归断言：中栏仍应显示 DragonSword.rar（保持当前目录），
+    # 而非"退回"到 mods 根目录显示 Weapons/护甲/普通文件夹等条目。
+    entries_after_mark = [window.entry_at(i) for i in range(window.entry_count())]
+    names_after_mark = [e.name for e in entries_after_mark if e is not None]
+    assert "DragonSword.rar" in names_after_mark  # 仍位于 Weapons 目录内
+    # 不应出现根目录的兄弟条目（若退回父目录会出现）
+    assert "护甲" not in names_after_mark
+    assert "普通文件夹" not in names_after_mark
+    assert "散落文件.txt" not in names_after_mark
+
+
+def test_find_index_by_path_returns_invalid_for_unknown_path(
+    qapp, main_window_env, tmp_path: Path
+) -> None:
+    """find_index_by_path 对未在目录树中的路径返回无效 index。
+
+    覆盖 _on_entry_activated 的回退分支：未找到节点时记日志并手动刷新中栏。
+    """
+    window, _, _ = main_window_env
+    _select_root(qapp, window)
+
+    # 构造一个不在目录树中的路径（tmp_path 下的随机目录）
+    unknown_path = str(tmp_path / "nonexistent_in_tree")
+    idx = window._tree_model.find_index_by_path(window._tree_view, unknown_path)  # noqa: SLF001
+    assert not idx.isValid()

@@ -602,8 +602,25 @@ class MainWindow(QMainWindow):
         # 文件夹即使被标记为内容单元（如 Mod 组），双击也进入目录；
         # 元数据通过单击查看。
         if entry.is_dir and self._mode_manager.is_browse():
-            self._refresh_content_list(entry.path)
-            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+            # 同步目录树选中节点到当前浏览目录（2026-07-17 修复）：
+            # 原实现只刷新中栏，不更新 tree_view.selectionModel()，导致后续依赖
+            # 该 selection 的刷新逻辑（_refresh_content_list_for_current_mode /
+            # _refresh_content_list_after_scan / _refresh_content_for_current_tree_selection）
+            # 误用陈旧的选中节点，中栏在标记内容单元后"退回"父目录显示。
+            # 通过 find_index_by_path 找到对应节点并 setCurrentIndex，
+            # 触发 _on_tree_selection_changed 完成中栏刷新 + 详情区更新。
+            # 未找到节点时（如未扫描根目录的子项），回退到原保底逻辑手动刷新。
+            target_idx = self._tree_model.find_index_by_path(self._tree_view, entry.path)
+            if target_idx.isValid():
+                self._tree_view.setCurrentIndex(target_idx)
+                self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+            else:
+                logger.warning(
+                    "双击导航：未在目录树中找到匹配节点，回退到手动刷新：path=%s",
+                    entry.path,
+                )
+                self._refresh_content_list(entry.path)
+                self._set_metadata_text(ui.METADATA_NOT_SELECTED)
             return
 
         # 整理模式下双击 Mod 组文件夹 → 绑定装配面板

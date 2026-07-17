@@ -25,6 +25,7 @@ from PySide6.QtCore import QAbstractItemModel, QModelIndex, Qt
 
 from app import ui_constants as ui
 from application.folder_tree_service import FolderTreeService, TreeNode
+from infrastructure.path_utils import make_path_key
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +304,63 @@ class FolderTreeModel(QAbstractItemModel):
         for i in range(self.rowCount(index)):
             child_idx = self.index(i, 0, index)
             self._restore_expanded_recursive(view, child_idx, paths, selected_path)
+
+    def find_index_by_path(self, view, target_path: str) -> QModelIndex:
+        """按 real_path 查找节点的 QModelIndex。
+
+        2026-07-17 修复：浏览模式下双击中栏文件夹进入子目录时，
+        需要同步目录树选中节点。原实现 _on_entry_activated 只刷新中栏，
+        不更新 tree_view.selectionModel()，导致后续依赖该 selection 的
+        刷新逻辑（_refresh_content_list_for_current_mode /
+        _refresh_content_list_after_scan）误用陈旧的选中节点，中栏"退回"
+        父目录显示。
+
+        递归遍历已加载节点，匹配时用 make_path_key 归一化比较
+        （AGENTS 规则 9：路径比较统一使用 make_path_key，避免分隔符/
+        大小写差异导致漏匹配）。
+
+        Args:
+            view: QTreeView，用于在查找过程中触发 fetchMore 加载
+                尚未展开的子节点（与 restore_expanded_paths 一致）。
+            target_path: 目标节点的 real_path。
+
+        Returns:
+            匹配节点的 QModelIndex；未找到返回无效 QModelIndex。
+        """
+        target_key = make_path_key(target_path)
+        for i in range(self.rowCount(QModelIndex())):
+            root_idx = self.index(i, 0, QModelIndex())
+            found = self._find_index_recursive(view, root_idx, target_key)
+            if found.isValid():
+                return found
+        return QModelIndex()
+
+    def _find_index_recursive(
+        self,
+        view,
+        index: QModelIndex,
+        target_key: str,
+    ) -> QModelIndex:
+        """递归查找节点。匹配则返回 index，否则递归子节点。"""
+        if not index.isValid():
+            return QModelIndex()
+        node = self._node_at_index(index)
+        if node is None:
+            return QModelIndex()
+
+        if make_path_key(node.tree_node.real_path) == target_key:
+            return index
+
+        # 确保子节点已加载（与 _restore_expanded_recursive 一致）
+        if self.canFetchMore(index):
+            self.fetchMore(index)
+
+        for i in range(self.rowCount(index)):
+            child_idx = self.index(i, 0, index)
+            found = self._find_index_recursive(view, child_idx, target_key)
+            if found.isValid():
+                return found
+        return QModelIndex()
 
     # --- 测试接口 ---
 

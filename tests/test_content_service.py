@@ -889,3 +889,132 @@ class TestUnmarkContentUnit:
 
         with pytest.raises(ContentUnitNotFoundError):
             svc.unmark_content_unit("nonexistent-id")
+
+
+class TestListByPathPrefixNormalized:
+    """TD-H7 修复回归测试。
+
+    背景：原 ``list_by_path_prefix`` 用 SQL LIKE + ESCAPE，在"分隔符分歧"场景下
+    失败——当数据库中存储的路径与查询路径的分隔符不一致时（部分用 ``/``，
+    部分用 ``\\``），LIKE 无法匹配，导致子路径记录被漏掉。
+
+    注意：经验证，原方法在"同分隔符"路径下（Windows 均反斜杠）实际能正常工作
+    （``ESCAPE '\\'`` 让 ``\\\\`` 匹配单个反斜杠）。TD-H7 描述的"LIKE 翻倍导致
+    broken"机制不准确，真正的失败场景是分隔符分歧。本测试覆盖该场景。
+    """
+
+    def test_separator_divergence_returns_children(
+        self, repo: ContentUnitRepository, tmp_path: Path
+    ) -> None:
+        """分隔符分歧：DB 存正斜杠路径，查询用反斜杠路径，仍应返回子项。
+
+        场景：FileScanner 或外部导入可能存入正斜杠路径，而 service 层用
+        ``str(Path(...))``（Windows 给反斜杠）查询。原 LIKE 方法在此场景
+        返回空，``mark_as_content_unit`` 的子项取消逻辑静默失效。
+        """
+        folder = tmp_path / "ModGroup"
+        child = folder / "mod.7z"
+        # DB 存正斜杠形式
+        posix_child = str(child).replace("\\", "/")
+        repo.create(_make_unit("c1", posix_child, title="child"))
+
+        # 用反斜杠查询（Windows 原生 str(Path)）
+        result = repo.list_by_path_prefix_normalized(str(folder))
+
+        assert len(result) == 1
+        assert result[0].id == "c1"
+
+    def test_separator_divergence_old_method_returns_empty(
+        self, repo: ContentUnitRepository, tmp_path: Path
+    ) -> None:
+        """对照测试：原 ``list_by_path_prefix`` 在分隔符分歧下确实返回空。
+
+        本测试固化"原方法在此场景失败"的事实，作为 TD-H7 修复必要性的证据。
+        若未来有人质疑修复必要性，本测试可复现原 bug。一旦旧方法被删除，
+        本测试可一并删除。
+        """
+        folder = tmp_path / "ModGroup"
+        child = folder / "mod.7z"
+        posix_child = str(child).replace("\\", "/")
+        repo.create(_make_unit("c1", posix_child, title="child"))
+
+        result = repo.list_by_path_prefix(str(folder))
+        assert len(result) == 0  # 原 broken 行为
+
+    def test_same_separator_returns_children(
+        self, repo: ContentUnitRepository, tmp_path: Path
+    ) -> None:
+        """同分隔符（Windows 均反斜杠）：新方法与原方法行为一致。"""
+        folder = tmp_path / "ModGroup"
+        child = folder / "mod.7z"
+        repo.create(_make_unit("c1", str(child), title="child"))
+
+        result = repo.list_by_path_prefix_normalized(str(folder))
+        assert len(result) == 1
+        assert result[0].id == "c1"
+
+    def test_excludes_sibling_directory(self, repo: ContentUnitRepository, tmp_path: Path) -> None:
+        """目录层级前缀匹配：不误匹配同名前缀的兄弟目录。
+
+        例：查询 "D:/Mods" 不应匹配 "D:/Mods2" 下的记录。
+        """
+        mods = tmp_path / "Mods"
+        mods2 = tmp_path / "Mods2"
+        repo.create(_make_unit("u1", str(mods / "armor.7z"), title="armor"))
+        repo.create(_make_unit("u2", str(mods2 / "other.7z"), title="other"))
+
+        result = repo.list_by_path_prefix_normalized(str(mods))
+        assert len(result) == 1
+        assert result[0].id == "u1"
+
+    def test_mark_folder_cancels_children_with_separator_divergence(
+        self, db_connection: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """spec §5.4 回归：分隔符分歧下标记父文件夹仍应取消子项标记。
+
+        场景：子压缩包 ContentUnit 的 path 以正斜杠存入 DB（模拟扫描器或
+        外部导入的路径格式），用户在 UI 用反斜杠路径标记父文件夹。
+        原 ``list_by_path_prefix`` 返回空 → 子项未被取消 → 父子同时标记，
+        违反 spec §5.4。新方法通过 ``make_path_key`` 归一化正确匹配。
+        """
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        # 子项 ContentUnit 手动创建（不经过 provider），故 iter 只需为
+        # 父文件夹预留一个 uuid。注意：若 uuid 与子项 id 相同，子项被删除后
+        # 父文件夹会复用该 id，导致 get_by_id 断言失效（id 重用而非"未删除"）。
+        uuid_iter = iter(["uuid-folder"])
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-14T00:00:00Z",
+            uuid_provider=lambda: next(uuid_iter),
+        )
+        folder = tmp_path / "ModGroup"
+        folder.mkdir()
+        child_file = folder / "mod.7z"
+        child_file.write_bytes(b"data")
+
+        # 手动插入子项 ContentUnit，path 用正斜杠形式（模拟分隔符分歧）
+        posix_child_path = str(child_file).replace("\\", "/")
+        repo_obj = ContentUnitRepository(db_connection)
+        repo_obj.create(
+            ContentUnit(
+                id="stale-child-sep-divergence",
+                path=posix_child_path,
+                title="child",
+                content_type="mod",
+                status="unorganized",
+                created_at="2026-07-14T00:00:00Z",
+                updated_at="2026-07-14T00:00:00Z",
+            )
+        )
+        db_connection.commit()
+
+        # 标记父文件夹（用反斜杠路径）
+        folder_unit = svc.mark_as_content_unit(folder)
+
+        # 子项 ContentUnit 应被删除（spec §5.4）
+        assert repo_obj.get_by_id("stale-child-sep-divergence") is None
+        # 父文件夹 ContentUnit 应存在，且 id 不同（uuid-folder）
+        assert repo_obj.get_by_id(folder_unit.id) is not None
+        assert folder_unit.id == "uuid-folder"

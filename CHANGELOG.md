@@ -8,6 +8,62 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### 2026-07-17 阶段 3 收尾：Code Review High 级修复 + UI 状态保持修复 (v0.20.1)
+
+Stage 3 正式 Code Review 后的收尾修复，不新增功能。修复两个阻塞 Stage 4 启动的 High 级技术债（TD-H7 / TD-H8），以及用户验收发现的浏览模式 UI 状态保持 bug。完成 Technical Debt 第三批整理。
+
+**修复 1（TD-H7，H1）：路径前缀查询收敛为 normalized 接口**
+
+- **根因更正**：原 TD-H7 描述"LIKE 翻倍导致 Windows 反斜杠路径下 broken"在机制上不准确。经实测验证：原 `list_by_path_prefix` 用 `LIKE ... ESCAPE '\'`，`\\` 在模式中匹配单个字面反斜杠，因此**同分隔符路径下（Windows 均反斜杠）实际能正常工作**。真正的失败场景是**分隔符分歧**——当数据库存储的路径与查询路径分隔符不一致时（如 FileScanner 存正斜杠、service 传反斜杠），LIKE 无法匹配，子路径记录被漏掉。
+- **影响**：`ContentService.mark_as_content_unit` 的子项取消逻辑（spec §5.4）在分隔符分歧下静默失效；`list_staging_entries` 批量预查漏掉子项；`list_by_directory` / `list_direct_children` 同样受影响。
+- **修复**：新增 `ContentUnitRepository.list_by_path_prefix_normalized`，用 `make_path_key` 归一化后做字符串前缀比较，跨平台一致。`ContentService` 所有调用点（`list_by_directory` / `list_direct_children` / `mark_as_content_unit` / `list_staging_entries`）及 `QuickInsertService._cleanup_stale_content_units` 统一切换到新接口，消除 service 层散落的 `list_all + make_path_key` 绕行方案。原 `list_by_path_prefix` 标记 deprecated 保留（TD-L20 跟踪删除）。
+
+**修复 2（TD-H8，H2）：folder_cache 同步事务一致性**
+
+- **根因**：`QuickInsertService._sync_folder_cache` 和 `ModGroupService.create_mod_group` 步骤 1b 用 `except Exception: logger.exception(...)` 吞掉 folder_cache 同步中的所有异常，但同步内部包含多步写操作（删除旧 → 插入新 → 更新父 mtime）。一旦中间步骤失败、异常被外层吞掉，MainWindow 随后调用 `_commit` 会把"删除旧记录成功 + 插入新记录失败"的部分提交态持久化进数据库，导致目录树出现静默缺节点，且无错误提示给用户。
+- **修复**：
+  - `QuickInsertService._sync_folder_cache` 不再吞异常，任一步失败立即抛出 `FileOperationError`，由上层（MainWindow `_on_quick_insert_clicked`）捕获后调用 `_rollback` 回滚整个事务。
+  - `ModGroupService.create_mod_group` 步骤 1b 同样改为抛出异常，并在抛出前调用 `_try_cleanup_empty_folder` 清理已创建的空文件夹。
+  - MainWindow 已有的 `except FileOperationError: self._rollback()` 分支无需修改即可正确处理新行为。
+
+**修复 3：浏览模式双击导航 UI 状态保持**
+
+- **现象**：浏览模式下双击中栏文件夹进入子目录（如 `Stash/MyMod1`），右键标记 `source.7z` 为内容单元后，中栏刷新时"退回"到父目录 `Stash` 的内容显示。
+- **根因**：`_on_entry_activated` 双击文件夹导航时只刷新中栏，**没有同步 `tree_view.selectionModel()`**。后续 `_refresh_content_list_for_current_mode`（标记内容单元后调用）、`_refresh_content_list_after_scan`（扫描完成后）、`_refresh_content_for_current_tree_selection`（切回浏览模式时）都依赖 `tree_view.selectionModel()` 推断"当前浏览目录"，因此会误用陈旧的父目录节点。MainWindow 没有显式的"当前浏览目录"状态变量，而是隐式依赖 `tree_view.selectionModel()`——这个隐式契约被双击导航逻辑违反。
+- **修复**：
+  - `FolderTreeModel` 新增 `find_index_by_path(view, target_path) -> QModelIndex`：按 `real_path` 递归查找节点，过程中触发 `fetchMore` 加载未展开的子节点，用 `make_path_key` 归一化比较（AGENTS 规则 9）。
+  - `_on_entry_activated` 双击文件夹时，先调用 `find_index_by_path` 找到目标节点的 QModelIndex；找到则 `setCurrentIndex` 同步目录树选中（触发 `_on_tree_selection_changed` 完成中栏刷新 + 详情区更新）；未找到则记 warning 日志并回退到原手动刷新逻辑（保底处理未扫描根目录的子项等边界场景）。
+
+**Technical Debt 第三批整理（Stage 3 Code Review 2026-07-17 确认暂缓）**
+
+新增 10 项 TD（TD-M21 ~ TD-M27、TD-L18 ~ TD-L20），均含编号、背景、影响范围、推荐修复方案、建议修复阶段。重点项：
+- TD-M21（MainWindow God Object 趋势，1570 行 / 76 方法，Stage 4 中期拆分）
+- TD-M22（folder_cache 同步辅助逻辑在多 Service 中重复，Stage 5 前收敛）
+- TD-M25（多处 except Exception 吞掉编程错误，Stage 4 中期收窄）
+- TD-L20（旧 `list_by_path_prefix` deprecated 保留待删除，Stage 4 中期）
+
+截至 v0.20.1，**无阻塞 Stage 4 启动的 High 级别技术债**。
+
+#### Changed
+
+- [src/infrastructure/repositories/content_unit.py](src/infrastructure/repositories/content_unit.py)：新增 `list_by_path_prefix_normalized` 方法；原 `list_by_path_prefix` 标记 deprecated。
+- [src/application/content_service.py](src/application/content_service.py)：4 处调用点（`list_by_directory` / `list_direct_children` / `mark_as_content_unit` 子项取消 / `list_staging_entries` 批量预查）统一切换到 `list_by_path_prefix_normalized`。
+- [src/application/quick_insert_service.py](src/application/quick_insert_service.py)：`_cleanup_stale_content_units` 改用新接口（移除 service 层散落的 `list_all + make_path_key` 绕行方案）；`_sync_folder_cache` 不再吞异常；`quick_insert` 调用 `_sync_folder_cache` 处用 try/except 包裹，失败时包装为 `FileOperationError` 抛出。
+- [src/application/mod_group_service.py](src/application/mod_group_service.py)：`create_mod_group` 步骤 1b folder_cache 写入失败时改为抛 `FileOperationError`，并在抛出前调用 `_try_cleanup_empty_folder` 清理已创建的空文件夹。
+- [src/app/folder_tree_model.py](src/app/folder_tree_model.py)：新增 `find_index_by_path` / `_find_index_recursive` 方法。
+- [src/app/main_window.py](src/app/main_window.py)：`_on_entry_activated` 双击文件夹导航时同步目录树选中节点。
+
+#### Tests
+
+- 测试数量变化：541 passed → 551 passed（+10）。
+- [tests/test_content_service.py](tests/test_content_service.py) 新增 `TestListByPathPrefixNormalized` 共 5 项：分隔符分歧下返回子项 / 对照测试（原方法在分隔符分歧下返回空）/ 同分隔符返回子项 / 兄弟目录排除 / `mark_as_content_unit` 子项取消分隔符分歧场景。
+- [tests/test_quick_insert_service.py](tests/test_quick_insert_service.py) 新增 2 项 H2 失败场景测试：`test_quick_insert_sync_folder_cache_failure_rolls_back_transaction` / `test_mod_group_create_folder_cache_failure_rolls_back`，用 `_FlakyFolderCacheRepository` 模拟插入失败，验证事务回滚 + 数据库一致性。
+- [tests/test_main_window_content.py](tests/test_main_window_content.py) 新增 3 项 UI 状态保持测试：`test_double_click_folder_syncs_tree_selection` / `test_mark_content_unit_after_double_click_keeps_current_dir`（核心回归）/ `test_find_index_by_path_returns_invalid_for_unknown_path`。
+
+#### Docs
+
+- [docs/technical-debt.md](docs/technical-debt.md)：标记 TD-H7 / TD-H8 为已修复（v0.20.1）；新增第三批 TD（TD-M21 ~ TD-M27、TD-L18 ~ TD-L20）；重写"处理优先级建议"章节为 6 档优先级清单。
+
 ### 2026-07-17 阶段 3 Task 5：快速插入 (v0.20.0)
 
 实现整理模式下的「快速插入」功能：将当前装配面板绑定的 Mod 组文件夹整体移动到目录树中选中的目标分类目录。完成阶段 3 全部 Task。
