@@ -4,6 +4,7 @@
 > 第一批已修复：C1-C4、H2、H5、H6、M8、M12（详见 CHANGELOG v0.15.0）。
 > 第二批已修复：TD-H4、TD-H5、TD-H6（详见 CHANGELOG v0.15.1）。
 > 第三批已修复：TD-H7（收敛为 normalized 接口）、TD-H8（folder_cache 同步事务一致性）。
+> 第四批已修复：TD-M25（application 层 except Exception 收窄）、TD-L20（删除旧 list_by_path_prefix）。
 > 以下问题按严重级别排列，将在阶段 3 及后续迭代中逐步处理。
 
 ---
@@ -370,19 +371,22 @@
 - **建议修复阶段**: **Stage 4 后**（非阻塞，但建议在 Stage 5 错误提示
   体系统一时一并处理）。
 
-### TD-M25: 多处 except Exception 吞掉编程错误
+### TD-M25: 多处 except Exception 吞掉编程错误 ✅ 已修复（Stage 4 Task 0）
 
-- **位置**: [content_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/content_service.py) 第 184/286/340 行 / [scan_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/scan_service.py) 第 219 行 / [quick_insert_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/quick_insert_service.py) 第 136/178 行 等
+- **位置**: [content_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/content_service.py) / [scan_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/scan_service.py) / [quick_insert_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/quick_insert_service.py) / [mod_group_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/mod_group_service.py) / [assembly_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/assembly_service.py)
 - **背景**: 多处 `except Exception: # noqa: BLE001` 会吞掉 `TypeError` /
   `AttributeError` / `KeyError` 等编程错误，让 bug 以"日志里一条 traceback
   + 用户看到功能异常"的形式存在，而不是"快速失败暴露问题"。
 - **影响范围**: Stage 4 加标签 / 评分时，如果 dataclass 字段拼错导致
   `TypeError`，会被这类 except 吞掉，表现为"标签偶尔加不上"，极难定位。
-- **推荐修复方案**: 区分"预期外部错误"（`sqlite3.Error` / `OSError`）和
-  "编程错误"（其他）。预期错误用具体异常类型捕获并降级；编程错误让它在
-  开发期直接抛出。
-- **建议修复阶段**: **Stage 4 中期**（在加标签/评分功能前收窄异常捕获，
-  避免新功能的编程错误被静默吞掉）。
+- **修复（Stage 4 Task 0）**: 区分"预期外部错误"和"编程错误"。application
+  层 service 中的 14 处 `except Exception` 收窄为具体异常类型：
+  - 数据库相关：`(RepositoryError, sqlite3.Error)`
+  - 文件系统相关：附加 `OSError`
+  - 应用层错误（service 间调用）：附加 `ApplicationError` / `FileOperationError`
+  - UI 边界 / Qt worker / QAbstractItemModel 边界保留宽捕获（防止进程崩溃，
+    这是合理的防御性编程）。
+  编程错误（`TypeError` / `AttributeError` 等）现在会在开发期直接冒泡暴露。
 
 ### TD-M26: MainWindow 信号槽 / 状态同步 / 扫描线程生命周期无集成测试
 
@@ -436,17 +440,25 @@
   或在 Stage 3 期间将该字段默认设为 False，Stage 5 实现时再改 True。
 - **建议修复阶段**: **Stage 5**（undo 实现时）。
 
-### TD-L20: list_by_path_prefix（旧 broken 方法）保留待删除
+### TD-L20: list_by_path_prefix（旧 broken 方法）保留待删除 ✅ 已修复（Stage 4 Task 0）
 
 - **位置**: [content_unit.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/repositories/content_unit.py) `list_by_path_prefix`
 - **背景**: TD-H7 修复新增 `list_by_path_prefix_normalized`，但旧的
   `list_by_path_prefix`（LIKE + ESCAPE，分隔符分歧下 broken）保留为
-  deprecated，因为有测试直接调用它（`test_content_service.py::TestListByPathPrefix`
-  及 `TestListByPathPrefixNormalized::test_separator_divergence_old_method_returns_empty`
+  deprecated，因为有测试直接调用它（`test_content_unit_repository.py::TestListByPathPrefix`
+  及 `test_content_service.py::TestListByPathPrefixNormalized::test_separator_divergence_old_method_returns_empty`
   对照测试）。
 - **影响范围**: 旧方法若被新代码误用会重现分隔符分歧 bug。
-- **推荐修复方案**: 检查所有调用点迁移完成后，删除旧方法及其对照测试。
-- **建议修复阶段**: **Stage 4 中期**（确认无外部调用后删除）。
+- **修复（Stage 4 Task 0）**: 确认 v0.20.1 后生产代码已全部迁移到
+  `list_by_path_prefix_normalized`，无外部调用。删除：
+  - `ContentUnitRepository.list_by_path_prefix` 方法（content_unit.py）
+  - `TestListByPathPrefix` 测试类（test_content_unit_repository.py，4 项测试）
+  - `test_separator_divergence_old_method_returns_empty` 对照测试
+    （test_content_service.py，1 项）
+  - test_content_unit_repository.py 中 `from pathlib import Path` 不再需要
+    （仅旧 TestListByPathPrefix 使用 Path 构造跨平台路径），已删除。
+  - 各 service 的 docstring 中"原 list_by_path_prefix broken"表述更新为
+    "原方法已删除，统一使用 normalized 接口"。
 
 ---
 
@@ -466,11 +478,11 @@
    - TD-H2（扫描事务边界）
    - TD-M17（连接泄漏，影响测试稳定性）
 
-4. **阶段 4 中期建议处理**（与 Stage 4 新功能同步进行，避免新代码堆进旧结构）：
+4. ~~**阶段 4 中期建议处理**~~（部分已修复）：
    - TD-M21（MainWindow God Object 拆分，加搜索/标签 UI 前先拆分）
-   - TD-M25（except Exception 吞掉编程错误，加标签/评分功能前收窄）
+   - ~~TD-M25（except Exception 吞掉编程错误，加标签/评分功能前收窄）~~ ✅ 已修复（Stage 4 Task 0）
    - TD-M26（MainWindow 集成测试，与拆分同步进行）
-   - TD-L20（删除旧 list_by_path_prefix，确认无外部调用后）
+   - ~~TD-L20（删除旧 list_by_path_prefix，确认无外部调用后）~~ ✅ 已修复（Stage 4 Task 0）
 
 5. **Stage 5 前/Stage 5 中处理**（undo 实现相关，必须在反向同步逻辑落地前收敛）：
    - TD-M22（folder_cache 同步辅助逻辑抽公共 helper，避免 undo 路径复制粘贴 4 份）

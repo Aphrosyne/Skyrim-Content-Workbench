@@ -19,6 +19,7 @@ ScanService 通过 Repository 写入应用数据库。
 from __future__ import annotations
 
 import logging
+import sqlite3
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ from domain.models import ContentUnit, FolderCache, ManagedRoot
 from infrastructure.file_scanner import FileScanner, ScanResult
 from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.content_unit import ContentUnitRepository
+from infrastructure.repositories.errors import RepositoryError
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
 
@@ -228,7 +230,7 @@ class ScanService:
                 self._content_unit_repo.create(unit)
                 existing_cu_paths.add(make_path_key(unit.path))
                 new_units_count += 1
-            except Exception:  # noqa: BLE001 - 单个内容单元创建失败不中断整体流程
+            except (RepositoryError, sqlite3.Error):  # noqa: BLE001 - 单个内容单元创建失败不中断整体流程
                 logger.exception("无法创建 ContentUnit: %s", unit.path)
                 summary.errors.append(f"{unit.path}: 无法创建内容单元")
 
@@ -314,5 +316,5 @@ class ScanService:
         for fc in to_delete:
             try:
                 self._folder_cache_repo.delete(fc.id)
-            except Exception:  # noqa: BLE001 - 单条删除失败不中断整体流程
+            except (RepositoryError, sqlite3.Error):  # noqa: BLE001 - 单条删除失败不中断整体流程
                 logger.warning("清理已删除目录的 folder_cache 记录失败：path=%s", fc.path)

@@ -1,12 +1,11 @@
 """ContentUnitRepository 测试。
 
-覆盖 CRUD、path 唯一约束、中文路径、list_by_path_prefix。
+覆盖 CRUD、path 唯一约束、中文路径、list_by_path_prefix_normalized。
 """
 
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 
 import pytest
 
@@ -78,75 +77,6 @@ class TestPathUniqueConstraint:
         repo.create(_make_unit(unit_id="u-1", path="/mods/a"))
         with pytest.raises(ConstraintViolationError):
             repo.create(_make_unit(unit_id="u-1", path="/mods/b"))
-
-
-class TestListByPathPrefix:
-    def test_list_by_path_prefix_includes_self_and_children(
-        self, repo: ContentUnitRepository
-    ) -> None:
-        # 使用 str(Path(...)) 构造路径，适配 OS 分隔符
-        mods = str(Path("/mods"))
-        armor = str(Path("/mods/armor"))
-        armor_sub = str(Path("/mods/armor/sub"))
-        other = str(Path("/other"))
-        repo.create(_make_unit(unit_id="u-1", path=mods))
-        repo.create(_make_unit(unit_id="u-2", path=armor))
-        repo.create(_make_unit(unit_id="u-3", path=armor_sub))
-        repo.create(_make_unit(unit_id="u-4", path=other))
-
-        result = repo.list_by_path_prefix(mods)
-        paths = {u.path for u in result}
-        assert mods in paths
-        assert armor in paths
-        assert armor_sub in paths
-        assert other not in paths
-
-    def test_list_by_path_prefix_empty(self, repo: ContentUnitRepository) -> None:
-        result = repo.list_by_path_prefix(str(Path("/nonexistent")))
-        assert result == []
-
-    def test_list_by_path_prefix_underscore_not_treated_as_wildcard(
-        self, repo: ContentUnitRepository
-    ) -> None:
-        """路径中的 _ 不应被 LIKE 解释为单字符通配符（TD-H6）。
-
-        构造两个仅 _ 位置字符不同的目录：my_mods / myxmods。
-        若未转义，查询 my_mods 会错误匹配 myxmods。
-        """
-        mods_with_underscore = str(Path("/mods/my_mods"))
-        mods_with_x = str(Path("/mods/myxmods"))
-        mods_parent = str(Path("/mods"))
-        repo.create(_make_unit(unit_id="u-1", path=str(Path("/mods/my_mods/sub.7z"))))
-        repo.create(_make_unit(unit_id="u-2", path=str(Path("/mods/myxmods/other.7z"))))
-
-        result = repo.list_by_path_prefix(mods_with_underscore)
-        paths = {u.path for u in result}
-        assert str(Path("/mods/my_mods/sub.7z")) in paths
-        assert str(Path("/mods/myxmods/other.7z")) not in paths
-
-        # 反向验证：查询 myxmods 不应匹配 my_mods
-        result_x = repo.list_by_path_prefix(mods_with_x)
-        paths_x = {u.path for u in result_x}
-        assert str(Path("/mods/myxmods/other.7z")) in paths_x
-        assert str(Path("/mods/my_mods/sub.7z")) not in paths_x
-
-        # 验证父目录查询仍能返回两者
-        result_parent = repo.list_by_path_prefix(mods_parent)
-        paths_parent = {u.path for u in result_parent}
-        assert len(paths_parent) == 2
-
-    def test_list_by_path_prefix_percent_not_treated_as_wildcard(
-        self, repo: ContentUnitRepository
-    ) -> None:
-        """路径中的 % 不应被 LIKE 解释为任意字符串通配符（TD-H6）。"""
-        mods_with_percent = str(Path("/mods/100%_pack"))
-        repo.create(_make_unit(unit_id="u-1", path=str(Path("/mods/100%_pack/mod.7z"))))
-        repo.create(_make_unit(unit_id="u-2", path=str(Path("/mods/other/mod.7z"))))
-
-        result = repo.list_by_path_prefix(mods_with_percent)
-        paths = {u.path for u in result}
-        assert str(Path("/mods/100%_pack/mod.7z")) in paths
-        assert str(Path("/mods/other/mod.7z")) not in paths
 
 
 class TestListAll:

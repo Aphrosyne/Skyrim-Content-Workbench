@@ -8,6 +8,49 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### 2026-07-18 阶段 4 Task 0：技术债清理（TD-M25 + TD-L20）
+
+Stage 4 功能开发前的前置清理，不新增功能，不修改业务行为。完成 Technical Debt 第四批修复。
+
+**修复 1（TD-M25）：收窄 application 层 `except Exception`**
+
+- **背景**：多处 `except Exception: # noqa: BLE001` 会吞掉 `TypeError` / `AttributeError` / `KeyError` 等编程错误，让 bug 以"日志里一条 traceback + 用户看到功能异常"的形式存在，而不是"快速失败暴露问题"。Stage 4 加标签 / 评分功能时，dataclass 字段拼错导致的 `TypeError` 会被静默吞掉，极难定位。
+- **修复**：application 层 service（content_service / scan_service / quick_insert_service / mod_group_service / assembly_service）中的 14 处 `except Exception` 收窄为具体异常类型：
+  - 数据库相关：`(RepositoryError, sqlite3.Error)`
+  - 文件系统相关：附加 `OSError`
+  - 应用层错误（service 间调用）：附加 `ApplicationError` / `FileOperationError`
+  - UI 边界 / Qt worker / QAbstractItemModel 边界保留宽捕获（防止进程崩溃，合理的防御性编程）。
+- 编程错误（`TypeError` / `AttributeError` 等）现在会在开发期直接冒泡暴露。
+
+**修复 2（TD-L20）：删除旧 `list_by_path_prefix` 方法**
+
+- **背景**：TD-H7（v0.20.1）修复新增 `list_by_path_prefix_normalized`，但旧的 `list_by_path_prefix`（LIKE + ESCAPE，分隔符分歧下 broken）保留为 deprecated。旧方法若被新代码误用会重现分隔符分歧 bug。
+- **修复**：确认 v0.20.1 后生产代码已全部迁移到 `list_by_path_prefix_normalized`，无外部调用。删除：
+  - `ContentUnitRepository.list_by_path_prefix` 方法（content_unit.py）
+  - `TestListByPathPrefix` 测试类（test_content_unit_repository.py，4 项测试）
+  - `test_separator_divergence_old_method_returns_empty` 对照测试（test_content_service.py，1 项）
+  - test_content_unit_repository.py 中 `from pathlib import Path` 不再需要，已删除。
+  - 各 service 的 docstring 中"原 list_by_path_prefix broken"表述更新为"原方法已删除，统一使用 normalized 接口"。
+
+**测试调整**
+
+- `tests/test_quick_insert_service.py`：`_FlakyFolderCacheRepository.create` 的 `RuntimeError` 改为 `RepositoryError`，更准确地模拟生产环境异常，避免 TD-M25 收窄后被错误地视为编程错误冒泡。
+
+**测试结果**：551 passed → 546 passed（-5：TD-L20 移除对照测试 5 项），3 skipped。
+
+#### Changed
+
+- [src/application/content_service.py](src/application/content_service.py)：3 处 `except Exception` 收窄为 `(RepositoryError, sqlite3.Error)`；docstring 中 `list_by_path_prefix` 表述更新为 normalized 接口。
+- [src/application/scan_service.py](src/application/scan_service.py)：2 处 `except Exception` 收窄为 `(RepositoryError, sqlite3.Error)`。
+- [src/application/quick_insert_service.py](src/application/quick_insert_service.py)：4 处 `except Exception` 收窄为 `(RepositoryError, sqlite3.Error)`；docstring 表述更新。
+- [src/application/mod_group_service.py](src/application/mod_group_service.py)：4 处 `except Exception` 收窄为 `(RepositoryError, sqlite3.Error, OSError, ApplicationError, FileOperationError)`。
+- [src/application/assembly_service.py](src/application/assembly_service.py)：1 处 `except Exception` 收窄为 `(RepositoryError, sqlite3.Error, OSError)`。
+- [src/infrastructure/repositories/content_unit.py](src/infrastructure/repositories/content_unit.py)：删除 `list_by_path_prefix` 方法。
+- [tests/test_content_unit_repository.py](tests/test_content_unit_repository.py)：删除 `TestListByPathPrefix` 测试类（4 项），移除未使用的 `from pathlib import Path`。
+- [tests/test_content_service.py](tests/test_content_service.py)：删除 `test_separator_divergence_old_method_returns_empty` 对照测试（1 项）。
+- [tests/test_quick_insert_service.py](tests/test_quick_insert_service.py)：`_FlakyFolderCacheRepository.create` 异常类型改为 `RepositoryError`。
+- [docs/technical-debt.md](docs/technical-debt.md)：标记 TD-M25 / TD-L20 为已修复，新增第四批已修复批次说明，更新处理优先级建议。
+
 ### 2026-07-17 阶段 3 收尾：Code Review High 级修复 + UI 状态保持修复 (v0.20.1)
 
 Stage 3 正式 Code Review 后的收尾修复，不新增功能。修复两个阻塞 Stage 4 启动的 High 级技术债（TD-H7 / TD-H8），以及用户验收发现的浏览模式 UI 状态保持 bug。完成 Technical Debt 第三批整理。

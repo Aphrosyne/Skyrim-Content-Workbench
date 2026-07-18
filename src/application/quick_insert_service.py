@@ -7,8 +7,8 @@
 2. 目标路径 = target_dir / mod_folder.name。
 3. **先清理**目标路径下的旧 ContentUnit 记录（避免 update 时 UNIQUE 冲突）。
    清理在 move 之前，此时文件系统状态干净，若清理失败可安全 rollback。
-   使用 ContentUnitRepository.list_by_path_prefix_normalized（TD-H7 修复：
-   原 list_by_path_prefix 在 Windows 反斜杠路径下 broken）。
+   使用 ContentUnitRepository.list_by_path_prefix_normalized（归一化接口，
+   原 list_by_path_prefix 已在 TD-L20 清理中删除）。
 4. 调用 FileOperationService.move 执行移动（含跨盘/子目录/冲突检测）。
 5. 更新 ContentUnit.path 指向新路径。
 6. 同步 folder_cache（与 ModGroupService 模式一致）：
@@ -48,6 +48,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from pathlib import Path
 
 from application.errors import ContentUnitNotFoundError, FileOperationError
@@ -55,6 +56,7 @@ from domain.models import ContentUnit, FolderCache
 from infrastructure.file_operation_service import FileOperationService
 from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.content_unit import ContentUnitRepository
+from infrastructure.repositories.errors import RepositoryError
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 
 logger = logging.getLogger(__name__)
@@ -135,7 +137,7 @@ class QuickInsertService:
         )
         try:
             self._content_repo.update(updated_unit)
-        except Exception as e:  # noqa: BLE001
+        except (RepositoryError, sqlite3.Error) as e:
             # 文件已移动但 ContentUnit 更新失败：记日志，抛异常让上层 rollback 释放写锁。
             # 注意：rollback 会回滚步骤 1 的 cleanup，旧记录复活，但因文件已移动，
             # 下次重试时 move 会因源不存在而失败（不会死循环）。
@@ -152,7 +154,7 @@ class QuickInsertService:
         # H2 修复：同步失败不再吞异常，立即抛出让上层 rollback 保证事务一致性。
         try:
             self._sync_folder_cache(src_folder, dst_folder, target_dir)
-        except Exception as sync_err:  # noqa: BLE001
+        except (RepositoryError, sqlite3.Error) as sync_err:
             # 文件已移动 + ContentUnit.path 已更新，但 folder_cache 同步失败：
             # 抛出 FileOperationError 让上层 rollback。rollback 会回滚 ContentUnit.path
             # 更新与 cleanup（旧记录复活）。文件已移动无法回滚，下次重试 move 会因
@@ -170,9 +172,10 @@ class QuickInsertService:
         """清理目标路径下的旧 ContentUnit 记录（避免 update 时 UNIQUE 约束冲突）。
 
         TD-H7 修复收敛：原实现用 list_all + make_path_key 在 service 层内做归一化
-        比较以绕开 broken 的 list_by_path_prefix。现已将该归一化查询下沉到
+        比较以绕开 broken 的旧 list_by_path_prefix。现已将该归一化查询下沉到
         ContentUnitRepository.list_by_path_prefix_normalized，service 层直接调用，
-        避免该规避方案散落在多个 service 中。
+        避免该规避方案散落在多个 service 中（旧 list_by_path_prefix 已在 TD-L20
+        清理中删除）。
 
         清理范围：dst_folder 自身 + 其所有子路径。
         排除当前 unit（current_unit_id），因为后续要更新它的 path。
@@ -181,7 +184,7 @@ class QuickInsertService:
         """
         try:
             stale_units = self._content_repo.list_by_path_prefix_normalized(str(dst_folder))
-        except Exception:  # noqa: BLE001 - 整体清理失败不阻塞，交由上层处理
+        except (RepositoryError, sqlite3.Error):  # 整体清理失败不阻塞，交由上层处理
             logger.exception("清理目标路径旧 ContentUnit 记录失败：path=%s", dst_folder)
             return
 
@@ -190,7 +193,7 @@ class QuickInsertService:
                 continue  # 不删除当前要更新的 unit
             try:
                 self._content_repo.delete(stale.id)
-            except Exception:  # noqa: BLE001 - 单条清理失败不中断
+            except (RepositoryError, sqlite3.Error):  # 单条清理失败不中断
                 logger.warning(
                     "清理旧 ContentUnit 记录失败：id=%s path=%s",
                     stale.id,

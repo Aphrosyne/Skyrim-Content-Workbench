@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -34,6 +35,7 @@ from domain.models import ContentUnit, FileEntry
 from infrastructure.file_operation_service import FileOperationService
 from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.content_unit import ContentUnitRepository
+from infrastructure.repositories.errors import RepositoryError
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 
 logger = logging.getLogger(__name__)
@@ -311,7 +313,7 @@ class AssemblyService:
                 if make_path_key(fc.path) == target_key:
                     self._folder_cache_repo.upsert_mtime(fc.path, mtime, fc.id)
                     return
-        except Exception:  # noqa: BLE001 - folder_cache 更新失败不阻塞主流程
+        except (RepositoryError, sqlite3.Error, OSError):  # folder_cache 更新失败不阻塞主流程
             logger.exception("更新 folder_cache mtime 失败：path=%s", folder_path)
 
 

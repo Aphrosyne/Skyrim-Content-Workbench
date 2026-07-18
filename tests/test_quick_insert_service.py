@@ -572,8 +572,13 @@ class _FlakyFolderCacheRepository:
     def create(self, folder):
         self.create_call_count += 1
         if self.fail_on_create:
-            # 模拟插入新 folder_cache 记录时失败
-            raise RuntimeError("模拟 folder_cache 插入失败（H2 测试）")
+            # 模拟插入新 folder_cache 记录时失败。
+            # 使用 RepositoryError（生产环境实际抛出的异常类型）而非 RuntimeError，
+            # 后者在 TD-M25 收窄 except 后会冒泡（这是期望行为，但本测试的目的是
+            # 验证 H2 修复在 DB 错误场景下的事务回滚，而非 TD-M25 行为）。
+            from infrastructure.repositories.errors import RepositoryError
+
+            raise RepositoryError("模拟 folder_cache 插入失败（H2 测试）")
         return self._real.create(folder)
 
 

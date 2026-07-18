@@ -83,36 +83,16 @@ class ContentUnitRepository:
             return None
         return self._row_to_model(row)
 
-    def list_by_path_prefix(self, prefix: str) -> list[ContentUnit]:
-        """返回 path 以 prefix 开头（含 prefix 自身）的 ContentUnit。
-
-        .. deprecated:: TD-H7
-            该方法在 Windows 反斜杠路径下 broken：构造 LIKE 模式时每个 ``\\`` 被翻倍，
-            模式期望两个连续反斜杠，无法匹配真实子路径。新代码应改用
-            :meth:`list_by_path_prefix_normalized`。本方法保留仅为兼容已有调用点
-            与测试，待所有调用点迁移完成后删除。
-        """
-        sep = os.sep
-        full_prefix = f"{prefix}{sep}"
-        escaped = full_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        like_pattern = f"{escaped}%"
-        try:
-            rows = self._conn.execute(
-                "SELECT * FROM content_unit WHERE path = ? OR path LIKE ? ESCAPE '\\' "
-                "ORDER BY path",
-                (prefix, like_pattern),
-            ).fetchall()
-        except sqlite3.Error as e:
-            raise RepositoryError(f"无法列出 ContentUnit：{e}") from e
-        return [self._row_to_model(r) for r in rows]
-
     def list_by_path_prefix_normalized(self, prefix: str) -> list[ContentUnit]:
         """返回 path 等于 prefix 或位于 prefix 子树下的 ContentUnit（含 prefix 自身）。
 
-        TD-H7 修复：原 :meth:`list_by_path_prefix` 在 Windows 反斜杠路径下 broken
-        （LIKE 转义让每个 ``\\`` 翻倍，模式期望两个连续反斜杠，无法匹配真实子路径）。
-        本方法用 ``make_path_key`` 归一化后做字符串前缀比较，符合 AGENTS 规则 9
+        TD-H7 修复：原 ``list_by_path_prefix`` 在分隔符分歧场景下漏匹配子路径
+        （数据库存储的路径与查询路径分隔符不一致时，LIKE 无法匹配）。本方法用
+        ``make_path_key`` 归一化后做字符串前缀比较，符合 AGENTS 规则 9
         （路径比较统一使用 ``make_path_key()``），跨平台一致。
+
+        旧 ``list_by_path_prefix`` 已在 TD-L20 清理中删除（生产代码 v0.20.1
+        全部迁移到本方法，无外部调用）。
 
         匹配规则：
             unit.path 归一化后 == prefix 归一化后

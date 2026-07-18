@@ -22,16 +22,19 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 from pathlib import Path
 
 from application.content_service import ContentService
 from application.errors import (
+    ApplicationError,
     FileOperationError,
     InvalidModGroupNameError,
     ModGroupSourceNotInStagingError,
 )
 from domain.models import ContentUnit, FolderCache
 from infrastructure.file_operation_service import FileOperationService
+from infrastructure.repositories.errors import RepositoryError
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 
 logger = logging.getLogger(__name__)
@@ -206,7 +209,7 @@ class ModGroupService:
                     created_at=self._now_iso(),
                 )
                 self._folder_cache_repo.create(folder)
-            except Exception as fc_err:  # noqa: BLE001
+            except (RepositoryError, sqlite3.Error, OSError) as fc_err:
                 logger.exception(
                     "写入 folder_cache 失败（将回滚 new_folder）：path=%s",
                     target_folder,
@@ -219,7 +222,7 @@ class ModGroupService:
         # 若 move 失败，回滚：删除刚创建的空文件夹（仅当为空时）
         try:
             self._file_op.move(source_file, target_file)
-        except Exception as move_err:
+        except (FileOperationError, OSError) as move_err:
             _try_cleanup_empty_folder(target_folder)
             raise FileOperationError(f"移动源文件失败：{move_err}") from move_err
 
@@ -230,7 +233,7 @@ class ModGroupService:
         if old_unit is not None:
             try:
                 self._content.unmark_content_unit(old_unit.id)
-            except Exception:  # noqa: BLE001
+            except (ApplicationError, RepositoryError, sqlite3.Error):
                 logger.exception("取消源文件旧 ContentUnit 标记失败：path=%s", source_file)
 
         # 步骤 4：为新文件夹标记 ContentUnit
@@ -238,7 +241,7 @@ class ModGroupService:
         # 默认 title=path.name（即文件夹名 == name）。
         try:
             return self._content.mark_as_content_unit(target_folder)
-        except Exception as create_err:
+        except (ApplicationError, RepositoryError, sqlite3.Error) as create_err:
             # ContentUnit 创建失败不回滚文件操作（文件已移动，无法自动复原）
             # 记日志，由用户手动处理
             logger.exception(

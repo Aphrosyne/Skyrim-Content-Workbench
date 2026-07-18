@@ -8,7 +8,7 @@
 
 list_direct_children：只返回 path 直接属于该目录的内容单元
 （即 Path(unit.path).parent == dir_path），不含深层子目录的内容单元。
-通过在 service 层过滤 list_by_path_prefix 结果实现，保持 Repository 简单。
+通过在 service 层过滤 list_by_path_prefix_normalized 结果实现，保持 Repository 简单。
 
 list_directory_entries：从文件系统读取目录下所有条目（roadmap Task 4 2026-07-13 设计修正），
 并按 path 关联 content_unit 表中的内容单元。内容单元不是可见性门槛——
@@ -21,6 +21,7 @@ list_directory_entries：从文件系统读取目录下所有条目（roadmap Ta
 from __future__ import annotations
 
 import logging
+import sqlite3
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
@@ -31,7 +32,10 @@ from application.errors import ContentUnitNotFoundError, InvalidContentUnitPathE
 from domain.models import ContentUnit, FileEntry
 from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.content_unit import ContentUnitRepository
-from infrastructure.repositories.errors import ConstraintViolationError  # noqa: F401
+from infrastructure.repositories.errors import (
+    ConstraintViolationError,  # noqa: F401
+    RepositoryError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +65,7 @@ class ContentService:
         """返回 dir_path 及其所有子目录下的内容单元。
 
         委托 ContentUnitRepository.list_by_path_prefix_normalized（TD-H7 修复：
-        原 list_by_path_prefix 在 Windows 反斜杠路径下 broken）。
+        原 list_by_path_prefix 已删除，统一使用 normalized 接口）。
         """
         return self._repo.list_by_path_prefix_normalized(dir_path)
 
@@ -138,10 +142,10 @@ class ContentService:
         行为：
         - 若 path 已是 ContentUnit 且 status != "unmarked"：返回现有 unit（不重复创建）。
         - 若 path 已是 ContentUnit 且 status == "unmarked"：恢复为 "unorganized"（重新标记）。
-        - 若 path 是文件夹：先 list_by_path_prefix 查询子项 ContentUnit（不含自身），
-          逐个 delete 非 "unmarked" 子项（ContentUnitRepository.delete 已级联清理
-          content_unit_tag）；"unmarked" 子项保留（用户显式取消标记的偏好不应被覆盖）；
-          然后创建或恢复 ContentUnit。
+        - 若 path 是文件夹：先 list_by_path_prefix_normalized 查询子项 ContentUnit
+          （不含自身），逐个 delete 非 "unmarked" 子项（ContentUnitRepository.delete
+          已级联清理 content_unit_tag）；"unmarked" 子项保留（用户显式取消标记的偏好
+          不应被覆盖）；然后创建或恢复 ContentUnit。
         - 若 path 是文件：直接创建（不查子项）。
 
         Args:
@@ -182,7 +186,7 @@ class ContentService:
                         continue  # 保留用户显式取消标记的偏好
                     try:
                         self._repo.delete(child.id)
-                    except Exception:  # noqa: BLE001
+                    except (RepositoryError, sqlite3.Error):  # noqa: BLE001
                         logger.exception("取消子项标记失败：unit_id=%s", child.id)
 
         # 创建新记录或恢复 unmarked 记录
@@ -256,8 +260,8 @@ class ContentService:
 
         与 list_directory_entries 区别：
         - 递归遍历所有子目录（Path.rglob("*")），不只单层；
-        - 批量预查 content_unit（一次 list_by_path_prefix 取回所有相关单元，
-          构建 path_key → ContentUnit 映射），避免 N 次 DB 查询。
+        - 批量预查 content_unit（一次 list_by_path_prefix_normalized 取回所有
+          相关单元，构建 path_key → ContentUnit 映射），避免 N 次 DB 查询。
 
         数据源为文件系统，仅读取元数据（is_dir / is_file / stat），跳过符号链接。
         单条目读取失败不中断整体遍历（记日志后跳过）。
@@ -277,8 +281,8 @@ class ContentService:
 
         # 批量预查 content_unit：一次 SQL 拿回所有相关单元，构建 path_key 映射
         # "unmarked" 状态的单元不纳入映射（视为无内容单元）
-        # 使用 list_by_path_prefix_normalized（TD-H7 修复：Windows 反斜杠路径下
-        # 原 list_by_path_prefix 的 LIKE 转义 broken，会漏掉子路径记录）
+        # 使用 list_by_path_prefix_normalized（统一归一化接口，原 list_by_path_prefix
+        # 已在 TD-L20 清理中删除）
         unit_map: dict[str, ContentUnit] = {}
         try:
             units = self._repo.list_by_path_prefix_normalized(staging_path)
@@ -286,7 +290,7 @@ class ContentService:
                 if unit.status == "unmarked":
                     continue
                 unit_map[make_path_key(unit.path)] = unit
-        except Exception:  # noqa: BLE001 - 数据库查询失败不阻塞文件系统遍历
+        except (RepositoryError, sqlite3.Error):  # 数据库查询失败不阻塞文件系统遍历
             logger.exception("list_staging_entries: 预查 content_unit 失败：%s", staging_path)
 
         entries: list[FileEntry] = []
@@ -340,7 +344,7 @@ class ContentService:
             # "unmarked" 状态视为无内容单元（用户显式取消标记）
             if content_unit is not None and content_unit.status == "unmarked":
                 content_unit = None
-        except Exception:  # noqa: BLE001 - 数据库查询失败不应中断遍历
+        except (RepositoryError, sqlite3.Error):  # 数据库查询失败不应中断遍历
             logger.exception("查询 content_unit 失败：path=%s", child)
 
         return FileEntry(

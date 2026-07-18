@@ -901,6 +901,9 @@ class TestListByPathPrefixNormalized:
     注意：经验证，原方法在"同分隔符"路径下（Windows 均反斜杠）实际能正常工作
     （``ESCAPE '\\'`` 让 ``\\\\`` 匹配单个反斜杠）。TD-H7 描述的"LIKE 翻倍导致
     broken"机制不准确，真正的失败场景是分隔符分歧。本测试覆盖该场景。
+
+    TD-L20 已删除旧 ``list_by_path_prefix`` 方法及其对照测试，本类仅保留
+    ``list_by_path_prefix_normalized`` 的回归覆盖。
     """
 
     def test_separator_divergence_returns_children(
@@ -923,23 +926,6 @@ class TestListByPathPrefixNormalized:
 
         assert len(result) == 1
         assert result[0].id == "c1"
-
-    def test_separator_divergence_old_method_returns_empty(
-        self, repo: ContentUnitRepository, tmp_path: Path
-    ) -> None:
-        """对照测试：原 ``list_by_path_prefix`` 在分隔符分歧下确实返回空。
-
-        本测试固化"原方法在此场景失败"的事实，作为 TD-H7 修复必要性的证据。
-        若未来有人质疑修复必要性，本测试可复现原 bug。一旦旧方法被删除，
-        本测试可一并删除。
-        """
-        folder = tmp_path / "ModGroup"
-        child = folder / "mod.7z"
-        posix_child = str(child).replace("\\", "/")
-        repo.create(_make_unit("c1", posix_child, title="child"))
-
-        result = repo.list_by_path_prefix(str(folder))
-        assert len(result) == 0  # 原 broken 行为
 
     def test_same_separator_returns_children(
         self, repo: ContentUnitRepository, tmp_path: Path
