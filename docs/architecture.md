@@ -85,7 +85,6 @@ MainWindow
       ├─ 标题（中文别名）
       ├─ 标签选择器（自动补全）
       ├─ 来源 URL
-      ├─ 评分（星标）
       ├─ 备注（多行文本）
       ├─ 封面预览 + 设置按钮
       └─ [保存] 按钮
@@ -277,9 +276,7 @@ content_unit
   - title TEXT
   - content_type TEXT NOT NULL DEFAULT 'mod'
   - source_url TEXT
-  - rating INTEGER
   - cover_path TEXT
-  - status TEXT NOT NULL DEFAULT 'unorganized'
   - notes TEXT
   - created_at TEXT NOT NULL
   - updated_at TEXT NOT NULL
@@ -380,7 +377,7 @@ ScanService.scan(managed_root)
   │
   └─ 写入：
       ├─ folder_cache（目录树缓存）
-      └─ content_unit（候选内容单元，status=unorganized）
+      └─ content_unit（候选内容单元）
 ```
 
 ### 8.2 线程模型
@@ -399,16 +396,20 @@ ScanService.scan(managed_root)
 
 ## 9. 缩略图架构
 
-保留现有 `ThumbnailGenerator` + `ThumbnailCoordinator` + `ThumbnailWorker` 架构，主要改动：
+> 缩略图功能尚未在新架构下实现，计划在阶段 4 Task 4（封面预览）完成。
+> 旧版 `ThumbnailGenerator` / `ThumbnailCoordinator` / `ThumbnailWorker` 源文件已删除，
+> 仅保留 `thumbnail_cache` 表在数据库 schema（FK 已改为 `content_unit_id`）。
 
-| 改动 | 说明 |
-|------|------|
-| 关联键 | `asset_id` → `content_unit_id` |
-| 源路径 | 从 `FileAsset.real_path` → `ContentUnit.path` + `cover_path` |
-| 查询 | 从 `FileAssetRepository` → `ContentUnitRepository` |
+### 实现要求
 
-缩略图缓存目录：`%LOCALAPPDATA%\SkyrimContentWorkbench\thumbnails\`
-缓存文件命名：`{content_unit_id}.png`
+- 使用 Pillow 只读加载源图，生成缩略图写入应用缓存目录
+- 关联键：`content_unit_id`
+- 源路径：`ContentUnit.path` + `cover_path`
+- 缩略图缓存目录：`%LOCALAPPDATA%\SkyrimContentWorkbench\thumbnails\`
+- 缓存文件命名：`{content_unit_id}.png`
+- 缓存有效性基于 `content_unit_id + source_size + source_modified_at`
+- 后台线程生成（QThread + 独立 SQLite 连接），不冻结 UI
+- 始终只读访问用户原图；不修改、不压缩、不覆盖
 
 ---
 
