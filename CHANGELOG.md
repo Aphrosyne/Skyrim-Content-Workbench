@@ -8,6 +8,106 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### 2026-07-18 阶段 4 Task 1：标签分类管理 + JSON 导入导出
+
+Stage 4 第一项功能开发。实现 spec §10 / §4.2-4.4 定义的标签系统：TagCategory + Tag + ContentUnitTag 三表结构 + TagService 应用层 + TagManagerDialog UI 对话框 + 预置标签库自动加载 + JSON 导入导出。
+
+**Schema v5 → v6 迁移**
+
+- 移除 `content_unit.rating` 列（用户决策 13.2：私人数据库用不上 rating 字段）。
+- `tag_category.name` 加 UNIQUE 约束（通过 `idx_tag_category_name_unique` 索引实现）。
+- `tag (name, category_id)` 加 UNIQUE 约束（通过 `idx_tag_name_category_unique` 索引实现，同分类下不重名，不同分类可重名）。
+- 迁移幂等：`rating` 列已不存在时跳过 DROP；UNIQUE 索引用 `CREATE UNIQUE INDEX IF NOT EXISTS`。
+- `CURRENT_SCHEMA_VERSION` 从 5 升至 6。
+
+**新增 Domain / Repository**
+
+- `TagCategory` dataclass：id / name / color_hue（spec §4.2）。
+- `Tag` dataclass：id / name / category_id（spec §4.3）。
+- `TagCategoryRepository`：create / get_by_id / get_by_name / list_all / update / delete（不自提交，FK 违约包装为 RepositoryError）。
+- `TagRepository`：create / get_by_id / get_by_name_in_category / list_all / list_by_category / list_by_ids / update / delete。
+- `ContentUnitTagRepository`：attach（INSERT OR IGNORE 幂等）/ detach / detach_all_by_content_unit / detach_all_by_tag / detach_all_by_category（子查询级联）/ list_tag_ids_by_content_unit / list_content_unit_ids_by_tag / count_by_tag / count_by_category / is_attached。
+
+**新增 Application 层 TagService**
+
+- TagCategory CRUD：create_category / get_category / list_categories / rename_category / update_category_color / delete_category（级联清理：content_unit_tag → tag → category）。
+- Tag CRUD：create_tag / get_tag / list_tags_by_category / list_all_tags / rename_tag / move_tag_to_category / delete_tag（级联清理 content_unit_tag）。
+- list_categories_with_tags：一次性返回所有分类及其下标签（供 UI 加载）。
+- JSON 导入（import_from_json）：schema_version 校验、合并跳过策略（同名分类整体跳过，不同名分类正常创建）、同分类下同名标签跳过、事务原子性（失败时由调用方 rollback）。
+- JSON 导出（export_to_json）：ensure_ascii=False 保留中文。
+- 预置库加载（load_default_tags_if_empty）：仅当 tag_category 表为空时加载，失败不阻塞应用启动（D3）。
+- 异常分层：RepositoryError / ConstraintViolationError → ApplicationError 子类（DuplicateTagCategoryNameError / DuplicateTagNameError / TagCategoryNotFoundError / TagNotFoundError / InvalidTagJsonError）。
+
+**新增 UI TagManagerDialog**
+
+- QTreeWidget 树形展示（分类为顶级节点，标签为子节点），自动展开。
+- 工具栏按钮：新增分类 / 重命名分类 / 改颜色 / 删除分类 / 新增标签 / 重命名标签 / 移动标签 / 删除标签 / 导入 JSON / 导出 JSON。
+- 色块图标：QColor.fromHsl 转 16x16 QPixmap。
+- 空状态提示：无分类时显示提示文字。
+- 事务边界：Dialog 持有 commit_callback 引用，每次操作后立即提交（F6）。
+- 异常处理：service 抛 ApplicationError 时弹 QMessageBox.critical 提示用户。
+
+**预置标签库（src/app/resources/default_tags.json）**
+
+5 个分类 + 23 个标签（依据 spec §10.1 / roadmap Stage 4 Task 1）：
+- 服装护甲（H=210，蓝色系）：重甲、轻甲、法袍、现代、幻想、裸露、内衣、泳装、饰品、杂项、合集（11 个）
+- 武器（H=30，橙色系）：单手剑、双手剑、弓、法杖（4 个）
+- 作者（H=120，绿色系）：（空，用户自行添加）
+- 来源（H=0）：N 网、L 网、韩网、群友分享、私货（5 个）
+- 状态（H=280）：已测试、已汉化、待测试（3 个）
+
+**集成到 MainWindow 与 main.py**
+
+- MainWindow 顶部栏新增「标签管理」按钮（在快速插入按钮后），点击打开 TagManagerDialog。
+- MainWindow 构造新增 `tag_service: TagService | None = None` 参数，未注入时按钮隐藏。
+- MainWindow 移除 rating 显示（metadata_full_text 不再含评分行）。
+- main.py 启动序列新增：构造 TagService → 加载预置标签库（失败不阻塞启动）→ 注入 MainWindow。
+
+**文档同步**
+
+- `docs/architecture.md` §4.1 / §4.2 / §6.1 / §6.4 / §10 / §11.1 / §12 更新：schema v4 → v6、TagService 依赖关系、表结构新增 UNIQUE 约束、移除 rating 列说明。
+
+**测试覆盖**
+
+新增 5 个测试文件，共 109 项测试：
+- `tests/test_tag_category_repository.py`：15 项（CRUD / UNIQUE 约束 / 中文 / 不自提交 / FK 违约）。
+- `tests/test_tag_repository.py`：20 项（CRUD / (name, category_id) UNIQUE / 跨分类同名 / FK 违约）。
+- `tests/test_content_unit_tag_repository.py`：14 项（attach 幂等 / 多种 detach / list / count / is_attached）。
+- `tests/test_tag_service.py`：42 项（TagCategory CRUD / Tag CRUD / 级联删除 / JSON 导入导出 / 预置库加载 / 异常分层）。
+- `tests/test_tag_manager_dialog.py`：18 项（构造 / _refresh_tree / 选中逻辑 / 增删改操作 / 异常提示）。
+
+**测试调整**
+
+- `tests/test_domain_models.py`：移除 3 项 rating 专属测试（`test_rating_below_range_raises` / `test_rating_above_range_raises` / `test_rating_none_allowed`）；另 2 项测试移除 rating 断言但保留测试本身。
+- `tests/test_content_unit_repository.py`：`test_update_fields` 改用 notes 字段验证更新（rating 不再可用）。
+- `tests/test_migrations.py`：新增 v5→v6 迁移测试 6 项（DROP rating / UNIQUE 索引 / 约束生效 / 数据保留 / 幂等 / rating 已不存在时幂等）。
+- `tests/test_main_window_content.py`：移除 `assert "评分" in metadata` 断言。
+
+**测试结果**：546 passed → 659 passed（+113），3 skipped。
+
+#### Added
+
+- [src/domain/models.py](src/domain/models.py)：新增 `TagCategory` / `Tag` dataclass；移除 `ContentUnit.rating` 字段及校验。
+- [src/infrastructure/repositories/tag_category.py](src/infrastructure/repositories/tag_category.py)：新建 TagCategoryRepository。
+- [src/infrastructure/repositories/tag.py](src/infrastructure/repositories/tag.py)：新建 TagRepository。
+- [src/infrastructure/repositories/content_unit_tag.py](src/infrastructure/repositories/content_unit_tag.py)：新建 ContentUnitTagRepository。
+- [src/application/tag_service.py](src/application/tag_service.py)：新建 TagService。
+- [src/application/errors.py](src/application/errors.py)：新增 5 个错误类（TagCategoryNotFoundError / TagNotFoundError / DuplicateTagCategoryNameError / DuplicateTagNameError / InvalidTagJsonError）。
+- [src/app/resources/default_tags.json](src/app/resources/default_tags.json)：预置标签库（5 分类 + 19 标签）。
+- [src/app/tag_manager_dialog.py](src/app/tag_manager_dialog.py)：新建 TagManagerDialog。
+- [src/app/ui_constants.py](src/app/ui_constants.py)：新增 ~40 个标签管理相关常量；移除 METADATA_RATING_LABEL / METADATA_RATING_EMPTY。
+
+#### Changed
+
+- [src/infrastructure/db.py](src/infrastructure/db.py)：`CURRENT_SCHEMA_VERSION` 5 → 6。
+- [src/infrastructure/migrations.py](src/infrastructure/migrations.py)：新增 `migrate_v5_to_v6`（DROP rating + UNIQUE 索引），MIGRATIONS 列表新增 `(6, migrate_v5_to_v6)`。
+- [src/infrastructure/repositories/content_unit.py](src/infrastructure/repositories/content_unit.py)：create / update / _row_to_model 移除 rating 字段读写。
+- [src/application/quick_insert_service.py](src/application/quick_insert_service.py)：移除 `rating=unit.rating` 传递。
+- [src/application/__init__.py](src/application/__init__.py)：更新 docstring 列出 TagService。
+- [src/app/main_window.py](src/app/main_window.py)：顶部栏新增「标签管理」按钮 + `_on_tag_manager_clicked` 方法；构造新增 `tag_service` 参数；移除 `_update_metadata` 中的 rating 显示；docstring 修正。
+- [src/app/main.py](src/app/main.py)：启动序列新增加载预置标签库 + 注入 TagService。
+- [docs/architecture.md](docs/architecture.md)：§4.1 / §4.2 / §6.1 / §6.4 / §10 / §11.1 / §12 更新。
+
 ### 2026-07-18 阶段 4 Task 0：技术债清理（TD-M25 + TD-L20）
 
 Stage 4 功能开发前的前置清理，不新增功能，不修改业务行为。完成 Technical Debt 第四批修复。

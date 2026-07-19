@@ -128,7 +128,7 @@ MainWindow
 | `QuickInsertService` | 快速插入 Mod 组到目标分类目录（Task 5） | `quick_insert(unit_id, target_dir)` |
 | `FileOperationService` | 文件操作（简化） | `new_folder(path)` / `move(src, dst)` |
 | `ScanService` | 增量/全量扫描 | `scan_root(root_id, incremental)` / `scan_root_by_path(path, incremental)` |
-| `TagService` | 标签系统（阶段 4） | `get_categories()` / `search_tags(query)` / `filter_by_tags(tags)` |
+| `TagService` | 标签系统（阶段 4） | `create_category()` / `create_tag()` / `list_categories_with_tags()` / `import_from_json()` / `export_to_json()` |
 | `SearchService` | 全局搜索（阶段 5） | `search(query)` |
 
 ### 4.2 Service 依赖关系
@@ -154,7 +154,7 @@ FileOperationService ──→ OperationHistoryRepository
       │
 ScanService ──→ ManagedRootRepository + FolderCacheRepository + ContentUnitRepository + FileScanner
       │
-TagService ──→ TagRepository（阶段 4）
+TagService ──→ TagCategoryRepository + TagRepository + ContentUnitTagRepository
       │
 SearchService ──→ ContentService + TagService（阶段 5）
 ```
@@ -234,7 +234,7 @@ SearchService ──→ ContentService + TagService（阶段 5）
 | 模块 | 文件 | 职责 |
 |------|------|------|
 | 数据库初始化 | `db.py` | SQLite 连接、WAL 模式、外键、版本管理 |
-| Schema 迁移 | `migrations.py` | v3→v4 迁移（建新表、移除旧表） |
+| Schema 迁移 | `migrations.py` | v3→v4→v5→v6 迁移（建新表、移除旧表、移除 rating、加 UNIQUE 约束） |
 | Repository 层 | `repositories/` | 每个实体对应一个 Repository |
 | 文件扫描器 | `file_scanner.py` | 递归扫描、增量 mtime 判断、内容识别 |
 | 文件操作服务 | `file_operation_service.py` | 文件移动/重命名/删除/撤销（简化版） |
@@ -267,7 +267,7 @@ repositories/
 
 **数据库位置：** `%LOCALAPPDATA%\SkyrimContentWorkbench\app.db`
 
-**Schema v4 表清单：**
+**Schema v6 表清单（v5→v6 变更：移除 content_unit.rating；tag_category.name 加 UNIQUE；tag (name, category_id) 加 UNIQUE）：**
 
 ```text
 content_unit
@@ -280,16 +280,19 @@ content_unit
   - notes TEXT
   - created_at TEXT NOT NULL
   - updated_at TEXT NOT NULL
+  # v6 移除：rating INTEGER（私人数据库用不上）
 
 tag_category
   - id TEXT PRIMARY KEY
   - name TEXT NOT NULL
   - color_hue INTEGER NOT NULL DEFAULT 0
+  # v6 新增：UNIQUE INDEX idx_tag_category_name_unique (name)
 
 tag
   - id TEXT PRIMARY KEY
   - name TEXT NOT NULL
   - category_id TEXT NOT NULL REFERENCES tag_category(id)
+  # v6 新增：UNIQUE INDEX idx_tag_name_category_unique (name, category_id)
 
 content_unit_tag
   - content_unit_id TEXT NOT NULL REFERENCES content_unit(id)
@@ -417,7 +420,7 @@ ScanService.scan(managed_root)
 
 ```text
 %LOCALAPPDATA%\SkyrimContentWorkbench\
-  ├── app.db              # SQLite 数据库（schema v4）
+  ├── app.db              # SQLite 数据库（schema v6）
   ├── thumbnails\         # 缩略图缓存
   ├── exports\            # AI JSON 导出
   └── logs\               # 应用日志
@@ -438,7 +441,7 @@ ScanService.scan(managed_root)
 - 操作历史读写与撤销
 - 标签 CRUD、自动补全、筛选
 - UI 模式切换与数据联动
-- 数据库 v4 迁移（v3→v4 幂等、旧表移除验证）
+- 数据库迁移（v3→v4→v5→v6 幂等、rating 列移除、UNIQUE 约束验证）
 
 ### 11.2 保留的旧测试
 
@@ -451,7 +454,7 @@ ScanService.scan(managed_root)
 - `test_scan_worker.py` ✅
 - `test_thumbnail_ui.py` ⚠️（需调整关联）
 - `test_db.py` ✅
-- `test_migrations.py` ⚠️（需扩展 v4）
+- `test_migrations.py` ⚠️（已扩展至 v6）
 
 ### 11.3 需重写或移除的旧测试
 
@@ -469,5 +472,7 @@ ScanService.scan(managed_root)
 
 迁移策略：
 1. 阶段 2 Task 1：建立新数据库 schema v4，移除旧表（不迁移旧数据）。
-2. 旧版代码文件逐步改造或重写，不保留旧版 Service 和 UI。
-3. 旧版文档已归档至 `archive/`。
+2. 阶段 3 Task 1：schema v4→v5（staging_area 表 + folder_cache 简化）。
+3. 阶段 4 Task 1：schema v5→v6（移除 content_unit.rating；tag_category.name 加 UNIQUE；tag (name, category_id) 加 UNIQUE）。
+4. 旧版代码文件逐步改造或重写，不保留旧版 Service 和 UI。
+5. 旧版文档已归档至 `archive/`。

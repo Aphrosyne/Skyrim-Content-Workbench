@@ -18,7 +18,7 @@ from typing import ClassVar
 
 @dataclass
 class ContentUnit:
-    """内容单元。spec §4.1。
+    """内容单元。spec §4.1（2026-07-18 移除 rating 字段）。
 
     一个内容单元对应一个真实路径（文件夹或单文件）。
     path 原样存储（可为中文），数据库以 path 列的 UNIQUE 约束去重。
@@ -31,7 +31,6 @@ class ContentUnit:
     title: str | None = None
     content_type: str = "mod"
     source_url: str | None = None
-    rating: int | None = None
     cover_path: str | None = None
     status: str = "unorganized"
     notes: str | None = None
@@ -45,8 +44,6 @@ class ContentUnit:
             raise ValueError("ContentUnit.created_at 不能为空")
         if not self.updated_at:
             raise ValueError("ContentUnit.updated_at 不能为空")
-        if self.rating is not None and (self.rating < 1 or self.rating > 5):
-            raise ValueError("ContentUnit.rating 必须在 1-5 之间")
 
 
 @dataclass

@@ -274,7 +274,6 @@ def test_double_click_content_unit_shows_metadata(qapp, main_window_env) -> None
     assert "标题" in metadata
     assert "路径" in metadata
     assert "类型" in metadata
-    assert "评分" in metadata
     assert "整理状态" in metadata
     # 标题应为压缩包文件名（含扩展名）
     assert "寒霜之心.7z" in metadata

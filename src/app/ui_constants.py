@@ -146,15 +146,85 @@ METADATA_TITLE_LABEL = "标题"
 METADATA_PATH_LABEL = "路径"
 METADATA_TYPE_LABEL = "类型"
 METADATA_SOURCE_URL_LABEL = "来源 URL"
-METADATA_RATING_LABEL = "评分"
 METADATA_STATUS_LABEL = "整理状态"
 METADATA_NOTES_LABEL = "备注"
 METADATA_CREATED_AT_LABEL = "创建时间"
 METADATA_STATUS_UNORGANIZED = "未整理"
 METADATA_STATUS_ORGANIZED = "已整理"
-METADATA_RATING_EMPTY = "未评分"
 METADATA_NOTES_EMPTY = "（无）"
 METADATA_SOURCE_URL_EMPTY = "（无）"
+
+# 标签管理对话框（阶段 4 Task 1）
+TAG_MANAGER_BUTTON = "标签管理"
+TAG_MANAGER_DIALOG_TITLE = "标签管理"
+TAG_MANAGER_TOOLTIP = "管理标签分类与标签，支持 JSON 导入导出"
+TAG_MANAGER_ADD_CATEGORY = "新增分类"
+TAG_MANAGER_DELETE_CATEGORY = "删除分类"
+TAG_MANAGER_RENAME_CATEGORY = "重命名分类"
+TAG_MANAGER_CHANGE_COLOR = "改颜色"
+TAG_MANAGER_ADD_TAG = "新增标签"
+TAG_MANAGER_DELETE_TAG = "删除标签"
+TAG_MANAGER_RENAME_TAG = "重命名标签"
+TAG_MANAGER_MOVE_TAG = "移动到分类..."
+TAG_MANAGER_IMPORT_APPEND = "追加导入"
+TAG_MANAGER_IMPORT_OVERWRITE = "覆盖导入"
+TAG_MANAGER_EXPORT = "导出 JSON"
+TAG_MANAGER_CLOSE = "关闭"
+TAG_MANAGER_ROOT_HINT = "所有标签分类"
+TAG_MANAGER_EMPTY_HINT = "尚无标签分类。点击「新增分类」或「追加导入」开始。"
+TAG_MANAGER_NO_SELECTION = "请先在左侧选择一项。"
+TAG_MANAGER_NO_CATEGORY_SELECTED = "请先选择一个分类。"
+TAG_MANAGER_NO_TAG_SELECTED = "请先选择一个标签。"
+TAG_MANAGER_EMPTY_NAME_TITLE = "名称不能为空"
+TAG_MANAGER_EMPTY_NAME_TEXT = "名称不能为空或仅含空白字符，请重新输入。"
+
+# 标签管理 - 输入对话框
+TAG_INPUT_CATEGORY_TITLE = "新增标签分类"
+TAG_INPUT_CATEGORY_LABEL = "请输入分类名称："
+TAG_INPUT_CATEGORY_COLOR_LABEL = "色相值（0-360）："
+TAG_INPUT_TAG_TITLE = "新增标签"
+TAG_INPUT_TAG_LABEL = "请输入标签名称："
+TAG_INPUT_RENAME_CATEGORY_TITLE = "重命名分类"
+TAG_INPUT_RENAME_TAG_TITLE = "重命名标签"
+TAG_INPUT_MOVE_TAG_TITLE = "移动标签到分类"
+TAG_INPUT_MOVE_TAG_LABEL = "请选择目标分类："
+TAG_COLOR_DIALOG_TITLE = "选择分类颜色"
+
+# 标签管理 - 确认对话框
+TAG_CONFIRM_DELETE_CATEGORY_TITLE = "确认删除分类"
+TAG_CONFIRM_DELETE_CATEGORY_TEXT = (
+    "将删除分类「{name}」及其下所有标签：\n\n"
+    "标签数：{tag_count}\n"
+    "受影响的内容单元关联：{link_count}\n\n"
+    "此操作不可撤销，是否继续？"
+)
+TAG_CONFIRM_DELETE_TAG_TITLE = "确认删除标签"
+TAG_CONFIRM_DELETE_TAG_TEXT = (
+    "将删除标签「{name}」。\n\n受影响的内容单元关联：{link_count}\n\n此操作不可撤销，是否继续？"
+)
+TAG_CONFIRM_OVERWRITE_IMPORT_TITLE = "确认覆盖导入"
+TAG_CONFIRM_OVERWRITE_IMPORT_TEXT = (
+    "覆盖导入将先删除当前所有标签分类与标签，再从 JSON 文件导入。\n\n"
+    "当前标签分类数：{category_count}\n"
+    "当前标签总数：{tag_count}\n\n"
+    "此操作不可撤销，是否继续？"
+)
+
+# 标签管理 - 操作结果提示
+TAG_OP_OK = "操作成功"
+TAG_OP_FAILED = "操作失败"
+TAG_IMPORT_OK_TITLE = "导入完成"
+TAG_IMPORT_OK_TEXT = (
+    "导入完成：\n\n"
+    "新增分类：{created_categories}\n"
+    "跳过分类：{skipped_categories}\n"
+    "新增标签：{created_tags}\n"
+    "跳过标签：{skipped_tags}"
+)
+TAG_EXPORT_OK_TITLE = "导出完成"
+TAG_EXPORT_OK_TEXT = "标签库已导出到：\n{path}"
+TAG_IMPORT_FILE_FILTER = "JSON 文件 (*.json)"
+TAG_EXPORT_FILE_FILTER = "JSON 文件 (*.json)"
 
 # 错误
 ERR_ADD_ROOT_FAILED = "添加目录失败"

@@ -33,7 +33,6 @@ class TestContentUnit:
         assert unit.content_type == "mod"
         assert unit.status == "unorganized"
         assert unit.title is None
-        assert unit.rating is None
 
     def test_create_with_all_fields(self) -> None:
         unit = ContentUnit(
@@ -44,13 +43,11 @@ class TestContentUnit:
             title="龙之剑",
             content_type="mod",
             source_url="https://example.com",
-            rating=5,
             cover_path="/mods/weapon/cover.png",
             status="organized",
             notes="测试备注",
         )
         assert unit.title == "龙之剑"
-        assert unit.rating == 5
         assert unit.status == "organized"
 
     def test_empty_id_raises(self) -> None:
@@ -68,18 +65,6 @@ class TestContentUnit:
     def test_empty_updated_at_raises(self) -> None:
         with pytest.raises(ValueError, match="updated_at"):
             ContentUnit(id="u", path="/x", created_at="t", updated_at="")
-
-    def test_rating_below_range_raises(self) -> None:
-        with pytest.raises(ValueError, match="rating"):
-            ContentUnit(id="u", path="/x", created_at="t", updated_at="t", rating=0)
-
-    def test_rating_above_range_raises(self) -> None:
-        with pytest.raises(ValueError, match="rating"):
-            ContentUnit(id="u", path="/x", created_at="t", updated_at="t", rating=6)
-
-    def test_rating_none_allowed(self) -> None:
-        unit = ContentUnit(id="u", path="/x", created_at="t", updated_at="t")
-        assert unit.rating is None
 
     def test_chinese_path(self) -> None:
         unit = ContentUnit(

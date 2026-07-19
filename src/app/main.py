@@ -1,6 +1,7 @@
 """应用入口。
 
-启动顺序：创建应用数据目录 -> 初始化日志 -> 初始化数据库 -> 启动 Qt 事件循环。
+启动顺序：创建应用数据目录 -> 初始化日志 -> 初始化数据库 -> 加载预置标签库
+-> 启动 Qt 事件循环。
 任何步骤失败转为用户可读错误信息后退出（见 AGENTS.md 开发方式）。
 """
 
@@ -9,6 +10,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import sys
+from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
@@ -22,15 +24,23 @@ from application.managed_root_service import ManagedRootService
 from application.mod_group_service import ModGroupService
 from application.quick_insert_service import QuickInsertService
 from application.staging_service import StagingService
+from application.tag_service import TagService
 from infrastructure.db import get_connection, init_db
 from infrastructure.file_operation_service import FileOperationService
 from infrastructure.repositories.content_unit import ContentUnitRepository
+from infrastructure.repositories.content_unit_tag import ContentUnitTagRepository
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
 from infrastructure.repositories.operation_history import OperationHistoryRepository
 from infrastructure.repositories.staging_area import StagingAreaRepository
+from infrastructure.repositories.tag import TagRepository
+from infrastructure.repositories.tag_category import TagCategoryRepository
 
 logger = logging.getLogger(__name__)
+
+# 预置标签库资源文件路径（src/app/resources/default_tags.json）
+# 通过 __file__ 定位，避免依赖 cwd
+_DEFAULT_TAGS_JSON = Path(__file__).parent / "resources" / "default_tags.json"
 
 
 def main() -> int:
@@ -86,6 +96,24 @@ def main() -> int:
         ContentUnitRepository(conn),
         folder_cache_repo,
     )
+    # 标签服务（阶段 4 Task 1）：标签分类 / 标签 CRUD + JSON 导入导出 + 预置加载
+    tag_service = TagService(
+        TagCategoryRepository(conn),
+        TagRepository(conn),
+        ContentUnitTagRepository(conn),
+    )
+
+    # 加载预置标签库（D1-D4：仅当 tag_category 表为空时加载）
+    # 加载失败不阻塞应用启动（service 内部捕获并记录 ERROR 日志）
+    if _DEFAULT_TAGS_JSON.is_file():
+        try:
+            tag_service.load_default_tags_if_empty(_DEFAULT_TAGS_JSON)
+            conn.commit()
+        except Exception:  # noqa: BLE001 - 启动阶段任何异常都不能阻塞 UI
+            logger.exception("加载预置标签库失败（非致命，继续启动）")
+            conn.rollback()
+    else:
+        logger.warning("预置标签库文件不存在：%s", _DEFAULT_TAGS_JSON)
 
     app = QApplication(sys.argv)
     window = MainWindow(
@@ -99,6 +127,7 @@ def main() -> int:
         assembly_service=assembly_service,
         quick_insert_service=quick_insert_service,
         rollback_callback=conn.rollback,
+        tag_service=tag_service,
     )
     window.show()
     exit_code = app.exec()

@@ -301,6 +301,42 @@ def migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
     logger.info("迁移 v4 → v5 完成")
 
 
+def migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
+    """v5 → v6：移除 ContentUnit.rating 列 + 加 tag / tag_category UNIQUE 约束。
+
+    Stage 4 Task 1：spec §4.1 移除 rating 字段（用户决策：私人数据库用不上 rating）；
+    同时为 tag_category.name 与 tag (name, category_id) 添加 UNIQUE 约束，
+    schema 层强制保证"同一分类下不能重名，跨分类可以重名"。
+
+    实现说明：
+    - SQLite 3.35+ 支持 ALTER TABLE DROP COLUMN。Python 3.12+ 内置 SQLite ≥ 3.40，
+      本项目要求 Python 3.12+，可安全使用。
+    - rating 列无 CHECK / FK / INDEX 引用，可直接 DROP。
+    - UNIQUE 约束通过 CREATE UNIQUE INDEX IF NOT EXISTS 实现（schema 层强约束）。
+      application 层仍提供 DuplicateTagCategoryNameError / DuplicateTagNameError，
+      给 UI 友好的错误消息，但 schema 是最后一道防线。
+
+    幂等性：DROP COLUMN 不存在时抛 OperationalError；本迁移函数采用
+    "先检查列是否存在再 DROP"模式，确保重复执行不报错。
+    """
+    # 1. 检查 content_unit.rating 列是否存在，存在则 DROP
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(content_unit)")}
+    if "rating" in cols:
+        conn.execute("ALTER TABLE content_unit DROP COLUMN rating")
+        logger.info("v6 迁移：content_unit.rating 列已移除")
+
+    # 2. 加 UNIQUE 约束（CREATE UNIQUE INDEX IF NOT EXISTS 幂等）
+    conn.executescript(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tag_category_name_unique
+            ON tag_category(name);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tag_name_category_unique
+            ON tag(name, category_id);
+        """
+    )
+    logger.info("迁移 v5 → v6 完成")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -309,4 +345,5 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (3, migrate_v2_to_v3),
     (4, migrate_v3_to_v4),
     (5, migrate_v4_to_v5),
+    (6, migrate_v5_to_v6),
 ]

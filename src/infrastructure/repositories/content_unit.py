@@ -33,9 +33,9 @@ class ContentUnitRepository:
             self._conn.execute(
                 """
                 INSERT INTO content_unit (
-                    id, path, title, content_type, source_url, rating,
+                    id, path, title, content_type, source_url,
                     cover_path, status, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     unit.id,
@@ -43,7 +43,6 @@ class ContentUnitRepository:
                     unit.title,
                     unit.content_type,
                     unit.source_url,
-                    unit.rating,
                     unit.cover_path,
                     unit.status,
                     unit.notes,
@@ -138,7 +137,6 @@ class ContentUnitRepository:
                     title = ?,
                     content_type = ?,
                     source_url = ?,
-                    rating = ?,
                     cover_path = ?,
                     status = ?,
                     notes = ?,
@@ -150,7 +148,6 @@ class ContentUnitRepository:
                     unit.title,
                     unit.content_type,
                     unit.source_url,
-                    unit.rating,
                     unit.cover_path,
                     unit.status,
                     unit.notes,
@@ -198,7 +195,6 @@ class ContentUnitRepository:
             title=row["title"],
             content_type=row["content_type"],
             source_url=row["source_url"],
-            rating=row["rating"],
             cover_path=row["cover_path"],
             status=row["status"],
             notes=row["notes"],

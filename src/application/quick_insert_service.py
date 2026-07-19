@@ -128,7 +128,6 @@ class QuickInsertService:
             title=unit.title,
             content_type=unit.content_type,
             source_url=unit.source_url,
-            rating=unit.rating,
             cover_path=unit.cover_path,
             status=unit.status,
             notes=unit.notes,

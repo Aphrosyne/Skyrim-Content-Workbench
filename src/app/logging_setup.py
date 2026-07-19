@@ -1,6 +1,6 @@
 r"""基础日志配置。
 
-日志写入 %LOCALAPPDATA%\SkyrimModWorkbench\logs\app.log，UTF-8，滚动。
+日志写入 %LOCALAPPDATA%\SkyrimContentWorkbench\logs\app.log，UTF-8，滚动。
 所有异常应转换为用户可理解的错误信息，并保留技术日志（见 AGENTS.md 开发方式）。
 """
 

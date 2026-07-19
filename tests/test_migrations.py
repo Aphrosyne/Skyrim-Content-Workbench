@@ -1,9 +1,11 @@
 """migrations 模块测试。
 
-覆盖 v0→v1 / v1→v2 / v2→v3 / v3→v4 / v4→v5 迁移。
+覆盖 v0→v1 / v1→v2 / v2→v3 / v3→v4 / v4→v5 / v5→v6 迁移。
 v3→v4 为方向 C 重建：新建 content_unit 等表，移除 mod_item / file_asset /
 folder_node / operation_log，重建 thumbnail_cache（FK 改为 content_unit）。
 v4→v5 新增 staging_area 表（阶段 3 Task 1 暂存区标记）。
+v5→v6 移除 content_unit.rating 列 + 加 tag_category.name / tag(name, category_id)
+UNIQUE 约束（阶段 4 Task 1）。
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from infrastructure.migrations import (
     migrate_v2_to_v3,
     migrate_v3_to_v4,
     migrate_v4_to_v5,
+    migrate_v5_to_v6,
 )
 
 
@@ -25,17 +28,18 @@ def test_migrations_sorted_by_target() -> None:
     """MIGRATIONS 列表应按 target 升序可排序（init_db 内部排序）。"""
     targets = [t for t, _ in MIGRATIONS]
     assert targets == sorted(targets)
-    assert len(MIGRATIONS) >= 5
+    assert len(MIGRATIONS) >= 6
     assert MIGRATIONS[0][0] == 1
     assert MIGRATIONS[1][0] == 2
     assert MIGRATIONS[2][0] == 3
     assert MIGRATIONS[3][0] == 4
     assert MIGRATIONS[4][0] == 5
+    assert MIGRATIONS[5][0] == 6
 
 
-def test_current_schema_version_is_five() -> None:
-    """当前 schema 版本应为 5。"""
-    assert CURRENT_SCHEMA_VERSION == 5
+def test_current_schema_version_is_six() -> None:
+    """当前 schema 版本应为 6。"""
+    assert CURRENT_SCHEMA_VERSION == 6
 
 
 def test_migrate_v0_to_v1_idempotent() -> None:
@@ -496,9 +500,9 @@ def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
     db_path = tmp_path / "test.db"
     version = init_db(db_path)
     assert version == CURRENT_SCHEMA_VERSION
-    assert version == 5
+    assert version == 6
 
-    # v5 后 managed_root 表仍存在
+    # v6 后 managed_root 表仍存在
     conn = sqlite3.connect(str(db_path))
     try:
         row = conn.execute(
@@ -506,19 +510,19 @@ def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
         ).fetchone()
         assert row is not None
 
-        # v5 后 content_unit 表存在
+        # v6 后 content_unit 表存在
         row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='content_unit'"
         ).fetchone()
         assert row is not None
 
-        # v5 后 staging_area 表存在
+        # v6 后 staging_area 表存在
         row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='staging_area'"
         ).fetchone()
         assert row is not None
 
-        # v5 后旧表 mod_item 不存在
+        # v6 后旧表 mod_item 不存在
         row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='mod_item'"
         ).fetchone()
@@ -552,11 +556,12 @@ def test_init_db_idempotent_at_current(tmp_path) -> None:
     assert version1 == version2 == CURRENT_SCHEMA_VERSION
 
 
-def test_init_db_migrates_v3_db_to_v5(tmp_path) -> None:
-    """已存在 v3 数据库的 init_db 应迁移到 v5。
+def test_init_db_migrates_v3_db_to_v6(tmp_path) -> None:
+    """已存在 v3 数据库的 init_db 应迁移到 v6。
 
     模拟真实场景：用户已有 v3 数据库（含 managed_root 数据），
-    升级后 managed_root 数据应保留，旧业务表被移除，staging_area 表被创建。
+    升级后 managed_root 数据应保留，旧业务表被移除，staging_area 表被创建，
+    rating 列被移除，UNIQUE 约束已建立。
     """
     db_path = tmp_path / "test.db"
     # 手动构造 v3 状态
@@ -589,9 +594,9 @@ def test_init_db_migrates_v3_db_to_v5(tmp_path) -> None:
     finally:
         conn.close()
 
-    # init_db 应识别 v3 并依次应用 v3→v4→v5
+    # init_db 应识别 v3 并依次应用 v3→v4→v5→v6
     version = init_db(db_path)
-    assert version == 5
+    assert version == 6
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -622,9 +627,203 @@ def test_init_db_migrates_v3_db_to_v5(tmp_path) -> None:
         assert "content_unit_id" in cols
         assert "asset_id" not in cols
 
-        # schema_version 应记录到 4
+        # schema_version 应记录到 6
         rows = conn.execute("SELECT version FROM schema_version ORDER BY version").fetchall()
         versions = [int(r[0]) for r in rows]
-        assert 4 in versions
+        assert 6 in versions
+    finally:
+        conn.close()
+
+
+# --- v5 → v6 迁移测试（阶段 4 Task 1） ---
+
+
+def _apply_v0_to_v5(conn: sqlite3.Connection) -> None:
+    """辅助：将内存数据库迁移到 v5 状态。"""
+    migrate_v0_to_v1(conn)
+    migrate_v1_to_v2(conn)
+    migrate_v2_to_v3(conn)
+    migrate_v3_to_v4(conn)
+    migrate_v4_to_v5(conn)
+
+
+def test_migrate_v5_to_v6_drops_rating_column() -> None:
+    """v5→v6 迁移应移除 content_unit.rating 列。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v5(conn)
+        # v5 状态下 rating 列存在
+        cols_v5 = {r["name"] for r in conn.execute("PRAGMA table_info(content_unit)")}
+        assert "rating" in cols_v5
+
+        migrate_v5_to_v6(conn)
+
+        # v6 状态下 rating 列已移除
+        cols_v6 = {r["name"] for r in conn.execute("PRAGMA table_info(content_unit)")}
+        assert "rating" not in cols_v6
+    finally:
+        conn.close()
+
+
+def test_migrate_v5_to_v6_creates_unique_indexes() -> None:
+    """v5→v6 迁移应创建 tag_category.name 和 tag(name, category_id) 的 UNIQUE 索引。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v5(conn)
+        migrate_v5_to_v6(conn)
+
+        # tag_category.name 唯一索引存在
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name='idx_tag_category_name_unique'"
+        ).fetchone()
+        assert row is not None
+
+        # tag(name, category_id) 唯一索引存在
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name='idx_tag_name_category_unique'"
+        ).fetchone()
+        assert row is not None
+
+        # 验证 idx_tag_category_name_unique 确实 UNIQUE
+        info = conn.execute("PRAGMA index_info('idx_tag_category_name_unique')").fetchall()
+        assert len(info) == 1
+        idx_list = conn.execute("PRAGMA index_list('tag_category')").fetchall()
+        cat_unique_idx = [i for i in idx_list if i["name"] == "idx_tag_category_name_unique"]
+        assert len(cat_unique_idx) == 1
+        assert cat_unique_idx[0]["unique"] == 1
+    finally:
+        conn.close()
+
+
+def test_migrate_v5_to_v6_enforces_tag_category_name_unique() -> None:
+    """v6 后 tag_category.name 重复插入应失败。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v5(conn)
+        migrate_v5_to_v6(conn)
+
+        conn.execute(
+            "INSERT INTO tag_category (id, name, color_hue) VALUES ('c1', '服装护甲', 210)"
+        )
+        try:
+            conn.execute(
+                "INSERT INTO tag_category (id, name, color_hue) VALUES ('c2', '服装护甲', 30)"
+            )
+            raise AssertionError("应拒绝重复 tag_category.name")
+        except sqlite3.IntegrityError:
+            pass
+    finally:
+        conn.close()
+
+
+def test_migrate_v5_to_v6_enforces_tag_name_unique_in_category() -> None:
+    """v6 后同分类下 tag.name 重复插入应失败。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v5(conn)
+        migrate_v5_to_v6(conn)
+
+        conn.execute(
+            "INSERT INTO tag_category (id, name, color_hue) VALUES ('c1', '服装护甲', 210)"
+        )
+        conn.execute("INSERT INTO tag (id, name, category_id) VALUES ('t1', '重甲', 'c1')")
+        try:
+            conn.execute("INSERT INTO tag (id, name, category_id) VALUES ('t2', '重甲', 'c1')")
+            raise AssertionError("应拒绝同分类下重复 tag.name")
+        except sqlite3.IntegrityError:
+            pass
+
+        # 不同分类下同名标签应允许
+        conn.execute("INSERT INTO tag_category (id, name, color_hue) VALUES ('c2', '武器', 30)")
+        conn.execute("INSERT INTO tag (id, name, category_id) VALUES ('t3', '重甲', 'c2')")
+    finally:
+        conn.close()
+
+
+def test_migrate_v5_to_v6_preserves_existing_data() -> None:
+    """v5→v6 迁移应保留已有 tag_category / tag 数据，rating 列移除时保留其他字段。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v5(conn)
+        # 插入 v5 状态的数据（含 rating）
+        conn.execute(
+            "INSERT INTO content_unit (id, path, title, rating, created_at, updated_at) "
+            "VALUES ('cu1', '/mods/a', '测试', 4, 't', 't')"
+        )
+        conn.execute(
+            "INSERT INTO tag_category (id, name, color_hue) VALUES ('c1', '服装护甲', 210)"
+        )
+        conn.execute("INSERT INTO tag (id, name, category_id) VALUES ('t1', '重甲', 'c1')")
+        conn.commit()
+
+        migrate_v5_to_v6(conn)
+
+        # content_unit 其他字段保留
+        row = conn.execute("SELECT id, path, title FROM content_unit WHERE id = 'cu1'").fetchone()
+        assert row is not None
+        assert row["path"] == "/mods/a"
+        assert row["title"] == "测试"
+
+        # tag_category 保留
+        row = conn.execute("SELECT name, color_hue FROM tag_category WHERE id = 'c1'").fetchone()
+        assert row is not None
+        assert row["name"] == "服装护甲"
+        assert row["color_hue"] == 210
+
+        # tag 保留
+        row = conn.execute("SELECT name, category_id FROM tag WHERE id = 't1'").fetchone()
+        assert row is not None
+        assert row["name"] == "重甲"
+        assert row["category_id"] == "c1"
+    finally:
+        conn.close()
+
+
+def test_migrate_v5_to_v6_idempotent() -> None:
+    """v5→v6 迁移函数本身幂等（IF NOT EXISTS + DROP COLUMN IF EXISTS）。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v5(conn)
+        migrate_v5_to_v6(conn)
+        # 再次调用不应报错
+        migrate_v5_to_v6(conn)
+
+        # rating 列仍不存在
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(content_unit)")}
+        assert "rating" not in cols
+
+        # 索引仍存在
+        for idx in ("idx_tag_category_name_unique", "idx_tag_name_category_unique"):
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name=?",
+                (idx,),
+            ).fetchone()
+            assert row is not None
+    finally:
+        conn.close()
+
+
+def test_migrate_v5_to_v6_idempotent_when_rating_already_absent() -> None:
+    """v5→v6 迁移在 rating 列已不存在时不应报错（防御性幂等）。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v5(conn)
+        # 先迁移一次（rating 被移除）
+        migrate_v5_to_v6(conn)
+        # 第二次迁移：rating 列不存在，应跳过 DROP COLUMN
+        migrate_v5_to_v6(conn)
+
+        # 验证状态稳定
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(content_unit)")}
+        assert "rating" not in cols
     finally:
         conn.close()

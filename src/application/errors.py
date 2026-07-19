@@ -72,3 +72,26 @@ class ContentUnitNotFoundError(ApplicationError):
 
 class InvalidContentUnitPathError(ApplicationError):
     """ContentUnit 路径非法：不存在或不可访问。"""
+
+
+# === 标签系统（Stage 4 Task 1） ===
+
+
+class TagCategoryNotFoundError(ApplicationError):
+    """标签分类不存在。"""
+
+
+class TagNotFoundError(ApplicationError):
+    """标签不存在。"""
+
+
+class DuplicateTagCategoryNameError(ApplicationError):
+    """同名标签分类已存在。"""
+
+
+class DuplicateTagNameError(ApplicationError):
+    """该分类下同名标签已存在。"""
+
+
+class InvalidTagJsonError(ApplicationError):
+    """标签 JSON 文件格式不合法：缺少必需字段、schema_version 不支持等。"""

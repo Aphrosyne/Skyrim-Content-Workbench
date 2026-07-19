@@ -25,7 +25,7 @@
 文件列表数据源为文件系统（Path.iterdir），通过 ContentService.list_directory_entries
 读取条目并按 path 关联 content_unit 表。内容单元不是可见性门槛——
 所有文件系统条目均可见可操作（spec §5.1 关键设计）。
-元数据面板只读显示（编辑在阶段 4 Task 4）。
+元数据面板只读显示（编辑在阶段 4 Task 2）。
 
 交互行为（2026-07-16 调整）：
 - 单击选中内容单元 → 右侧立即显示元数据（详情面板交互方式）。
@@ -74,6 +74,7 @@ from app.file_list_model import FileListModel
 from app.folder_tree_model import FolderTreeModel
 from app.mode_manager import ModeManager
 from app.scan_worker import ScanWorker
+from app.tag_manager_dialog import TagManagerDialog
 from application.assembly_service import AssemblyService
 from application.content_service import ContentService
 from application.errors import (
@@ -98,6 +99,7 @@ from application.mod_group_service import ModGroupService
 from application.quick_insert_service import QuickInsertService
 from application.scan_service import ScanSummary
 from application.staging_service import StagingService
+from application.tag_service import TagService
 from domain.models import AppMode, ContentUnit, FileEntry, ManagedRoot
 
 logger = logging.getLogger(__name__)
@@ -128,6 +130,7 @@ class MainWindow(QMainWindow):
         assembly_service: AssemblyService | None = None,
         quick_insert_service: QuickInsertService | None = None,
         rollback_callback: Callable[[], None] | None = None,
+        tag_service: TagService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -141,6 +144,7 @@ class MainWindow(QMainWindow):
         self._mod_group_service = mod_group_service
         self._assembly_service = assembly_service
         self._quick_insert_service = quick_insert_service
+        self._tag_service = tag_service
         self._thread: QThread | None = None
         self._worker: ScanWorker | None = None
         self._is_scanning = False
@@ -224,6 +228,14 @@ class MainWindow(QMainWindow):
         self._quick_insert_button.clicked.connect(self._on_quick_insert_clicked)
         self._quick_insert_button.setVisible(False)  # 默认浏览模式隐藏
         top_layout.addWidget(self._quick_insert_button)
+
+        # 标签管理按钮（阶段 4 Task 1）：打开标签管理对话框
+        # 始终可见（浏览/整理模式均可管理标签），但若未注入 tag_service 则隐藏
+        self._tag_manager_button = QPushButton(ui.TAG_MANAGER_BUTTON)
+        self._tag_manager_button.setToolTip(ui.TAG_MANAGER_TOOLTIP)
+        self._tag_manager_button.clicked.connect(self._on_tag_manager_clicked)
+        self._tag_manager_button.setVisible(self._tag_service is not None)
+        top_layout.addWidget(self._tag_manager_button)
 
         # === 三栏 Splitter ===
         splitter = QSplitter(Qt.Horizontal)
@@ -1327,6 +1339,25 @@ class MainWindow(QMainWindow):
             5000,
         )
 
+    def _on_tag_manager_clicked(self) -> None:
+        """打开标签管理对话框（阶段 4 Task 1）。
+
+        - 仅当注入了 tag_service 时响应（按钮可见性已通过 __init__ 控制，
+          此处为防御性二次校验）。
+        - Dialog 持有 MainWindow 的 commit / rollback 引用，每次增删改操作
+          后立即提交（事务边界由 Dialog 内部控制）。
+        - Dialog 关闭后无需刷新目录树（标签不影响文件系统）。
+        """
+        if self._tag_service is None:
+            return
+        dialog = TagManagerDialog(
+            self._tag_service,
+            commit_callback=self._commit_callback,
+            rollback_callback=self._rollback_callback,
+            parent=self,
+        )
+        dialog.exec()
+
     def _update_metadata(self, unit: ContentUnit) -> None:
         """更新元数据面板。"""
         title = unit.title or "（无标题）"
@@ -1335,7 +1366,6 @@ class MainWindow(QMainWindow):
             if unit.status == "organized"
             else ui.METADATA_STATUS_UNORGANIZED
         )
-        rating_text = f"{unit.rating} / 5" if unit.rating is not None else ui.METADATA_RATING_EMPTY
         source_url = unit.source_url or ui.METADATA_SOURCE_URL_EMPTY
         notes = unit.notes or ui.METADATA_NOTES_EMPTY
 
@@ -1344,7 +1374,6 @@ class MainWindow(QMainWindow):
             f"{ui.METADATA_PATH_LABEL}：{unit.path}",
             f"{ui.METADATA_TYPE_LABEL}：{unit.content_type}",
             f"{ui.METADATA_SOURCE_URL_LABEL}：{source_url}",
-            f"{ui.METADATA_RATING_LABEL}：{rating_text}",
             f"{ui.METADATA_STATUS_LABEL}：{status_text}",
             f"{ui.METADATA_NOTES_LABEL}：{notes}",
             f"{ui.METADATA_CREATED_AT_LABEL}：{unit.created_at}",
