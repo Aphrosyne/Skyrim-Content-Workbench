@@ -315,3 +315,13 @@ def format_scan_summary(
     if errors > 0:
         parts.append(f"错误 {errors} 个")
     return "；".join(parts) + "。"
+
+
+# TagFilterBar 标签筛选栏（Stage 4 Task 3）
+TAG_FILTER_BAR_TITLE = "标签筛选"
+TAG_FILTER_BAR_HINT = "点击分类展开标签，多选筛选。同分类为或，跨分类为与。"
+TAG_FILTER_CLEAR_BUTTON = "清除全部"
+TAG_FILTER_NO_CATEGORIES_HINT = "（暂无标签分类，请在标签管理中创建）"
+TAG_FILTER_CATEGORY_EMPTY_HINT = "（该分类下无标签）"
+TAG_FILTER_NO_RESULT_HINT = "无符合筛选条件的内容单元。"
+TAG_FILTER_CATEGORY_BADGE = " ({count})"  # 折叠态下分类按钮显示的已选标签数徽标

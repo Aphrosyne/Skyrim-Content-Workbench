@@ -281,6 +281,39 @@ SearchService ──→ ContentService + TagService（阶段 5）
     → 状态栏显示 result_messages（；分隔）
 ```
 
+**标签筛选流程（阶段 4 Task 3）：**
+```
+浏览模式 + TagFilterBar 可见（注入 TagService 且有分类）
+  → TagFilterBar.refresh_categories()
+    → TagService.list_categories_with_tags() 一次性加载所有分类与标签
+    → 构建内部状态 [(TagCategory, [Tag]), selected_tag_ids: set, expanded_category_id]
+    → 默认全部折叠（Q5: A），分类按钮互斥展开（Q2: A）
+
+用户点击分类按钮 → 展开该分类标签列表（互斥：自动折叠旧分类）
+用户点击标签按钮 → toggle 选中态，边框高亮（Q7: A）
+  → TagFilterBar.on_filter_changed.emit(set[tag_id])
+  → MainWindow._on_tag_filter_changed(selected_tag_ids)
+    → 若 selected_tag_ids 非空：
+      - MetadataPanel 保持上一次可见状态（Q6: A 修正：筛选不清空不隐藏面板，
+        用户可继续查看选中条目的元数据）
+      - TagService.filter_unit_ids_by_category_and(tag_ids)
+        - 按 category_id 分组 → 每个分类 OR 取并集 → 跨分类 AND 取交集
+      - _refresh_content_list_for_current_mode() 应用筛选
+        - _apply_tag_filter(entries)：
+          - 筛选激活时仅保留 entry.content_unit.id in allowed_unit_ids 的条目
+          - 非内容单元条目全部隐藏（Q1: B：列表变成纯结果集）
+        - 无结果显示「无符合筛选条件的内容单元」
+    → 若 selected_tag_ids 为空：
+      - _refresh_content_list_for_current_mode() 显示全量
+
+用户点击「清除全部」→ 清空所有已选 → 发射空集合信号 → 恢复全量列表
+
+切换目录树节点 → 筛选状态保留，自动应用于新目录（Q3: A）
+切到整理模式 → TagFilterBar 隐藏；切回浏览模式 → 恢复，已选标签保留
+标签管理对话框关闭 → refresh_categories()：剔除已删除的已选标签并重新筛选
+```
+
+
 ---
 
 ## 5. Domain 层 (`src/domain/`)

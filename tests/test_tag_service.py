@@ -909,3 +909,116 @@ class TestBatchDetachTags:
         # 没有关联时 detach 返回 0
         detached = service.batch_detach_tags(["cu-1"], tag.id)
         assert detached == 0
+
+
+# === 标签筛选（Stage 4 Task 3） ===
+
+
+class TestListContentUnitIdsByTags:
+    def test_empty_input_returns_empty(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        assert service.list_content_unit_ids_by_tags([]) == set()
+
+    def test_single_tag_returns_matching_units(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        tag = service.create_tag("重甲", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        _seed_content_unit(db_connection, "cu-2", "/mods/b")
+        service.batch_attach_tags(["cu-1", "cu-2"], tag.id)
+        db_connection.commit()
+
+        result = service.list_content_unit_ids_by_tags([tag.id])
+        assert result == {"cu-1", "cu-2"}
+
+    def test_multiple_tags_union(self, db_connection: sqlite3.Connection) -> None:
+        """多标签 OR 取并集。"""
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        tag_heavy = service.create_tag("重甲", cat.id)
+        tag_light = service.create_tag("轻甲", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        _seed_content_unit(db_connection, "cu-2", "/mods/b")
+        _seed_content_unit(db_connection, "cu-3", "/mods/c")
+        service.batch_attach_tags(["cu-1", "cu-3"], tag_heavy.id)
+        service.batch_attach_tags(["cu-2"], tag_light.id)
+        db_connection.commit()
+
+        result = service.list_content_unit_ids_by_tags([tag_heavy.id, tag_light.id])
+        assert result == {"cu-1", "cu-2", "cu-3"}
+
+    def test_unknown_tag_returns_empty(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        assert service.list_content_unit_ids_by_tags(["unknown-id"]) == set()
+
+
+class TestFilterUnitIdsByCategoryAnd:
+    def test_empty_input_returns_empty(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        assert service.filter_unit_ids_by_category_and([]) == set()
+
+    def test_single_category_single_tag(self, db_connection: sqlite3.Connection) -> None:
+        """单分类单标签 → 该标签命中集合。"""
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        tag = service.create_tag("重甲", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        _seed_content_unit(db_connection, "cu-2", "/mods/b")
+        service.batch_attach_tags(["cu-1"], tag.id)
+        db_connection.commit()
+
+        result = service.filter_unit_ids_by_category_and([tag.id])
+        assert result == {"cu-1"}
+
+    def test_single_category_multiple_tags_or(self, db_connection: sqlite3.Connection) -> None:
+        """单分类多标签 → OR 并集。"""
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        tag_heavy = service.create_tag("重甲", cat.id)
+        tag_light = service.create_tag("轻甲", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        _seed_content_unit(db_connection, "cu-2", "/mods/b")
+        _seed_content_unit(db_connection, "cu-3", "/mods/c")
+        service.batch_attach_tags(["cu-1"], tag_heavy.id)
+        service.batch_attach_tags(["cu-2"], tag_light.id)
+        db_connection.commit()
+
+        result = service.filter_unit_ids_by_category_and([tag_heavy.id, tag_light.id])
+        assert result == {"cu-1", "cu-2"}
+
+    def test_multi_category_intersection_and(self, db_connection: sqlite3.Connection) -> None:
+        """跨分类 → 交集（AND）。"""
+        service = _make_service(db_connection)
+        cat_armor = service.create_category("服装护甲")
+        cat_status = service.create_category("状态")
+        tag_heavy = service.create_tag("重甲", cat_armor.id)
+        tag_tested = service.create_tag("已测试", cat_status.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")  # 重甲 + 已测试
+        _seed_content_unit(db_connection, "cu-2", "/mods/b")  # 仅重甲
+        _seed_content_unit(db_connection, "cu-3", "/mods/c")  # 仅已测试
+        service.batch_attach_tags(["cu-1", "cu-2"], tag_heavy.id)
+        service.batch_attach_tags(["cu-1", "cu-3"], tag_tested.id)
+        db_connection.commit()
+
+        result = service.filter_unit_ids_by_category_and([tag_heavy.id, tag_tested.id])
+        assert result == {"cu-1"}
+
+    def test_no_match_returns_empty(self, db_connection: sqlite3.Connection) -> None:
+        """无任何内容单元满足 → 空集合。"""
+        service = _make_service(db_connection)
+        cat_a = service.create_category("分类A")
+        cat_b = service.create_category("分类B")
+        tag_a = service.create_tag("标签A", cat_a.id)
+        tag_b = service.create_tag("标签B", cat_b.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        service.batch_attach_tags(["cu-1"], tag_a.id)  # 仅 A，不满足 B
+        db_connection.commit()
+
+        result = service.filter_unit_ids_by_category_and([tag_a.id, tag_b.id])
+        assert result == set()
+
+    def test_unknown_tag_returns_empty(self, db_connection: sqlite3.Connection) -> None:
+        """未知 tag_id 不贡献，被忽略。"""
+        service = _make_service(db_connection)
+        result = service.filter_unit_ids_by_category_and(["unknown-id"])
+        assert result == set()

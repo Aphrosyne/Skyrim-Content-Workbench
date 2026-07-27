@@ -77,6 +77,7 @@ from app.folder_tree_model import FolderTreeModel
 from app.metadata_panel import MetadataPanel
 from app.mode_manager import ModeManager
 from app.scan_worker import ScanWorker
+from app.tag_filter import TagFilterBar
 from app.tag_manager_dialog import TagManagerDialog
 from application.assembly_service import AssemblyService
 from application.content_service import ContentService
@@ -350,6 +351,15 @@ class MainWindow(QMainWindow):
         self._content_group = QGroupBox(ui.CONTENT_LIST_GROUP_TITLE)
         content_layout = QVBoxLayout(self._content_group)
 
+        # 标签筛选栏（Stage 4 Task 3）：仅浏览模式 + 注入 TagService 时可见
+        if self._tag_service is not None:
+            self._tag_filter_bar = TagFilterBar(self._tag_service)
+            self._tag_filter_bar.on_filter_changed.connect(self._on_tag_filter_changed)
+            self._tag_filter_bar.refresh_categories()
+            content_layout.addWidget(self._tag_filter_bar)
+        else:
+            self._tag_filter_bar = None  # type: ignore[assignment]
+
         # 文件列表（整理模式下右键菜单「加入装配」替代原拖拽方案）
         self._content_view = QTableView()
         self._content_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -570,16 +580,27 @@ class MainWindow(QMainWindow):
             self._update_quick_insert_button_state()
 
     def _refresh_content_list(self, dir_path: str) -> None:
-        """刷新文件列表（数据源为文件系统，content_unit 表仅作标记）。"""
+        """刷新文件列表（数据源为文件系统，content_unit 表仅作标记）。
+
+        Stage 4 Task 3：若 TagFilterBar 筛选激活，按筛选结果过滤条目。
+        - 筛选激活时：仅显示匹配的内容单元条目（Q1: B）。非内容单元条目与
+          不匹配的内容单元条目全部隐藏，列表变成纯结果集。
+        - 筛选未激活：显示全量条目。
+        - 切换目录时筛选状态保留（Q3: A），自动应用于新目录。
+        """
         try:
             entries = self._content_service.list_directory_entries(dir_path)
         except Exception:  # noqa: BLE001 - UI 边界需捕获所有异常
             logger.exception("加载文件列表失败：dir_path=%s", dir_path)
             entries = []
 
+        entries = self._apply_tag_filter(entries)
         self._content_list_model.refresh(entries)
         if not entries:
-            self._content_empty_hint.setText(ui.CONTENT_LIST_EMPTY_HINT)
+            if self._is_tag_filter_active():
+                self._content_empty_hint.setText(ui.TAG_FILTER_NO_RESULT_HINT)
+            else:
+                self._content_empty_hint.setText(ui.CONTENT_LIST_EMPTY_HINT)
         else:
             self._content_empty_hint.setText("")
 
@@ -588,6 +609,8 @@ class MainWindow(QMainWindow):
 
         阶段 3 Task 2：整理模式下中栏显示暂存区递归文件列表。
         若路径不存在或为空，显示友好提示。
+
+        Stage 4 Task 3：整理模式不应用标签筛选（筛选栏已隐藏）。
         """
         try:
             entries = self._content_service.list_staging_entries(staging_path)
@@ -606,6 +629,57 @@ class MainWindow(QMainWindow):
                 self._content_empty_hint.setText(ui.CONTENT_LIST_EMPTY_HINT)
         else:
             self._content_empty_hint.setText("")
+
+    # --- 标签筛选（Stage 4 Task 3） ---
+
+    def _is_tag_filter_active(self) -> bool:
+        """返回 TagFilterBar 是否激活（已选标签数 > 0）。
+
+        TagService 未注入时返回 False。
+        """
+        return self._tag_filter_bar is not None and self._tag_filter_bar.is_filter_active()
+
+    def _apply_tag_filter(self, entries: list) -> list:
+        """按当前 TagFilterBar 筛选状态过滤条目。
+
+        - 筛选未激活：原样返回。
+        - 筛选激活：仅保留 entry.content_unit is not None 且
+          entry.content_unit.id 在筛选结果集合中的条目（Q1: B）。
+        """
+        if not self._is_tag_filter_active():
+            return entries
+        if self._tag_filter_bar is None:
+            return entries
+
+        selected_tag_ids = self._tag_filter_bar.current_selected_tag_ids()
+        try:
+            allowed_unit_ids = self._tag_service.filter_unit_ids_by_category_and(
+                list(selected_tag_ids)
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("标签筛选失败，回退到无筛选")
+            return entries
+
+        return [
+            entry
+            for entry in entries
+            if entry.content_unit is not None and entry.content_unit.id in allowed_unit_ids
+        ]
+
+    def _on_tag_filter_changed(self, selected_tag_ids: set[str]) -> None:
+        """TagFilterBar 选中标签变化时重新刷新中栏（应用筛选）。
+
+        Stage 4 Task 3（Q6: A 修正）：筛选激活时保留 MetadataPanel 可见性，
+        用户可继续查看选中条目的元数据。若当前选中行被筛选过滤掉，
+        MetadataPanel 保持上一次加载的内容（不主动清空），避免干扰用户。
+        - 仅浏览模式响应（整理模式无 TagFilterBar）。
+        """
+        self._refresh_content_list_for_current_mode()
+
+    def _refresh_tag_filter_bar(self) -> None:
+        """刷新 TagFilterBar 的可选标签（标签管理对话框关闭后调用）。"""
+        if self._tag_filter_bar is not None:
+            self._tag_filter_bar.refresh_categories()
 
     # --- 文件条目 ---
 
@@ -673,6 +747,9 @@ class MainWindow(QMainWindow):
 
         注（2026-07-17 调整）：单击不再切换装配面板绑定。装配面板切换
         通过双击 Mod 组文件夹触发（_on_entry_activated）。
+
+        Stage 4 Task 3（Q6: A 修正）：标签筛选激活时仍保留元数据面板交互，
+        让用户能查看选中条目的元数据。
         """
         sm = self._content_view.selectionModel()
         if sm is None:
@@ -1377,6 +1454,9 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dialog.exec()
+        # Stage 4 Task 3：标签库可能变更，刷新 TagFilterBar 可选标签。
+        # refresh_categories 会自动剔除已删除的已选标签并重新筛选。
+        self._refresh_tag_filter_bar()
 
     def _update_metadata(self, unit: ContentUnit) -> None:
         """更新元数据面板。
@@ -1827,6 +1907,10 @@ class MainWindow(QMainWindow):
         """返回 MetadataPanel 实例（仅当注入 TagService 时存在，供测试）。"""
         return self._metadata_panel
 
+    def tag_filter_bar(self) -> TagFilterBar | None:
+        """返回 TagFilterBar 实例（仅当注入 TagService 时存在，供测试）。"""
+        return self._tag_filter_bar
+
     # --- 模式切换（spec §5.1/§5.2，roadmap 阶段 2 Task 5） ---
 
     def _set_mode(self, mode: AppMode) -> None:
@@ -1846,6 +1930,10 @@ class MainWindow(QMainWindow):
         - 整理模式保留右栏 MetadataPanel，用户可在装配同时编辑元数据，
           避免创建完内容单元后切回浏览模式才能编辑元数据的多余步骤。
         - 两种模式下右栏均可见；单击内容单元加载 MetadataPanel（spec §7.2）。
+
+        Stage 4 Task 3：
+        - 整理模式隐藏 TagFilterBar（中栏固定为暂存区递归列表，不参与筛选）。
+        - 切回浏览模式恢复 TagFilterBar，已选标签保留并重新应用筛选。
         """
         if mode == AppMode.organize:
             # 切换到整理模式：若当前选中节点是 [S] 则加载暂存区递归列表
@@ -1858,6 +1946,9 @@ class MainWindow(QMainWindow):
             self._quick_insert_button.setVisible(True)
             self._update_quick_insert_button_state()
             # 右栏 MetadataPanel 保留显示（2026-07-19 决策修正）
+            # Stage 4 Task 3：整理模式隐藏 TagFilterBar
+            if self._tag_filter_bar is not None:
+                self._tag_filter_bar.setVisible(False)
         else:
             # 切换回浏览模式：恢复跟随目录树刷新
             self._organize_workarea_path = None
@@ -1870,6 +1961,9 @@ class MainWindow(QMainWindow):
                 self._assembly_panel.setVisible(False)
             # 隐藏快速插入按钮
             self._quick_insert_button.setVisible(False)
+            # Stage 4 Task 3：浏览模式恢复 TagFilterBar 显隐（按是否有分类）
+            if self._tag_filter_bar is not None:
+                self._tag_filter_bar.setVisible(self._tag_filter_bar.has_categories())
 
     def _enter_organize_mode(self) -> None:
         """进入整理模式：根据当前选中节点状态加载中栏。

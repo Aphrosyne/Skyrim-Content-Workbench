@@ -416,6 +416,80 @@ class TagService:
                 detached += 1
         return detached
 
+    # --- 标签筛选（Stage 4 Task 3） ---
+
+    def list_content_unit_ids_by_tags(self, tag_ids: list[str]) -> set[str]:
+        """返回与任意指定标签关联的内容单元 ID 集合（多标签 OR 取并集）。
+
+        用于标签筛选：被选中的多个标签在「同分类内」为 OR 关系。
+        跨分类的 AND 关系由 ``filter_unit_ids_by_category_and`` 处理。
+
+        - 空 tag_ids 返回空集合。
+        - 未知 tag_id 不抛错，仅不贡献任何 unit_id。
+        - 不访问文件系统；查询来源为 content_unit_tag 表。
+
+        Args:
+            tag_ids: 被选中的标签 ID 列表。
+
+        Returns:
+            命中任意标签的 content_unit_id 集合。
+        """
+        if not tag_ids:
+            return set()
+        result: set[str] = set()
+        for tag_id in tag_ids:
+            try:
+                ids = self._cut_repo.list_content_unit_ids_by_tag(tag_id)
+            except RepositoryError:
+                logger.exception("查询 tag 关联内容单元失败：tag_id=%s", tag_id)
+                continue
+            result.update(ids)
+        return result
+
+    def filter_unit_ids_by_category_and(self, tag_ids: list[str]) -> set[str]:
+        """按「跨分类 AND、同分类 OR」规则筛选内容单元 ID。
+
+        规则（spec §10.3、Stage 4 Task 3 用户确认 Q4 方案 A）：
+        - 将 tag_ids 按 category_id 分组。
+        - 每个分类组内的标签 OR 取并集（调用 list_content_unit_ids_by_tags）。
+        - 跨分类组之间取交集（AND）。
+        - 内容单元必须每个被选分类下至少有一个标签命中才保留。
+
+        - 空 tag_ids 返回空集合（用户已选中标签但需要至少一个分类约束）。
+        - 单分类多标签 → 该分类命中集合（OR）。
+        - 多分类 → 各分类命中集合的交集。
+        """
+        if not tag_ids:
+            return set()
+
+        # 1. 收集 tag_id → category_id 映射
+        tag_to_category: dict[str, str] = {}
+        for tag_id in tag_ids:
+            tag = self._tag_repo.get_by_id(tag_id)
+            if tag is not None:
+                tag_to_category[tag_id] = tag.category_id
+
+        if not tag_to_category:
+            return set()
+
+        # 2. 按 category_id 分组
+        by_category: dict[str, list[str]] = {}
+        for tag_id, cat_id in tag_to_category.items():
+            by_category.setdefault(cat_id, []).append(tag_id)
+
+        # 3. 每个分类取并集
+        per_category_matches: list[set[str]] = []
+        for _cat_id, cat_tag_ids in by_category.items():
+            per_category_matches.append(self.list_content_unit_ids_by_tags(cat_tag_ids))
+
+        # 4. 跨分类取交集
+        if not per_category_matches:
+            return set()
+        result = per_category_matches[0]
+        for s in per_category_matches[1:]:
+            result = result & s
+        return result
+
     # --- JSON 导入导出 ---
 
     def export_to_json(self, file_path: Path) -> None:

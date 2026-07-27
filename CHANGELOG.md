@@ -8,6 +8,48 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### 2026-07-27 阶段 4 Task 3：标签筛选
+
+浏览模式下中栏顶部新增标签筛选栏，支持多分类多选标签实时筛选内容单元。schema_version 维持 6，无数据库迁移。
+
+**用户确认的设计决策（Q1-Q8）**
+
+- Q1: B — 筛选激活时非内容单元条目全部隐藏，列表变成纯结果集
+- Q2: A — 分类互斥展开（同时只展开一个分类）
+- Q3: A — 切换目录树节点时筛选状态保留，自动应用于新目录
+- Q4: A — 同分类 OR，跨分类 AND
+- Q5: A — 默认全部折叠
+- Q6: A — 筛选激活时保留元数据面板交互（不清空不隐藏，用户可继续查看选中条目的元数据）
+- Q7: A — 选中标签使用边框高亮（不显示已选总数总览）
+- Q8: A — 仅基础筛选，不做标签计数徽标
+
+**Application 层新增**
+
+- `TagService.list_content_unit_ids_by_tags(tag_ids)`: 多标签 OR 取并集，返回 `set[unit_id]`
+- `TagService.filter_unit_ids_by_category_and(tag_ids)`: 按 category_id 分组 → 每个分类 OR 取并集 → 跨分类 AND 取交集
+
+**UI 层新增组件**
+
+- `TagFilterBar(QWidget)`：浏览模式下中栏顶部嵌入，分类按钮互斥展开 + 标签按钮多选边框高亮 + 「清除全部」按钮
+- 折叠态下分类按钮显示已选数徽标「分类名 (N)」
+- 无分类时控件隐藏（与 TagService 未注入降级一致）
+- `ui_constants.py` 新增常量：TAG_FILTER_BAR_TITLE / TAG_FILTER_BAR_HINT / TAG_FILTER_CLEAR_BUTTON / TAG_FILTER_NO_RESULT_HINT 等
+
+**MainWindow 集成调整**
+
+- `_setup_ui`：注入 TagService 时创建 TagFilterBar 嵌入中栏顶部，连接 `on_filter_changed` 信号
+- `_refresh_content_list`：增加 `_apply_tag_filter` 过滤，筛选激活时仅保留匹配的 content_unit 条目
+- `_on_tag_filter_changed`：筛选激活时保留 MetadataPanel 可见性（Q6: A 修正：不清空不隐藏），刷新中栏
+- `_on_content_selection_changed`：筛选激活时仍响应单击加载 MetadataPanel（Q6: A 修正）
+- `_on_mode_changed`：整理模式隐藏 TagFilterBar；切回浏览模式恢复，已选标签保留
+- `_on_tag_manager_clicked`：标签管理对话框关闭后调用 `_refresh_tag_filter_bar()`，自动剔除已删除的已选标签并重新筛选
+
+**测试覆盖**
+
+- `test_tag_service.py` 新增 `TestListContentUnitIdsByTags`（4 项）+ `TestFilterUnitIdsByCategoryAnd`（6 项）
+- `test_tag_filter.py` 新建，覆盖 16 项：初始状态、分类展开/折叠、互斥、标签多选 toggle、信号发射、清除按钮、折叠保留已选、徽标、refresh_categories 保留/剔除、空分类提示
+- `test_main_window_tag_filter.py` 新建，覆盖 11 项：创建条件、模式显隐、筛选激活行为、空结果提示、目录切换保留、MetadataPanel 保留加载（Q6: A）
+
 ### 2026-07-25 阶段 4 Task 2：验收修正（单击加载 + 预选标签 + 回车不关闭窗口 + 整理模式右栏方案 B）
 
 Stage 4 Task 2 手动验收发现的 4 项问题修正。schema_version 维持 6，无数据库迁移。所有修正均围绕交互体验与设计一致性，不涉及数据结构变化。
