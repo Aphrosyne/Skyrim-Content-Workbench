@@ -14,6 +14,14 @@
 - 名称/类型列排序时文件夹优先在前；大小/日期列按值排序，文件夹（None）排到最后。
 - 默认排序：文件夹优先 + 名称升序。
 
+Stage 4 Task 4（缩略图）：
+- set_thumbnail_provider(provider)：注入缩略图查询回调（unit_id, source_path）→ QPixmap | None。
+- DecorationRole 优先级：
+  1. 内容单元 + 有 cover_path + provider 返回 QPixmap → 显示封面缩略图
+  2. 其他情况 → Qt 标准文件/文件夹图标
+- notify_thumbnail_ready(unit_id)：缩略图后台生成完成后调用，触发对应行 dataChanged。
+- 缓存 QPixmap（按 unit_id），避免每次 data() 都查询 provider。
+
 数据角色：
 - DisplayRole：各列文本。
 - DecorationRole：仅名称列返回 QIcon。
@@ -24,9 +32,11 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from pathlib import Path
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QStyle
 
 from app import ui_constants as ui
@@ -46,6 +56,9 @@ SORT_NAME = "name"
 SORT_TYPE = "type"
 SORT_SIZE = "size"
 SORT_MODIFIED = "modified"
+
+# 缩略图 provider 签名：(content_unit_id, source_path) → QPixmap | None
+ThumbnailProvider = Callable[[str, str], QPixmap | None]
 
 
 def _display_name(entry: FileEntry) -> str:
@@ -118,6 +131,10 @@ class FileListModel(QAbstractTableModel):
         self._dir_icon: QIcon | None = None
         self._file_icon: QIcon | None = None
         self._icons_initialized = False
+        # Stage 4 Task 4：缩略图 provider + QPixmap 缓存
+        self._thumbnail_provider: ThumbnailProvider | None = None
+        # unit_id → QPixmap (None 表示不可用)
+        self._thumbnail_cache: dict[str, QPixmap | None] = {}
 
     # --- QAbstractTableModel 必需方法 ---
 
@@ -183,6 +200,8 @@ class FileListModel(QAbstractTableModel):
         self.beginResetModel()
         self._entries = list(entries)
         self._apply_sort()
+        # 清空缩略图缓存（新列表可能 unit_id 集合不同）
+        self._thumbnail_cache.clear()
         self.endResetModel()
 
     def set_sort_key(self, sort_key: str, ascending: bool) -> None:
@@ -240,7 +259,33 @@ class FileListModel(QAbstractTableModel):
     # --- 内部 ---
 
     def _icon_for(self, entry: FileEntry) -> QIcon | None:
-        """返回 Qt 内置标准图标。使用缓存避免高频事件反复渲染（性能优化）。"""
+        """返回条目图标。
+
+        Stage 4 Task 4 优先级：
+        1. 内容单元 + 有 cover_path + provider 返回 QPixmap → 封面缩略图（QIcon 包装）
+        2. 其他情况 → Qt 标准文件/文件夹图标
+        """
+        # 优先尝试缩略图
+        if (
+            self._thumbnail_provider is not None
+            and entry.content_unit is not None
+            and entry.content_unit.cover_path
+        ):
+            unit_id = entry.content_unit.id
+            # 缓存命中
+            if unit_id in self._thumbnail_cache:
+                pixmap = self._thumbnail_cache[unit_id]
+                if pixmap is not None:
+                    return QIcon(pixmap)
+                # None 表示 provider 已查过但无可用缩略图 → 退化为标准图标
+            else:
+                # 调用 provider（可能同步返回 QPixmap，或返回 None 触发后台生成）
+                source_path = str(Path(entry.content_unit.path) / entry.content_unit.cover_path)
+                pixmap = self._thumbnail_provider(unit_id, source_path)
+                self._thumbnail_cache[unit_id] = pixmap
+                if pixmap is not None:
+                    return QIcon(pixmap)
+        # 退化为标准图标
         self._ensure_icons()
         return self._dir_icon if entry.is_dir else self._file_icon
 
@@ -257,3 +302,35 @@ class FileListModel(QAbstractTableModel):
         self._dir_icon = style.standardIcon(QStyle.SP_DirIcon)
         self._file_icon = style.standardIcon(QStyle.SP_FileIcon)
         self._icons_initialized = True
+
+    # --- Stage 4 Task 4：缩略图接口 ---
+
+    def set_thumbnail_provider(self, provider: ThumbnailProvider | None) -> None:
+        """注入缩略图查询回调。
+
+        provider 签名：(content_unit_id: str, source_path: str) → QPixmap | None
+        - 返回 QPixmap：缓存命中，立即显示
+        - 返回 None：缓存未命中，由 provider 内部决定是否投递后台生成
+
+        设为 None 可禁用缩略图功能（退化为标准图标）。
+        """
+        self._thumbnail_provider = provider
+        # 切换 provider 时清空缓存，强制重新查询
+        self._thumbnail_cache.clear()
+
+    def notify_thumbnail_ready(self, content_unit_id: str) -> None:
+        """缩略图后台生成完成后调用，触发对应行重绘。
+
+        清除该 unit_id 的缓存（下次 data() 调用会重新查询 provider），
+        然后发射 dataChanged 信号触发 view 重绘对应行。
+        """
+        # 清除缓存（让下次 data() 重新查询 provider 获取新生成的缩略图）
+        if content_unit_id in self._thumbnail_cache:
+            del self._thumbnail_cache[content_unit_id]
+        # 找到对应行
+        for row, entry in enumerate(self._entries):
+            if entry.content_unit is not None and entry.content_unit.id == content_unit_id:
+                idx1 = self.index(row, COL_NAME)
+                idx2 = self.index(row, COL_NAME)
+                self.dataChanged.emit(idx1, idx2, [Qt.DecorationRole])
+                break

@@ -42,7 +42,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt, QThread
-from PySide6.QtGui import QFontMetrics
+from PySide6.QtGui import QFontMetrics, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -79,6 +79,7 @@ from app.mode_manager import ModeManager
 from app.scan_worker import ScanWorker
 from app.tag_filter import TagFilterBar
 from app.tag_manager_dialog import TagManagerDialog
+from app.thumbnail_coordinator import ThumbnailCoordinator
 from application.assembly_service import AssemblyService
 from application.content_service import ContentService
 from application.errors import (
@@ -135,6 +136,7 @@ class MainWindow(QMainWindow):
         quick_insert_service: QuickInsertService | None = None,
         rollback_callback: Callable[[], None] | None = None,
         tag_service: TagService | None = None,
+        thumbnail_coordinator: ThumbnailCoordinator | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -149,6 +151,8 @@ class MainWindow(QMainWindow):
         self._assembly_service = assembly_service
         self._quick_insert_service = quick_insert_service
         self._tag_service = tag_service
+        # Stage 4 Task 4：缩略图调度器（可选注入，便于测试）
+        self._thumbnail_coordinator = thumbnail_coordinator
         self._thread: QThread | None = None
         self._worker: ScanWorker | None = None
         self._is_scanning = False
@@ -168,11 +172,47 @@ class MainWindow(QMainWindow):
         self._refresh_root_list()
         self._refresh_tree()
 
+        # Stage 4 Task 4：初始化缩略图调度器
+        self._init_thumbnail_coordinator()
+
+    def _init_thumbnail_coordinator(self) -> None:
+        """初始化缩略图调度器并连接信号。
+
+        若 thumbnail_coordinator 已注入（测试场景），直接使用；
+        否则创建独立连接 + Service + Coordinator。
+        """
+        if self._thumbnail_coordinator is None:
+            return  # 未注入 → 文件列表退化为标准图标
+        self._thumbnail_coordinator.start()
+        self._thumbnail_coordinator.thumbnail_ready.connect(
+            self._on_thumbnail_ready,
+            Qt.QueuedConnection,  # noqa: UP037
+        )
+        # 注入 provider 到 FileListModel
+        self._content_list_model.set_thumbnail_provider(self._thumbnail_provider)
+
+    def _thumbnail_provider(
+        self,
+        content_unit_id: str,
+        source_path: str,
+    ) -> QPixmap | None:
+        """缩略图查询回调：缓存命中同步返回 QPixmap，未命中投递后台生成。"""
+        if self._thumbnail_coordinator is None:
+            return None
+        return self._thumbnail_coordinator.request_thumbnail(content_unit_id, Path(source_path))
+
+    def _on_thumbnail_ready(self, content_unit_id: str) -> None:
+        """后台缩略图生成完成：刷新对应行 DecorationRole。"""
+        self._content_list_model.notify_thumbnail_ready(content_unit_id)
+
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         """关闭窗口前等待后台线程退出，避免 QThread Running 状态析构 CTD。"""
         if self._thread is not None and self._thread.isRunning():
             self._thread.quit()
             self._thread.wait(5000)
+        # Stage 4 Task 4：等待缩略图 coordinator 退出
+        if self._thumbnail_coordinator is not None:
+            self._thumbnail_coordinator.shutdown()
         super().closeEvent(event)
 
     def _commit(self) -> None:
@@ -1499,9 +1539,15 @@ class MainWindow(QMainWindow):
         """MetadataPanel 保存成功 → 提交事务 + 刷新中栏 + 状态栏提示。
 
         事务边界：MetadataPanel 不自提交，由 MainWindow 在信号回调中提交。
+
+        Stage 4 Task 4：封面字段变更时失效缩略图缓存。
+        简化策略：每次保存都失效该 unit 的缓存（下次列表刷新时重新生成或重新查询缓存）。
         """
         self._commit()
-        # 刷新中栏文件列表（标题可能在列表项中显示）
+        # Stage 4 Task 4：失效该 unit 的缩略图缓存（封面可能已变更/清除）
+        if self._thumbnail_coordinator is not None:
+            self._thumbnail_coordinator.invalidate(updated_unit.id)
+        # 刷新中栏文件列表（标题可能在列表项中显示，封面图标也可能变化）
         self._refresh_content_list_for_current_mode()
         # 同步元数据面板状态（updated_unit 包含最新字段）
         self._update_metadata(updated_unit)

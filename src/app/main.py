@@ -14,9 +14,10 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
-from app.app_paths import ensure_app_directories, get_app_db_path
+from app.app_paths import ensure_app_directories, get_app_db_path, get_thumbnails_dir
 from app.logging_setup import setup_logging
 from app.main_window import MainWindow
+from app.thumbnail_coordinator import ThumbnailCoordinator
 from application.assembly_service import AssemblyService
 from application.content_service import ContentService
 from application.folder_tree_service import FolderTreeService
@@ -25,6 +26,7 @@ from application.mod_group_service import ModGroupService
 from application.quick_insert_service import QuickInsertService
 from application.staging_service import StagingService
 from application.tag_service import TagService
+from application.thumbnail_service import ThumbnailService
 from infrastructure.db import get_connection, init_db
 from infrastructure.file_operation_service import FileOperationService
 from infrastructure.repositories.content_unit import ContentUnitRepository
@@ -35,6 +37,7 @@ from infrastructure.repositories.operation_history import OperationHistoryReposi
 from infrastructure.repositories.staging_area import StagingAreaRepository
 from infrastructure.repositories.tag import TagRepository
 from infrastructure.repositories.tag_category import TagCategoryRepository
+from infrastructure.repositories.thumbnail_cache import ThumbnailCacheRepository
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +118,34 @@ def main() -> int:
     else:
         logger.warning("预置标签库文件不存在：%s", _DEFAULT_TAGS_JSON)
 
+    # Stage 4 Task 4：缩略图 service + coordinator
+    # GC（Q8: B）：启动时清理无对应 content_unit 的缓存
+    try:
+        thumbnail_service = ThumbnailService(
+            cache_repo=ThumbnailCacheRepository(conn),
+            content_unit_repo=ContentUnitRepository(conn),
+            thumbnails_dir=get_thumbnails_dir(),
+            size=64,
+        )
+        cleaned = thumbnail_service.cleanup_orphans()
+        if cleaned > 0:
+            logger.info("启动 GC 清理 %d 条孤立缩略图缓存", cleaned)
+        conn.commit()
+    except Exception:  # noqa: BLE001 - 启动阶段任何异常都不能阻塞 UI
+        logger.exception("缩略图 GC 失败（非致命，继续启动）")
+        thumbnail_service = None
+
+    thumbnail_coordinator = (
+        ThumbnailCoordinator(
+            thumbnail_service=thumbnail_service,
+            db_path=db_path,
+            thumbnails_dir=get_thumbnails_dir(),
+            size=64,
+        )
+        if thumbnail_service is not None
+        else None
+    )
+
     app = QApplication(sys.argv)
     window = MainWindow(
         managed_root_service,
@@ -128,6 +159,7 @@ def main() -> int:
         quick_insert_service=quick_insert_service,
         rollback_callback=conn.rollback,
         tag_service=tag_service,
+        thumbnail_coordinator=thumbnail_coordinator,
     )
     window.show()
     exit_code = app.exec()

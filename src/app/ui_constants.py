@@ -325,3 +325,8 @@ TAG_FILTER_NO_CATEGORIES_HINT = "（暂无标签分类，请在标签管理中�
 TAG_FILTER_CATEGORY_EMPTY_HINT = "（该分类下无标签）"
 TAG_FILTER_NO_RESULT_HINT = "无符合筛选条件的内容单元。"
 TAG_FILTER_CATEGORY_BADGE = " ({count})"  # 折叠态下分类按钮显示的已选标签数徽标
+
+# 缩略图（Stage 4 Task 4，spec §9）
+THUMBNAIL_SIZE = 64  # 列表中小图标尺寸（默认值，spec §9「列表模式下小图标」）
+THUMBNAIL_FORMAT = "PNG"  # 缓存文件格式（保留透明通道，与圆角兼容）
+THUMBNAIL_FILENAME_TEMPLATE = "{unit_id}.png"  # 缓存文件命名（spec §9 / architecture.md §9）

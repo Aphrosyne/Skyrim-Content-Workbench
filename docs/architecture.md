@@ -504,20 +504,46 @@ ScanService.scan(managed_root)
 
 ## 9. 缩略图架构
 
-> 缩略图功能尚未在新架构下实现，计划在阶段 4 Task 4（封面预览）完成。
-> 旧版 `ThumbnailGenerator` / `ThumbnailCoordinator` / `ThumbnailWorker` 源文件已删除，
-> 仅保留 `thumbnail_cache` 表在数据库 schema（FK 已改为 `content_unit_id`）。
+> 阶段 4 Task 4（封面预览）已实现。完整流程：UI 请求 → Coordinator 调度 →
+> Worker 在 QThread 中调用 ThumbnailService.generate → Pillow 只读加载源图并
+> 写入缓存 PNG。缓存命中时 UI 同步获得 QPixmap。
 
-### 实现要求
+### 分层与职责
 
-- 使用 Pillow 只读加载源图，生成缩略图写入应用缓存目录
+- `infrastructure/thumbnail_generator.py`：纯生成逻辑。Pillow 只读加载源图、
+  保持宽高比缩放到配置尺寸（默认 64×64，Q1:C 可配置）、应用圆角遮罩（Q2:C）、
+  写入 PNG。异常分类：`ThumbnailSourceNotFoundError` / `ThumbnailSourceCorruptError` /
+  `ThumbnailSourceUnsupportedError`。
+- `infrastructure/repositories/thumbnail_cache.py`：`thumbnail_cache` 表 CRUD
+  （upsert / get_by_id / delete / list_all / list_by_unit_ids）。
+- `application/thumbnail_service.py`：业务编排。
+  - `get_cache(unit_id, source_path)`：缓存命中同步返回 Path，未命中返回 None
+  - `generate(unit_id, source_path)`：生成 + 写入缓存记录，按异常分类记录 status
+    （ok / missing / corrupt / unsupported / error）
+  - `invalidate(unit_id)`：删除缓存记录与文件（封面更换/清除时调用）
+  - `cleanup_orphans()`：启动时清理无对应 content_unit 的缓存记录与孤立 PNG 文件
+    （Q8:B）
+- `app/thumbnail_worker.py`：QObject + QThread worker。在 `run()` 内创建独立 SQLite
+  连接，调用 `ThumbnailService.generate`，发射 `thumbnail_ready(unit_id, status)`
+  或 `thumbnail_failed(unit_id, error)`。
+- `app/thumbnail_coordinator.py`：调度器。管理 FIFO 队列 + 去重 set。
+  - `request_thumbnail(unit_id, source_path)`：缓存命中同步返回 QPixmap，未命中
+    入队后台生成
+  - `thumbnail_ready` 信号 → MainWindow → `FileListModel.notify_thumbnail_ready`
+    → 触发对应行 `dataChanged(DecorationRole)` 重绘
+  - `shutdown()`：清空队列 + 等待当前 worker 退出（`closeEvent` 调用）
+
+### 关键约束
+
 - 关联键：`content_unit_id`
-- 源路径：`ContentUnit.path` + `cover_path`
+- 源路径：`ContentUnit.path` + `cover_path`（仅 `cover_path` 非空时生成）
 - 缩略图缓存目录：`%LOCALAPPDATA%\SkyrimContentWorkbench\thumbnails\`
 - 缓存文件命名：`{content_unit_id}.png`
-- 缓存有效性基于 `content_unit_id + source_size + source_modified_at`
+- 缓存有效性基于 `content_unit_id + source_size + source_modified_at + 文件存在`
 - 后台线程生成（QThread + 独立 SQLite 连接），不冻结 UI
 - 始终只读访问用户原图；不修改、不压缩、不覆盖
+- UI 层（FileListModel）通过注入的 `thumbnail_provider` 回调获取 QPixmap，
+  不直接调用 infrastructure / Pillow
 
 ---
 

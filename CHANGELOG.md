@@ -8,6 +8,64 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### 2026-07-27 阶段 4 Task 4：封面预览
+
+为内容单元在文件列表中显示封面缩略图，新增缩略图缓存系统与后台生成调度。schema_version 维持 6，无数据库迁移（`thumbnail_cache` 表已在 schema v3/v4 中创建）。
+
+**用户确认的设计决策（Q1-Q9）**
+
+- Q1: C — 缩略图尺寸可配置（默认 64×64，验收时判断大小是否合适）
+- Q2: C — 应用圆角边框（Pillow 绘制圆角遮罩，半径 = size × 0.18）
+- Q3: A — 缩略图源图 = ContentUnit.path + cover_path（无 cover_path 不生成）
+- Q4: A — 缓存有效性 = content_unit_id + source_size + source_modified_at + 文件存在
+- Q5: A — 缓存未命中直接投递后台生成，无前置状态查询
+- Q6: A — 单 worker + FIFO 队列（避免并发与 SQLite 锁）
+- Q7: A — 同一 unit_id 在途时去重（不重复投递）
+- Q8: B — 启动时执行 GC：清理无对应 content_unit 的缓存记录 + 目录中无 DB 记录的 PNG 文件
+- Q9: A — UI 层（FileListModel）通过注入的 thumbnail_provider 回调获取 QPixmap，不直接调用 infrastructure
+
+**Application 层新增**
+
+- `ThumbnailService`：
+  - `get_cache(unit_id, source_path) -> Path | None`：缓存命中同步返回 Path
+  - `generate(unit_id, source_path) -> str`：生成缩略图 + 写入缓存记录，返回 status（ok/missing/corrupt/unsupported/error）
+  - `invalidate(unit_id)`：删除缓存记录与文件
+  - `cleanup_orphans() -> int`：GC 清理孤立缓存（Q8:B）
+
+**Infrastructure 层新增**
+
+- `thumbnail_generator.py`：`generate_thumbnail(source_path, cache_path, size)`，Pillow 只读加载 + 保持宽高比缩放 + 应用圆角遮罩 + 写入 PNG
+- `repositories/thumbnail_cache.py`：`ThumbnailCacheRepository` 提供 upsert / get_by_id / delete / list_all / list_by_unit_ids
+
+**UI 层新增组件**
+
+- `app/thumbnail_worker.py`：`ThumbnailWorker(QObject)`，在 QThread 中创建独立 SQLite 连接调用 `ThumbnailService.generate`，发射 `thumbnail_ready(unit_id, status)` / `thumbnail_failed(unit_id, error)`
+- `app/thumbnail_coordinator.py`：`ThumbnailCoordinator(QObject)`，管理 FIFO 队列 + 去重 set + 单 worker 调度，提供 `request_thumbnail` / `invalidate` / `shutdown` 接口
+- `FileListModel` 新增 `set_thumbnail_provider(provider)` / `notify_thumbnail_ready(unit_id)`，DecorationRole 调用 provider 获取 QPixmap
+
+**MainWindow 集成调整**
+
+- 构造注入 `thumbnail_coordinator` 参数（可选，未注入时退化为标准图标）
+- `_init_thumbnail_coordinator`：启动 coordinator + 注入 provider 到 FileListModel
+- `_thumbnail_provider`：缓存命中同步返回 QPixmap，未命中投递后台生成
+- `_on_thumbnail_ready`：调用 `FileListModel.notify_thumbnail_ready` 刷新对应行
+- `_on_metadata_saved`：保存元数据后调用 `coordinator.invalidate` 失效旧缓存（封面变更场景）
+- `closeEvent`：调用 `coordinator.shutdown()` 等待后台线程退出（避免 Windows STATUS_STACK_BUFFER_OVERRUN 崩溃）
+- `app/main.py`：启动时创建 ThumbnailService 并执行 `cleanup_orphans()`（GC，Q8:B）
+
+**测试覆盖**
+
+- `test_thumbnail_generator.py`：11 项 — 生成成功、圆角应用、覆盖写入、源图不存在/不支持/损坏、各种格式（JPG/PNG/WEBP/GIF/BMP/TIFF/ICO）、源图签名
+- `test_thumbnail_cache_repository.py`：9 项 — CRUD、批量查询、空输入处理
+- `test_thumbnail_service.py`：14 项 — 缓存命中/未命中、各种异常状态记录、invalidate、GC 清理孤立记录/文件、保留有效缓存
+- `test_thumbnail_coordinator.py`：8 项 — 缓存命中/未命中、去重、invalidate、shutdown、thumbnail_ready 信号、可配置尺寸
+- `test_file_list_model_thumbnail.py`：8 项 — DecorationRole 注入、provider 调用、notify_thumbnail_ready 触发刷新、未注入 provider 退化为标准图标
+- `test_main_window_thumbnail.py`：4 项 — coordinator 未注入降级、注入初始化 provider、closeEvent 调用 shutdown、metadata_saved 触发 invalidate
+
+**已知未实现项**
+
+- 浏览模式下大图卡片展示封面（roadmap Task 4 验收项之一）：本轮仅实现列表小图标，大图卡片延后到下一阶段
+
 ### 2026-07-27 阶段 4 Task 3：标签筛选
 
 浏览模式下中栏顶部新增标签筛选栏，支持多分类多选标签实时筛选内容单元。schema_version 维持 6，无数据库迁移。

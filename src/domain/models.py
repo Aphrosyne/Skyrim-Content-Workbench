@@ -161,6 +161,34 @@ class ManagedRoot:
 
 
 @dataclass
+class ThumbnailCache:
+    """缩略图缓存记录。spec §4.8 / §9。
+
+    关联键为 content_unit_id（一个内容单元至多一条缓存）。
+    缓存有效性由调用方按 (source_size_bytes, source_modified_at, 文件存在性) 判断。
+
+    status 取值：
+    - 'ok'：生成成功
+    - 'missing'：源图文件不存在
+    - 'corrupt'：Pillow 无法解码（文件损坏）
+    - 'unsupported'：不支持的图片格式
+    - 'error'：其他异常
+    """
+
+    content_unit_id: str
+    source_size_bytes: int
+    source_modified_at: str  # ISO 8601 UTC
+    cache_filename: str  # 相对 thumbnails 目录的文件名（如 "{unit_id}.png"）
+    status: str
+    generated_at: str  # ISO 8601 UTC
+    error_message: str | None = None
+
+    def is_ok(self) -> bool:
+        """返回缓存是否可用（status == 'ok'）。"""
+        return self.status == "ok"
+
+
+@dataclass
 class FileEntry:
     """目录条目（文件或文件夹）+ 可选的内容单元关联。
 

@@ -384,18 +384,19 @@
 - [x] TagService 未注入时 TagFilterBar 不创建（降级兼容）
 - [x] 标签库为空时 TagFilterBar 隐藏
 
-### Task 4：封面预览
+### Task 4：封面预览 ✅
 
-- 内容单元列表中以小图标显示封面
-- 浏览模式下大图卡片展示封面
-- 缩略图缓存（复用 ThumbnailGenerator，关联改为 content_unit_id）
+- 内容单元列表中以小图标显示封面（FileListModel DecorationRole 注入 thumbnail_provider）
+- 缩略图缓存（ThumbnailGenerator + ThumbnailService + ThumbnailCacheRepository，关联键 content_unit_id）
+- 后台生成（QThread + Coordinator 模式，缓存命中同步返回）
+- 启动 GC 清理孤立缓存（Q8:B）
 
 **验收：**
-- [ ] 列表中小图标显示封面
-- [ ] 大图卡片正确展示
-- [ ] 无封面时显示占位
-- [ ] 缩略图缓存写入应用目录
-- [ ] 源图不被修改
+- [x] 列表中小图标显示封面
+- [ ] 大图卡片正确展示（暂未实现，仅小图标；大图卡片延后到下一阶段）
+- [x] 无封面时显示占位（退化为 Qt 标准图标）
+- [x] 缩略图缓存写入应用目录（`%LOCALAPPDATA%\SkyrimContentWorkbench\thumbnails\`）
+- [x] 源图不被修改（Pillow 只读加载，缓存独立写入）
 
 ---
 
