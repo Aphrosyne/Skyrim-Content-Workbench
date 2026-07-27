@@ -169,6 +169,31 @@ class TestList:
         # 按 content_unit_id 排序
         assert ids == ["cu-1", "cu-2"]
 
+    def test_list_tag_rows_by_content_unit_returns_joined_rows(
+        self, db_connection: sqlite3.Connection
+    ) -> None:
+        """list_tag_rows_by_content_unit 应 JOIN tag 表返回完整 tag 信息，按 name 排序。"""
+        _seed_category(db_connection, category_id="c-1", name="服装护甲")
+        _seed_tag(db_connection, tag_id="t-1", name="重甲", category_id="c-1")
+        _seed_tag(db_connection, tag_id="t-2", name="轻甲", category_id="c-1")
+        _seed_content_unit(db_connection)
+        repo = ContentUnitTagRepository(db_connection)
+        repo.attach("cu-1", "t-1")
+        repo.attach("cu-1", "t-2")
+        rows = repo.list_tag_rows_by_content_unit("cu-1")
+        assert len(rows) == 2
+        # 按 tag.name 排序（轻甲 < 重甲）
+        assert rows[0]["name"] == "轻甲"
+        assert rows[0]["category_id"] == "c-1"
+        assert rows[1]["name"] == "重甲"
+
+    def test_list_tag_rows_by_content_unit_empty(self, db_connection: sqlite3.Connection) -> None:
+        """无标签的内容单元返回空列表。"""
+        _seed_content_unit(db_connection)
+        repo = ContentUnitTagRepository(db_connection)
+        rows = repo.list_tag_rows_by_content_unit("cu-1")
+        assert rows == []
+
 
 class TestCount:
     def test_count_by_tag(self, db_connection: sqlite3.Connection) -> None:

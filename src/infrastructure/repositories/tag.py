@@ -104,6 +104,23 @@ class TagRepository:
             raise RepositoryError(f"无法按 ID 列表查询 Tag：{e}") from e
         return [self._row_to_model(r) for r in rows]
 
+    def search_by_name_prefix(self, prefix: str, limit: int = 20) -> list[Tag]:
+        """按 name 前缀匹配查询标签（用于 UI 自动补全）。
+
+        使用 LIKE 'prefix%' 走索引；空 prefix 返回空列表。
+        结果按 name 升序，最多 limit 条。
+        """
+        if not prefix:
+            return []
+        try:
+            rows = self._conn.execute(
+                "SELECT * FROM tag WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?",
+                (_like_escape(prefix) + "%", limit),
+            ).fetchall()
+        except sqlite3.Error as e:
+            raise RepositoryError(f"无法按前缀查询 Tag：{e}") from e
+        return [self._row_to_model(r) for r in rows]
+
     def update(self, tag: Tag) -> Tag:
         """全字段更新。实体不存在抛 NotFoundError；重名抛 ConstraintViolationError。"""
         try:
@@ -149,3 +166,8 @@ class TagRepository:
             name=row["name"],
             category_id=row["category_id"],
         )
+
+
+def _like_escape(s: str) -> str:
+    """转义 LIKE 模式中的特殊字符（\\ % _）。"""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

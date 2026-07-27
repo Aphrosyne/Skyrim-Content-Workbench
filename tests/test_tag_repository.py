@@ -228,3 +228,59 @@ class TestDelete:
         # 直接 delete 会因 FK 违约失败，Repository 捕获并包装为 RepositoryError
         with pytest.raises(RepositoryError):
             repo.delete("t-1")
+
+
+class TestSearchByNamePrefix:
+    def test_empty_prefix_returns_empty(self, db_connection: sqlite3.Connection) -> None:
+        _seed_cat(db_connection)
+        repo = TagRepository(db_connection)
+        repo.create(_make_tag(tag_id="t-1", name="重甲"))
+        db_connection.commit()
+
+        assert repo.search_by_name_prefix("") == []
+
+    def test_prefix_match(self, db_connection: sqlite3.Connection) -> None:
+        _seed_cat(db_connection)
+        repo = TagRepository(db_connection)
+        repo.create(_make_tag(tag_id="t-1", name="重甲"))
+        repo.create(_make_tag(tag_id="t-2", name="轻甲"))
+        repo.create(_make_tag(tag_id="t-3", name="法袍"))
+        db_connection.commit()
+
+        results = repo.search_by_name_prefix("重")
+        assert len(results) == 1
+        assert results[0].name == "重甲"
+
+    def test_chinese_prefix(self, db_connection: sqlite3.Connection) -> None:
+        _seed_cat(db_connection)
+        repo = TagRepository(db_connection)
+        repo.create(_make_tag(tag_id="t-1", name="已测试"))
+        repo.create(_make_tag(tag_id="t-2", name="已汉化"))
+        repo.create(_make_tag(tag_id="t-3", name="待测试"))
+        db_connection.commit()
+
+        results = repo.search_by_name_prefix("已")
+        assert {t.name for t in results} == {"已测试", "已汉化"}
+
+    def test_limit_enforced(self, db_connection: sqlite3.Connection) -> None:
+        _seed_cat(db_connection)
+        repo = TagRepository(db_connection)
+        for i in range(30):
+            repo.create(_make_tag(tag_id=f"t-{i}", name=f"标签{i:02d}"))
+        db_connection.commit()
+
+        results = repo.search_by_name_prefix("标签", limit=5)
+        assert len(results) == 5
+
+    def test_like_special_chars_escaped(self, db_connection: sqlite3.Connection) -> None:
+        """包含 % 和 _ 的标签应正确匹配（LIKE 通配符被转义）。"""
+        _seed_cat(db_connection)
+        repo = TagRepository(db_connection)
+        repo.create(_make_tag(tag_id="t-1", name="50%_off"))
+        repo.create(_make_tag(tag_id="t-2", name="50_off"))
+        db_connection.commit()
+
+        # 搜索 "50%" 应只匹配 "50%_off"（% 被转义为字面字符）
+        results = repo.search_by_name_prefix("50%")
+        assert len(results) == 1
+        assert results[0].name == "50%_off"

@@ -8,6 +8,164 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### 2026-07-25 阶段 4 Task 2：验收修正（单击加载 + 预选标签 + 回车不关闭窗口 + 整理模式右栏方案 B）
+
+Stage 4 Task 2 手动验收发现的 4 项问题修正。schema_version 维持 6，无数据库迁移。所有修正均围绕交互体验与设计一致性，不涉及数据结构变化。
+
+**用户确认的设计修正**
+
+- **问题 1（MetadataPanel 单击加载）**：原双击为主要入口不符合产品交互。修正为单击内容单元即加载 MetadataPanel（spec §7.2 主要交互入口）；双击行为兼容保留；单击非内容单元按设计清空元数据面板。`_on_content_selection_changed` 早已实现此逻辑，本轮修正确认其生效并补齐测试。
+- **问题 2（预选标签区域）**：标签输入框下方新增预选标签列表，显示所有已有标签（排除已在 chip 列表中的），单击即可快速添加到 chip。同时应用到 `MetadataPanel` 与 `BatchTagDialog`。
+- **问题 3（BatchTagDialog 回车行为）**：原回车触发默认按钮导致窗口关闭、立即执行添加，无法连续添加多个标签。通过 `setAutoDefault(False)` 禁用 `_ok_button` / `_cancel_button` 的自动默认行为，回车仅触发输入框 `returnPressed` 信号，把标签加入 dialog 内的 chip 列表，不关闭窗口、不立即执行。最终点击「应用」按钮才执行批量添加。`CoverPickerDialog` 同步修正。
+- **问题 4（整理模式右栏设计修正为方案 B）**：原决策 4/8 整理模式完全隐藏右栏，但实测后右侧空白，无法释放空间。用户决策改为方案 B：保留 MetadataPanel，让用户在装配同时编辑元数据，避免创建完内容单元后切回浏览模式才能编辑元数据的多余步骤。`_on_mode_changed` 移除隐藏逻辑。
+
+**UI 层新增组件**
+
+- MetadataPanel / BatchTagDialog 预选标签区域：`QListWidget` LeftToRight + Wrapping，单击添加到 chip，添加后从预选列表移除，chip 移除后回归预选列表。空状态显示 `METADATA_PANEL_PRESET_TAGS_EMPTY_HINT` / `BATCH_TAG_DIALOG_PRESET_TAGS_EMPTY_HINT`。
+
+**MainWindow 集成调整**
+
+- `_on_mode_changed` 移除整理模式隐藏右栏逻辑（原 `_metadata_group.setVisible(False)`），两种模式下右栏均可见。
+- `_on_content_selection_changed` 单击加载逻辑保持不变（已实现，本轮补齐测试）。
+
+**UI 常量**
+
+- 新增 4 个常量：`METADATA_PANEL_PRESET_TAGS_LABEL` / `METADATA_PANEL_PRESET_TAGS_EMPTY_HINT` / `BATCH_TAG_DIALOG_PRESET_TAGS_LABEL` / `BATCH_TAG_DIALOG_PRESET_TAGS_EMPTY_HINT`。
+
+**测试覆盖**
+
+新增 16 项测试：
+
+- `tests/test_metadata_panel.py`（追加 6 项）：预选列表初始空 / load_unit 填充并排除 chip / 单击添加 / chip 移除回归 / clear_panel 清空 / 全部 chip 排除。
+- `tests/test_batch_tag_dialog.py`（追加 6 项）：预选列表初始填充 / 排除已加 chip / 单击添加 / chip 移除回归 / 全部 chip 排除 / 回车不关闭窗口（单次 + 多次）/ 仅「应用」按钮触发 accept。
+- `tests/test_main_window_metadata.py`（追加 2 项 + 替换 2 项）：单击内容单元加载 / 单击非内容单元清空；删除 `test_organize_mode_hides_metadata_panel` / `test_browse_mode_restores_metadata_panel`，替换为 `test_organize_mode_keeps_metadata_panel_visible` / `test_organize_to_browse_keeps_metadata_panel_visible`。
+
+#### Added
+
+- [src/app/metadata_panel.py](src/app/metadata_panel.py)：新增预选标签区域（`_preset_label` / `_preset_list` / `_preset_empty_hint`）+ `_on_preset_tag_clicked` / `_refresh_preset_list` 方法 + `preset_tag_names()` / `click_preset_tag()` 测试辅助接口。
+- [src/app/batch_tag_dialog.py](src/app/batch_tag_dialog.py)：同上新增预选标签区域。
+- [src/app/ui_constants.py](src/app/ui_constants.py)：新增 4 个预选标签相关常量。
+- [tests/test_metadata_panel.py](tests/test_metadata_panel.py)：追加 6 项预选标签测试。
+- [tests/test_batch_tag_dialog.py](tests/test_batch_tag_dialog.py)：追加 6 项预选标签 + 3 项回车行为测试。
+- [tests/test_main_window_metadata.py](tests/test_main_window_metadata.py)：追加 2 项单击加载测试 + 替换 2 项整理模式测试。
+
+#### Changed
+
+- [src/app/metadata_panel.py](src/app/metadata_panel.py)：`load_unit` / `clear_panel` / `_on_tag_input_return` / `_on_tag_clicked` 调用 `_refresh_preset_list`；`_set_form_enabled` 启用/禁用新增的 `_preset_list`。
+- [src/app/batch_tag_dialog.py](src/app/batch_tag_dialog.py)：`_on_tag_input_return` / `_on_tag_clicked` 调用 `_refresh_preset_list`；`_ok_button` / `_cancel_button` 调用 `setAutoDefault(False)`。
+- [src/app/cover_picker_dialog.py](src/app/cover_picker_dialog.py)：按钮调用 `setAutoDefault(False)`（同步修正，避免回车关闭）。
+- [src/app/main_window.py](src/app/main_window.py)：`_on_mode_changed` 移除整理模式隐藏右栏逻辑（决策 4/8 推翻，方案 B）；`is_metadata_panel_visible()` docstring 更新；模块 docstring 移除"双击内容单元时显示"的旧描述。
+- [docs/architecture.md](docs/architecture.md)：§3.1 调整整理模式右栏描述；§4.3 元数据保存流程更新为「单击加载」。
+- [docs/roadmap.md](docs/roadmap.md)：Task 2 验收项 + 决策修正记录。
+
+### 2026-07-19 阶段 4 Task 2：元数据编辑
+
+Stage 4 第二项功能开发。实现 spec §4.1 / §5.1 / §7.2 / §9 / §10 定义的元数据编辑 + 打标签 + 批量打标签 + 封面选择能力。schema_version 维持 6，无数据库迁移。合并原 roadmap 中 Task 2「元数据编辑」和「打标签」为单个 Task 一次性做完（设计决策：同一个右栏面板操作）。
+
+**用户确认的 8 项设计决策**
+
+1. 元数据保存策略：显式「保存」按钮（不做自动保存）。
+2. 封面自动候选：CoverPickerDialog 默认选中第一张图片。
+3. N 网 URL 自动合成：本 Task 不实现，留待后续。
+4. 整理模式右栏：完全隐藏 MetadataPanel。
+5. 标签自动补全匹配：前缀匹配（LIKE 'prefix%' ESCAPE）。
+6. 标签输入交互形式：chip 列表 + 独立输入框（QListWidget LeftToRight + Wrapping）。
+7. 现有测试接口：保留 `metadata_text()` / `metadata_full_text()` 兼容方法。
+8. 整理模式右栏具体显示：完全隐藏（不显示任何替代内容）。
+
+**Application 层扩展**
+
+- `ContentService.update_metadata(unit_id, title, source_url, notes, cover_path)`：统一更新元数据 + 封面路径。
+  - 字段校验：title 最大 200 字符、source_url 最大 2000 字符。
+  - cover_path 语义：None=不改、""=清空、非空字符串=设置具体路径。
+  - cover_path 校验：拒绝绝对路径和 `..`，必须为相对内容单元路径的相对路径，存储时统一转换为 POSIX 风格分隔符。
+- `ContentService.list_cover_candidates(unit_path)`：返回内容单元目录下所有支持格式的图片文件路径列表。
+  - 支持格式：jpg/jpeg/png/webp/gif/bmp/tif/tiff/ico。
+- `TagService.search_tags(prefix)` / `TagService.search_tags_by_name(prefix)`：前缀匹配查询标签（用于自动补全）。
+- `TagService.list_tags_by_content_unit(unit_id)` / `TagService.list_tag_ids_by_content_unit(unit_id)`：查询内容单元已关联的标签。
+- `TagService.set_content_unit_tags(unit_id, tag_ids)`：diff 计算（to_add / to_remove）+ 事务内 attach / detach。
+- `TagService.batch_attach_tags(unit_ids, tag_ids)` / `TagService.batch_detach_tags(unit_ids, tag_ids)`：批量打标签 / 批量移除标签。
+- 异常分层：新增 `InvalidMetadataError` / `CoverImageNotFoundError`（ApplicationError 子类）。
+
+**Infrastructure 层扩展**
+
+- `TagRepository.search_by_name_prefix(prefix)`：LIKE 'prefix%' ESCAPE 查询，`_like_escape` 函数处理 `\` / `%` / `_` 特殊字符。
+- `ContentUnitTagRepository.list_tag_rows_by_content_unit(unit_id)`：返回完整 Tag 行（含 category_id）供 service 层构造 Tag 对象。
+
+**UI 层新增组件**
+
+- `MetadataPanel`（[src/app/metadata_panel.py](src/app/metadata_panel.py)）：右栏元数据编辑表单。
+  - 字段：标题（QLineEdit）/ 标签（chip 列表 + 独立输入框 + QCompleter 自动补全）/ 来源 URL（QLineEdit）/ 备注（QTextEdit）/ 封面预览 + 设置/清除按钮。
+  - chip 列表：QListWidget with Flow LeftToRight + Wrapping，单击移除。
+  - 信号：`on_saved(ContentUnit)` / `on_pick_cover_requested(unit_id)`。
+  - 事务边界：Service 不自提交，由 MainWindow 在 `on_saved` 信号回调中 commit。
+  - 测试辅助接口：`current_unit()` / `is_form_enabled()` / `tag_chips()` / `tag_input_text()` / `set_tag_input_text()` / `submit_tag_input()` / `click_chip()` / `click_save_button()` / `click_pick_cover_button()` / `set_cover_path(rel_path)` / `clear_panel()` 等。
+
+- `BatchTagDialog`（[src/app/batch_tag_dialog.py](src/app/batch_tag_dialog.py)）：批量打标签对话框。
+  - 输入：TagService + content_unit_ids 列表。
+  - 操作模式：添加 / 移除（RadioButton 切换）。
+  - chip 列表 + 独立输入框 + QCompleter 自动补全（与 MetadataPanel 一致）。
+  - 应用后调用 `batch_attach_tags` / `batch_detach_tags`，返回 `result_messages` 列表。
+  - 测试辅助接口：`target_count()` / `current_mode()` / `set_mode()` / `tag_chips()` / `submit_tag_input()` / `click_chip()` / `click_apply_button()` / `result_messages()` 等。
+
+- `CoverPickerDialog`（[src/app/cover_picker_dialog.py](src/app/cover_picker_dialog.py)）：封面选择对话框。
+  - 输入：candidates 列表 + unit_path + current_cover（无 service 依赖）。
+  - UI：QListWidget IconMode + Wrap，120x120 缩略图。
+  - 默认选中第一张，或当前封面（若提供且在候选列表中）。
+  - 返回：选中图片的 POSIX 风格相对路径。
+  - 测试辅助接口：`candidate_count()` / `current_selection_row()` / `click_item(index)` / `click_ok_button()` / `click_cancel_button()` / `is_ok_button_enabled()` 等。
+
+**MainWindow 集成**
+
+- 右栏改造：注入 `tag_service` 时创建 MetadataPanel 并替换原 `_metadata_label`；未注入时保持原 QLabel 行为（兼容旧测试）。
+- `_update_metadata`：兼容旧测试缓存 `_metadata_full_text`，同时若有 MetadataPanel 则加载 unit 到 panel。
+- 新增信号处理：`_on_metadata_saved`（保存后 commit + 刷新 + 状态栏提示）/ `_on_pick_cover_requested`（弹出 CoverPickerDialog + 设置封面路径）。
+- 新增批量打标签：`_on_batch_tag` 处理右键菜单动作，弹出 BatchTagDialog，应用后 commit + 刷新 + 状态栏显示结果消息。
+- 批量打标签菜单项：在 `_on_content_context_menu` 中，多选且至少一个内容单元 + 注入了 TagService 时显示。
+- 整理模式完全隐藏右栏：`_on_mode_changed` 中 `_metadata_group.setVisible(False)`（设计决策 4 / 8）。
+- 新增测试接口：`is_metadata_panel_visible()` / `metadata_panel()`。
+
+**UI 常量**
+
+- 新增 ~50 个常量：`METADATA_PANEL_*`（保存按钮 / 设置封面 / 标签输入 / 提示等）/ `BATCH_TAG_DIALOG_*`（标题 / 输入 / 操作模式 / 结果消息等）/ `COVER_PICKER_DIALOG_*`（标题 / 提示 / 空候选等）。
+- 新增 `MENU_BATCH_TAG = "批量打标签"` 右键菜单项。
+
+**测试覆盖**
+
+新增 4 个 UI 测试文件（79 项）+ 在已有 service / repository 测试文件中新增 45 项：
+- `tests/test_metadata_panel.py`（新建）：25 项（构造 / load_unit / 标签 chip 增删 / 自动补全 / 保存 / 封面 / 异常 / 兼容接口）。
+- `tests/test_batch_tag_dialog.py`（新建）：25 项（初始状态 / 模式切换 / chip 增删 / 自动补全 / 应用 add / 应用 remove / 空标签警告 / 幂等性 / 中文标签）。
+- `tests/test_cover_picker_dialog.py`（新建）：15 项（初始状态 / 默认选中第一张 / 当前封面 / 切换选择 / 确定/取消 / 空候选 / 中文文件名 / POSIX 风格路径）。
+- `tests/test_main_window_metadata.py`（新建）：14 项（MetadataPanel 创建条件 / 双击加载 / 保存元数据 / 设置封面 / 整理模式隐藏 / 批量打标签 / 兼容性）。
+- `tests/test_content_service.py`（追加）：19 项新测试（update_metadata 字段校验 / cover_path 校验 / list_cover_candidates）。
+- `tests/test_tag_service.py`（追加）：19 项新测试（search / list_tags_by_content_unit / set_content_unit_tags diff / batch_attach / batch_detach）。
+- `tests/test_tag_repository.py`（追加）：5 项新测试（search_by_name_prefix + 特殊字符转义）。
+- `tests/test_content_unit_tag_repository.py`（追加）：2 项新测试（list_tag_rows_by_content_unit）。
+
+**测试结果**：659 passed → 799 passed（+140），3 skipped。
+
+#### Added
+
+- [src/app/metadata_panel.py](src/app/metadata_panel.py)：新建 MetadataPanel。
+- [src/app/batch_tag_dialog.py](src/app/batch_tag_dialog.py)：新建 BatchTagDialog。
+- [src/app/cover_picker_dialog.py](src/app/cover_picker_dialog.py)：新建 CoverPickerDialog。
+- [tests/test_metadata_panel.py](tests/test_metadata_panel.py)：25 项测试。
+- [tests/test_batch_tag_dialog.py](tests/test_batch_tag_dialog.py)：25 项测试。
+- [tests/test_cover_picker_dialog.py](tests/test_cover_picker_dialog.py)：15 项测试。
+- [tests/test_main_window_metadata.py](tests/test_main_window_metadata.py)：14 项测试。
+- [src/app/ui_constants.py](src/app/ui_constants.py)：新增 ~50 个 MetadataPanel / BatchTagDialog / CoverPickerDialog 相关常量 + `MENU_BATCH_TAG`。
+
+#### Changed
+
+- [src/application/content_service.py](src/application/content_service.py)：新增 `update_metadata` / `_validate_cover_path` / `list_cover_candidates` 方法。
+- [src/application/tag_service.py](src/application/tag_service.py)：新增 6 个方法（search_tags / search_tags_by_name / list_tags_by_content_unit / list_tag_ids_by_content_unit / set_content_unit_tags / batch_attach_tags / batch_detach_tags）。
+- [src/application/errors.py](src/application/errors.py)：新增 `InvalidMetadataError` / `CoverImageNotFoundError`。
+- [src/infrastructure/repositories/tag.py](src/infrastructure/repositories/tag.py)：新增 `search_by_name_prefix` + `_like_escape`。
+- [src/infrastructure/repositories/content_unit_tag.py](src/infrastructure/repositories/content_unit_tag.py)：新增 `list_tag_rows_by_content_unit`。
+- [src/app/main_window.py](src/app/main_window.py)：右栏条件性创建 MetadataPanel + 信号处理 + 批量打标签菜单 + 整理模式隐藏右栏 + 测试辅助接口。
+- [docs/architecture.md](docs/architecture.md)：§3.1 / §3.2 / §4.1 / §4.3 更新（MetadataPanel / BatchTagDialog / CoverPickerDialog 组件职责、TagService/ContentService 新方法、元数据保存/封面选择/批量打标签数据流）。
+- [docs/roadmap.md](docs/roadmap.md)：Stage 4 Task 2 验收项打勾。
+
 ### 2026-07-18 阶段 4 Task 1：标签分类管理 + JSON 导入导出
 
 Stage 4 第一项功能开发。实现 spec §10 / §4.2-4.4 定义的标签系统：TagCategory + Tag + ContentUnitTag 三表结构 + TagService 应用层 + TagManagerDialog UI 对话框 + 预置标签库自动加载 + JSON 导入导出。

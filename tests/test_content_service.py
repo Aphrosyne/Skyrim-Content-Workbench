@@ -1004,3 +1004,308 @@ class TestListByPathPrefixNormalized:
         # 父文件夹 ContentUnit 应存在，且 id 不同（uuid-folder）
         assert repo_obj.get_by_id(folder_unit.id) is not None
         assert folder_unit.id == "uuid-folder"
+
+
+# === 元数据编辑（Stage 4 Task 2） ===
+
+
+class TestUpdateMetadata:
+    def test_update_title(self, service: ContentService, db_connection: sqlite3.Connection) -> None:
+        unit = _make_unit("u1", "/mods/a")
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (unit.id, unit.path, unit.created_at, unit.updated_at),
+        )
+        db_connection.commit()
+
+        updated = service.update_metadata("u1", title="中文名")
+        assert updated.title == "中文名"
+        assert updated.updated_at != unit.updated_at  # updated_at 已更新
+
+    def test_update_title_strips_whitespace(
+        self, service: ContentService, db_connection: sqlite3.Connection
+    ) -> None:
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', 't', 't')"
+        )
+        db_connection.commit()
+
+        updated = service.update_metadata("u1", title="  中文名  ")
+        assert updated.title == "中文名"
+
+    def test_update_title_empty_clears(
+        self, service: ContentService, db_connection: sqlite3.Connection
+    ) -> None:
+        """空字符串 title 应清空（设为 None）。"""
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, title, created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', '原标题', 't', 't')"
+        )
+        db_connection.commit()
+
+        updated = service.update_metadata("u1", title="")
+        assert updated.title is None
+
+    def test_update_title_too_long_raises(
+        self, service: ContentService, db_connection: sqlite3.Connection
+    ) -> None:
+        from application.errors import InvalidMetadataError
+
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', 't', 't')"
+        )
+        db_connection.commit()
+
+        with pytest.raises(InvalidMetadataError):
+            service.update_metadata("u1", title="x" * 201)
+
+    def test_update_source_url(
+        self, service: ContentService, db_connection: sqlite3.Connection
+    ) -> None:
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', 't', 't')"
+        )
+        db_connection.commit()
+
+        updated = service.update_metadata("u1", source_url="https://example.com")
+        assert updated.source_url == "https://example.com"
+
+    def test_update_notes(self, service: ContentService, db_connection: sqlite3.Connection) -> None:
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', 't', 't')"
+        )
+        db_connection.commit()
+
+        updated = service.update_metadata("u1", notes="备注内容\n第二行")
+        assert updated.notes == "备注内容\n第二行"
+
+    def test_update_notes_empty_clears(
+        self, service: ContentService, db_connection: sqlite3.Connection
+    ) -> None:
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, notes, created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', '旧备注', 't', 't')"
+        )
+        db_connection.commit()
+
+        updated = service.update_metadata("u1", notes="")
+        assert updated.notes is None
+
+    def test_update_none_args_keep_fields(
+        self, service: ContentService, db_connection: sqlite3.Connection
+    ) -> None:
+        """None 参数表示不改，应保留原值。"""
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, title, source_url, notes, created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', '原标题', 'https://a.com', '原备注', 't', 't')"
+        )
+        db_connection.commit()
+
+        # 仅更新 cover_path（这里 None，不改）
+        updated = service.update_metadata("u1")
+        assert updated.title == "原标题"
+        assert updated.source_url == "https://a.com"
+        assert updated.notes == "原备注"
+
+    def test_update_unknown_unit_raises(self, service: ContentService) -> None:
+        from application.errors import ContentUnitNotFoundError
+
+        with pytest.raises(ContentUnitNotFoundError):
+            service.update_metadata("nonexistent", title="x")
+
+
+class TestUpdateMetadataCoverPath:
+    def test_update_cover_path_valid(
+        self,
+        service: ContentService,
+        db_connection: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        """设置 cover_path 为目录内存在的图片文件。"""
+        unit_dir = tmp_path / "ModA"
+        unit_dir.mkdir()
+        cover = unit_dir / "cover.jpg"
+        cover.write_bytes(b"\x00")
+
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, created_at, updated_at) "
+            "VALUES ('u1', ?, 't', 't')",
+            (str(unit_dir),),
+        )
+        db_connection.commit()
+
+        updated = service.update_metadata("u1", cover_path="cover.jpg")
+        assert updated.cover_path == "cover.jpg"
+
+    def test_update_cover_path_empty_clears(
+        self,
+        service: ContentService,
+        db_connection: sqlite3.Connection,
+    ) -> None:
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, cover_path, created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', 'old.jpg', 't', 't')"
+        )
+        db_connection.commit()
+
+        updated = service.update_metadata("u1", cover_path="")
+        assert updated.cover_path is None
+
+    def test_update_cover_path_nonexistent_raises(
+        self,
+        service: ContentService,
+        db_connection: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        from application.errors import CoverImageNotFoundError
+
+        unit_dir = tmp_path / "ModA"
+        unit_dir.mkdir()
+
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, created_at, updated_at) "
+            "VALUES ('u1', ?, 't', 't')",
+            (str(unit_dir),),
+        )
+        db_connection.commit()
+
+        with pytest.raises(CoverImageNotFoundError):
+            service.update_metadata("u1", cover_path="not_exists.jpg")
+
+    def test_update_cover_path_absolute_rejected(
+        self,
+        service: ContentService,
+        db_connection: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        from application.errors import InvalidMetadataError
+
+        unit_dir = tmp_path / "ModA"
+        unit_dir.mkdir()
+        cover = unit_dir / "cover.jpg"
+        cover.write_bytes(b"\x00")
+
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, created_at, updated_at) "
+            "VALUES ('u1', ?, 't', 't')",
+            (str(unit_dir),),
+        )
+        db_connection.commit()
+
+        with pytest.raises(InvalidMetadataError):
+            service.update_metadata("u1", cover_path=str(cover))
+
+    def test_update_cover_path_with_dotdot_rejected(
+        self,
+        service: ContentService,
+        db_connection: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        from application.errors import InvalidMetadataError
+
+        unit_dir = tmp_path / "ModA"
+        unit_dir.mkdir()
+        outside = tmp_path / "outside.jpg"
+        outside.write_bytes(b"\x00")
+
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, created_at, updated_at) "
+            "VALUES ('u1', ?, 't', 't')",
+            (str(unit_dir),),
+        )
+        db_connection.commit()
+
+        with pytest.raises(InvalidMetadataError):
+            service.update_metadata("u1", cover_path="../outside.jpg")
+
+    def test_update_cover_path_unsupported_extension(
+        self,
+        service: ContentService,
+        db_connection: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        from application.errors import InvalidMetadataError
+
+        unit_dir = tmp_path / "ModA"
+        unit_dir.mkdir()
+        (unit_dir / "cover.txt").write_bytes(b"\x00")
+
+        db_connection.execute(
+            "INSERT INTO content_unit (id, path, created_at, updated_at) "
+            "VALUES ('u1', ?, 't', 't')",
+            (str(unit_dir),),
+        )
+        db_connection.commit()
+
+        with pytest.raises(InvalidMetadataError):
+            service.update_metadata("u1", cover_path="cover.txt")
+
+
+class TestListCoverCandidates:
+    def test_lists_supported_images(
+        self,
+        service: ContentService,
+        tmp_path: Path,
+    ) -> None:
+        unit_dir = tmp_path / "ModA"
+        unit_dir.mkdir()
+        (unit_dir / "a.jpg").write_bytes(b"\x00")
+        (unit_dir / "b.png").write_bytes(b"\x00")
+        (unit_dir / "c.webp").write_bytes(b"\x00")
+        (unit_dir / "d.txt").write_bytes(b"\x00")  # 不支持
+        (unit_dir / "sub").mkdir()  # 子目录不列
+
+        candidates = service.list_cover_candidates(str(unit_dir))
+        names = [p.name for p in candidates]
+        assert names == ["a.jpg", "b.png", "c.webp"]
+
+    def test_empty_dir_returns_empty(
+        self,
+        service: ContentService,
+        tmp_path: Path,
+    ) -> None:
+        unit_dir = tmp_path / "ModA"
+        unit_dir.mkdir()
+
+        assert service.list_cover_candidates(str(unit_dir)) == []
+
+    def test_nonexistent_dir_returns_empty(
+        self,
+        service: ContentService,
+    ) -> None:
+        assert service.list_cover_candidates("/nonexistent/path") == []
+
+    def test_sorts_case_insensitive(
+        self,
+        service: ContentService,
+        tmp_path: Path,
+    ) -> None:
+        unit_dir = tmp_path / "ModA"
+        unit_dir.mkdir()
+        (unit_dir / "Zebra.jpg").write_bytes(b"\x00")
+        (unit_dir / "apple.png").write_bytes(b"\x00")
+        (unit_dir / "Banana.webp").write_bytes(b"\x00")
+
+        candidates = service.list_cover_candidates(str(unit_dir))
+        names = [p.name for p in candidates]
+        # 不区分大小写升序：apple < Banana < Zebra
+        assert names == ["apple.png", "Banana.webp", "Zebra.jpg"]
+
+    def test_supports_all_spec_extensions(
+        self,
+        service: ContentService,
+        tmp_path: Path,
+    ) -> None:
+        """spec §9 列出的所有扩展名都应被识别。"""
+        unit_dir = tmp_path / "ModA"
+        unit_dir.mkdir()
+        for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".ico"]:
+            (unit_dir / f"img{ext}").write_bytes(b"\x00")
+
+        candidates = service.list_cover_candidates(str(unit_dir))
+        exts = {p.suffix.lower() for p in candidates}
+        assert exts == {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".ico"}

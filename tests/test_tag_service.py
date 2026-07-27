@@ -657,3 +657,255 @@ class TestLoadDefaultTagsIfEmpty:
         # service 不 commit，调用方 rollback 后数据库保持空
         db_connection.rollback()
         assert service.list_categories() == []
+
+
+# === 内容单元 ↔ 标签关联（Stage 4 Task 2） ===
+
+
+def _seed_content_unit(conn: sqlite3.Connection, unit_id: str, path: str) -> None:
+    """直接 INSERT 一个 content_unit 行（绕过 service，仅用于测试）。"""
+    conn.execute(
+        "INSERT INTO content_unit (id, path, created_at, updated_at) VALUES (?, ?, 't', 't')",
+        (unit_id, path),
+    )
+    conn.commit()
+
+
+class TestAttachTagToUnit:
+    def test_attach_new_returns_true(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        tag = service.create_tag("重甲", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        db_connection.commit()
+
+        attached = service.attach_tag_to_unit("cu-1", tag.id)
+        assert attached is True
+
+    def test_attach_idempotent_returns_false(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        tag = service.create_tag("重甲", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        db_connection.commit()
+
+        service.attach_tag_to_unit("cu-1", tag.id)
+        attached_again = service.attach_tag_to_unit("cu-1", tag.id)
+        assert attached_again is False
+
+    def test_attach_unknown_tag_raises(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        db_connection.commit()
+
+        with pytest.raises(TagNotFoundError):
+            service.attach_tag_to_unit("cu-1", "nonexistent-tag-id")
+
+
+class TestDetachTagFromUnit:
+    def test_detach_existing_returns_true(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        tag = service.create_tag("重甲", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        service.attach_tag_to_unit("cu-1", tag.id)
+        db_connection.commit()
+
+        detached = service.detach_tag_from_unit("cu-1", tag.id)
+        assert detached is True
+
+    def test_detach_non_existing_returns_false(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        tag = service.create_tag("重甲", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        db_connection.commit()
+
+        detached = service.detach_tag_from_unit("cu-1", tag.id)
+        assert detached is False
+
+
+class TestListTagsOfContentUnit:
+    def test_empty_returns_empty_list(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        db_connection.commit()
+
+        result = service.list_tags_of_content_unit("cu-1")
+        assert result == []
+
+    def test_single_category_single_tag(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        tag1 = service.create_tag("重甲", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        service.attach_tag_to_unit("cu-1", tag1.id)
+        db_connection.commit()
+
+        result = service.list_tags_of_content_unit("cu-1")
+        assert len(result) == 1
+        cat_result, tags_result = result[0]
+        assert cat_result.name == "服装护甲"
+        assert len(tags_result) == 1
+        assert tags_result[0].name == "重甲"
+
+    def test_multiple_categories_grouped(self, db_connection: sqlite3.Connection) -> None:
+        """跨分类标签应按分类分组返回。"""
+        service = _make_service(db_connection)
+        cat_a = service.create_category("服装护甲", color_hue=210)
+        cat_b = service.create_category("武器", color_hue=30)
+        tag_heavy = service.create_tag("重甲", cat_a.id)
+        tag_sword = service.create_tag("单手剑", cat_b.id)
+        tag_light = service.create_tag("轻甲", cat_a.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        service.attach_tag_to_unit("cu-1", tag_heavy.id)
+        service.attach_tag_to_unit("cu-1", tag_sword.id)
+        service.attach_tag_to_unit("cu-1", tag_light.id)
+        db_connection.commit()
+
+        result = service.list_tags_of_content_unit("cu-1")
+        assert len(result) == 2
+        # 分类按 name 排序：服装护甲 < 武器
+        assert result[0][0].name == "服装护甲"
+        assert result[1][0].name == "武器"
+        # 分类内标签按 name 排序（轻甲 < 重甲，按 Unicode 码点）
+        cat_a_tags = result[0][1]
+        assert [t.name for t in cat_a_tags] == ["轻甲", "重甲"]
+        cat_b_tags = result[1][1]
+        assert [t.name for t in cat_b_tags] == ["单手剑"]
+
+    def test_chinese_tags_displayed(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("状态")
+        tag = service.create_tag("已测试", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/中")
+        service.attach_tag_to_unit("cu-1", tag.id)
+        db_connection.commit()
+
+        result = service.list_tags_of_content_unit("cu-1")
+        assert result[0][1][0].name == "已测试"
+
+
+class TestSearchTags:
+    def test_empty_query_returns_empty(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        service.create_category("服装护甲")
+        # 空字符串返回空
+        assert service.search_tags("") == []
+        # 仅空白返回空
+        assert service.search_tags("   ") == []
+
+    def test_prefix_match(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        service.create_tag("重甲", cat.id)
+        service.create_tag("轻甲", cat.id)
+        service.create_tag("法袍", cat.id)
+        db_connection.commit()
+
+        results = service.search_tags("重")
+        assert len(results) == 1
+        assert results[0].name == "重甲"
+
+    def test_chinese_prefix_match(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("状态")
+        service.create_tag("已测试", cat.id)
+        service.create_tag("已汉化", cat.id)
+        service.create_tag("待测试", cat.id)
+        db_connection.commit()
+
+        results = service.search_tags("已")
+        assert len(results) == 2
+        assert {t.name for t in results} == {"已测试", "已汉化"}
+
+    def test_limit_enforced(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("来源")
+        for i in range(30):
+            service.create_tag(f"标签{i:02d}", cat.id)
+        db_connection.commit()
+
+        results = service.search_tags("标签", limit=5)
+        assert len(results) == 5
+
+    def test_special_chars_escaped(self, db_connection: sqlite3.Connection) -> None:
+        """包含 % 和 _ 的标签应正确匹配（LIKE 通配符被转义）。"""
+        service = _make_service(db_connection)
+        cat = service.create_category("测试")
+        service.create_tag("50%_off", cat.id)
+        service.create_tag("50_off", cat.id)
+        db_connection.commit()
+
+        # 搜索 "50%" 应只匹配 "50%_off"
+        results = service.search_tags("50%")
+        assert len(results) == 1
+        assert results[0].name == "50%_off"
+
+
+class TestBatchAttachTags:
+    def test_batch_attach_to_multiple_units(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        tag = service.create_tag("重甲", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        _seed_content_unit(db_connection, "cu-2", "/mods/b")
+        _seed_content_unit(db_connection, "cu-3", "/mods/c")
+        db_connection.commit()
+
+        attached = service.batch_attach_tags(["cu-1", "cu-2", "cu-3"], tag.id)
+        assert attached == 3
+        # 验证每个 unit 都有关联
+        assert len(service.list_tags_of_content_unit("cu-1")) == 1
+        assert len(service.list_tags_of_content_unit("cu-2")) == 1
+        assert len(service.list_tags_of_content_unit("cu-3")) == 1
+
+    def test_batch_attach_idempotent(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        tag = service.create_tag("重甲", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        _seed_content_unit(db_connection, "cu-2", "/mods/b")
+        db_connection.commit()
+
+        service.batch_attach_tags(["cu-1", "cu-2"], tag.id)
+        # 再次 attach 应返回 0（已存在）
+        attached = service.batch_attach_tags(["cu-1", "cu-2"], tag.id)
+        assert attached == 0
+
+    def test_batch_attach_unknown_tag_raises(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        db_connection.commit()
+
+        with pytest.raises(TagNotFoundError):
+            service.batch_attach_tags(["cu-1"], "nonexistent-tag-id")
+
+
+class TestBatchDetachTags:
+    def test_batch_detach_from_multiple_units(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        tag = service.create_tag("重甲", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        _seed_content_unit(db_connection, "cu-2", "/mods/b")
+        _seed_content_unit(db_connection, "cu-3", "/mods/c")
+        service.batch_attach_tags(["cu-1", "cu-2", "cu-3"], tag.id)
+        db_connection.commit()
+
+        detached = service.batch_detach_tags(["cu-1", "cu-2", "cu-3"], tag.id)
+        assert detached == 3
+        assert service.list_tags_of_content_unit("cu-1") == []
+        assert service.list_tags_of_content_unit("cu-2") == []
+        assert service.list_tags_of_content_unit("cu-3") == []
+
+    def test_batch_detach_idempotent(self, db_connection: sqlite3.Connection) -> None:
+        service = _make_service(db_connection)
+        cat = service.create_category("服装护甲")
+        tag = service.create_tag("重甲", cat.id)
+        _seed_content_unit(db_connection, "cu-1", "/mods/a")
+        db_connection.commit()
+
+        # 没有关联时 detach 返回 0
+        detached = service.batch_detach_tags(["cu-1"], tag.id)
+        assert detached == 0

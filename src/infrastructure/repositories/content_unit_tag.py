@@ -110,6 +110,26 @@ class ContentUnitTagRepository:
             raise RepositoryError(f"无法按 content_unit_id 查询 tag_id 列表：{e}") from e
         return [r["tag_id"] for r in rows]
 
+    def list_tag_rows_by_content_unit(self, content_unit_id: str) -> list[sqlite3.Row]:
+        """返回指定内容单元关联的所有 tag 行（含 tag.id / name / category_id）。
+
+        JOIN tag 表，按 tag.name 排序。供 service 层组装 (TagCategory, list[Tag]) 结构。
+        """
+        try:
+            rows = self._conn.execute(
+                """
+                SELECT t.id AS id, t.name AS name, t.category_id AS category_id
+                FROM content_unit_tag cut
+                JOIN tag t ON cut.tag_id = t.id
+                WHERE cut.content_unit_id = ?
+                ORDER BY t.name
+                """,
+                (content_unit_id,),
+            ).fetchall()
+        except sqlite3.Error as e:
+            raise RepositoryError(f"无法查询 content_unit 的 tag 列表：{e}") from e
+        return list(rows)
+
     def list_content_unit_ids_by_tag(self, tag_id: str) -> list[str]:
         """返回指定标签关联的所有 content_unit_id（按 content_unit_id 排序）。"""
         try:

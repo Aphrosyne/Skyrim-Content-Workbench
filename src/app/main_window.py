@@ -4,7 +4,7 @@
 - 顶部：[浏览 | 整理] 模式切换按钮（默认浏览）。
 - 左栏：受管理根目录列表 + 添加/移除按钮 + 扫描按钮 + 扫描状态 + 目录树 + 选中目录详情。
 - 中栏：文件列表（浏览模式跟随目录树节点；整理模式只加载 [S] 节点递归列表）。
-- 右栏：元数据面板（双击内容单元时显示；双击非内容单元不响应）。
+- 右栏：元数据面板（单击内容单元时加载；双击兼容保留；2026-07-25 调整：单击为主要入口）。
 
 模式行为（spec §5.1/§5.2，roadmap 阶段 2 Task 5）：
 - 浏览模式：目录树点击节点 → 中栏刷新该目录文件列表 + 详情区更新。
@@ -70,8 +70,11 @@ from PySide6.QtWidgets import (
 
 from app import ui_constants as ui
 from app.assembly_panel import AssemblyPanel
+from app.batch_tag_dialog import BatchTagDialog
+from app.cover_picker_dialog import CoverPickerDialog
 from app.file_list_model import FileListModel
 from app.folder_tree_model import FolderTreeModel
+from app.metadata_panel import MetadataPanel
 from app.mode_manager import ModeManager
 from app.scan_worker import ScanWorker
 from app.tag_manager_dialog import TagManagerDialog
@@ -415,6 +418,17 @@ class MainWindow(QMainWindow):
         self._metadata_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self._metadata_full_text = ui.METADATA_NOT_SELECTED
         metadata_layout.addWidget(self._metadata_label)
+        # Stage 4 Task 2：MetadataPanel 编辑表单（仅当注入 TagService 时启用）
+        if self._tag_service is not None:
+            self._metadata_panel = MetadataPanel(
+                self._content_service, self._tag_service, parent=self._metadata_group
+            )
+            self._metadata_panel.on_saved.connect(self._on_metadata_saved)
+            self._metadata_panel.on_pick_cover_requested.connect(self._on_pick_cover_requested)
+            self._metadata_panel.setVisible(False)
+            metadata_layout.addWidget(self._metadata_panel)
+        else:
+            self._metadata_panel = None  # type: ignore[assignment]
         right_layout.addWidget(self._metadata_group)
 
         splitter.addWidget(right)
@@ -855,6 +869,12 @@ class MainWindow(QMainWindow):
                     lambda: self._on_batch_mark_content_unit(entries),
                 )
             )
+
+        # 批量打标签（Stage 4 Task 2）：多选且至少一个内容单元 + 注入了 TagService
+        if self._tag_service is not None and len(entries) > 1:
+            has_any_unit = any(e.content_unit is not None for e in entries)
+            if has_any_unit:
+                actions.append((ui.MENU_BATCH_TAG, lambda: self._on_batch_tag(entries)))
 
         # 复制路径（始终）
         actions.append(
@@ -1359,7 +1379,11 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _update_metadata(self, unit: ContentUnit) -> None:
-        """更新元数据面板。"""
+        """更新元数据面板。
+
+        Stage 4 Task 2：若有 MetadataPanel，加载到编辑表单；同时保留
+        `_metadata_full_text` 多行文本格式以兼容现有测试（metadata_full_text()）。
+        """
         title = unit.title or "（无标题）"
         status_text = (
             ui.METADATA_STATUS_ORGANIZED
@@ -1378,7 +1402,95 @@ class MainWindow(QMainWindow):
             f"{ui.METADATA_NOTES_LABEL}：{notes}",
             f"{ui.METADATA_CREATED_AT_LABEL}：{unit.created_at}",
         ]
-        self._set_metadata_text("\n".join(lines))
+        # 兼容旧测试：缓存多行文本（metadata_full_text()）
+        self._metadata_full_text = "\n".join(lines)
+        # 切换显示：若有 MetadataPanel，隐藏 label 显示 panel
+        if self._metadata_panel is not None:
+            self._metadata_label.setVisible(False)
+            self._metadata_panel.setVisible(True)
+            self._metadata_panel.load_unit(unit)
+        else:
+            self._metadata_label.setText(self._metadata_full_text)
+            self._metadata_label.setToolTip(self._metadata_full_text)
+
+    # --- Stage 4 Task 2：MetadataPanel 信号处理 ---
+
+    def _on_metadata_saved(self, updated_unit: ContentUnit) -> None:
+        """MetadataPanel 保存成功 → 提交事务 + 刷新中栏 + 状态栏提示。
+
+        事务边界：MetadataPanel 不自提交，由 MainWindow 在信号回调中提交。
+        """
+        self._commit()
+        # 刷新中栏文件列表（标题可能在列表项中显示）
+        self._refresh_content_list_for_current_mode()
+        # 同步元数据面板状态（updated_unit 包含最新字段）
+        self._update_metadata(updated_unit)
+        self.statusBar().showMessage(ui.METADATA_PANEL_SAVE_OK, 3000)
+
+    def _on_pick_cover_requested(self, unit_id: str) -> None:
+        """MetadataPanel 请求设置封面 → 弹出 CoverPickerDialog。
+
+        选定后调用 MetadataPanel.set_cover_path(relative_path) 仅更新表单状态，
+        不立即保存。用户需点击「保存」按钮才提交到数据库。
+        """
+        if self._metadata_panel is None:
+            return
+        try:
+            unit = self._content_service.get_by_id(unit_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("获取内容单元失败：unit_id=%s", unit_id)
+            QMessageBox.warning(self, ui.METADATA_PANEL_SAVE_FAILED, "获取内容单元失败。")
+            return
+        if unit is None:
+            QMessageBox.warning(self, ui.METADATA_PANEL_SAVE_FAILED, "内容单元不存在。")
+            return
+
+        candidates = self._content_service.list_cover_candidates(unit.path)
+        if not candidates:
+            QMessageBox.information(
+                self, ui.COVER_PICKER_DIALOG_TITLE, ui.COVER_PICKER_DIALOG_EMPTY
+            )
+            return
+
+        dialog = CoverPickerDialog(
+            candidates,
+            Path(unit.path),
+            current_cover=unit.cover_path,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        rel_path = dialog.selected_relative_path()
+        if rel_path is None:
+            return
+        self._metadata_panel.set_cover_path(rel_path)
+
+    def _on_batch_tag(self, entries: list[FileEntry]) -> None:
+        """批量打标签：弹出 BatchTagDialog。
+
+        spec §7.5 / §10.3：文件列表多选内容单元 → 右键「批量打标签」。
+        事务边界：BatchTagDialog 不自提交，由 MainWindow 在 exec() 后提交。
+        """
+        if self._tag_service is None:
+            return
+        content_unit_ids: list[str] = []
+        for entry in entries:
+            if entry.content_unit is not None:
+                content_unit_ids.append(entry.content_unit.id)
+        if not content_unit_ids:
+            QMessageBox.information(self, ui.BATCH_TAG_DIALOG_TITLE, "选中的条目均不是内容单元。")
+            return
+
+        dialog = BatchTagDialog(self._tag_service, content_unit_ids, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._commit()
+        # 刷新中栏文件列表（标签标记可能需要更新）
+        self._refresh_content_list_for_current_mode()
+        # 状态栏显示结果摘要
+        messages = dialog.result_messages()
+        if messages:
+            self.statusBar().showMessage("；".join(messages), 5000)
 
     # --- Elide 路径文本（决策问题 4，Task 5 统一路径显示策略） ---
 
@@ -1391,8 +1503,16 @@ class MainWindow(QMainWindow):
         self._apply_elide()
 
     def _set_metadata_text(self, text: str) -> None:
-        """设置元数据面板文本（缓存原文，触发 Elide 重算）。"""
+        """设置元数据面板文本（缓存原文，触发 Elide 重算）。
+
+        Stage 4 Task 2：若有 MetadataPanel，隐藏 panel 显示 label 提示文本，
+        并清空 panel 表单。
+        """
         self._metadata_full_text = text
+        if self._metadata_panel is not None:
+            self._metadata_panel.setVisible(False)
+            self._metadata_panel.clear_panel()
+            self._metadata_label.setVisible(True)
         self._apply_elide()
 
     def _set_mode_hint_text(self, text: str) -> None:
@@ -1695,6 +1815,18 @@ class MainWindow(QMainWindow):
         """返回详情区原始文本（未 Elide，供测试）。"""
         return self._detail_full_text
 
+    def is_metadata_panel_visible(self) -> bool:
+        """返回右栏元数据面板（含 label 与编辑表单）是否可见（供测试）。
+
+        Stage 4 Task 2（2026-07-25 决策修正：原决策 4/8 推翻，方案 B）：
+        两种模式下右栏 MetadataPanel 均保留可见。
+        """
+        return self._metadata_group.isVisibleTo(self)
+
+    def metadata_panel(self) -> MetadataPanel | None:
+        """返回 MetadataPanel 实例（仅当注入 TagService 时存在，供测试）。"""
+        return self._metadata_panel
+
     # --- 模式切换（spec §5.1/§5.2，roadmap 阶段 2 Task 5） ---
 
     def _set_mode(self, mode: AppMode) -> None:
@@ -1709,6 +1841,11 @@ class MainWindow(QMainWindow):
         - 浏览模式：隐藏装配面板（spec §7.4）。
 
         阶段 3 Task 5：快速插入按钮在整理模式可见，浏览模式隐藏。
+
+        Stage 4 Task 2（2026-07-19 决策修正：原决策 4/8 整理模式隐藏右栏被推翻）：
+        - 整理模式保留右栏 MetadataPanel，用户可在装配同时编辑元数据，
+          避免创建完内容单元后切回浏览模式才能编辑元数据的多余步骤。
+        - 两种模式下右栏均可见；单击内容单元加载 MetadataPanel（spec §7.2）。
         """
         if mode == AppMode.organize:
             # 切换到整理模式：若当前选中节点是 [S] 则加载暂存区递归列表
@@ -1720,6 +1857,7 @@ class MainWindow(QMainWindow):
             # 快速插入按钮：整理模式可见（可用性由 _update_quick_insert_button_state 控制）
             self._quick_insert_button.setVisible(True)
             self._update_quick_insert_button_state()
+            # 右栏 MetadataPanel 保留显示（2026-07-19 决策修正）
         else:
             # 切换回浏览模式：恢复跟随目录树刷新
             self._organize_workarea_path = None

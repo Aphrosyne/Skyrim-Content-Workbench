@@ -95,3 +95,14 @@ class DuplicateTagNameError(ApplicationError):
 
 class InvalidTagJsonError(ApplicationError):
     """标签 JSON 文件格式不合法：缺少必需字段、schema_version 不支持等。"""
+
+
+# === 元数据编辑（Stage 4 Task 2） ===
+
+
+class InvalidMetadataError(ApplicationError):
+    """元数据字段校验失败：title 过长、source_url 格式非法等。"""
+
+
+class CoverImageNotFoundError(ApplicationError):
+    """封面图片在内容单元目录下不存在或不可访问。"""

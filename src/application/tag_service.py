@@ -44,6 +44,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from application.errors import (
+    ContentUnitNotFoundError,
     DuplicateTagCategoryNameError,
     DuplicateTagNameError,
     InvalidTagJsonError,
@@ -295,6 +296,125 @@ class TagService:
             tags = self._tag_repo.list_by_category(cat.id)
             result.append((cat, tags))
         return result
+
+    # --- 内容单元 ↔ 标签关联（Stage 4 Task 2） ---
+
+    def attach_tag_to_unit(self, content_unit_id: str, tag_id: str) -> bool:
+        """为内容单元添加标签。
+
+        使用 INSERT OR IGNORE 幂等：重复 attach 同一对不会抛错。
+        返回 True 表示新增关联，False 表示已存在。
+
+        Raises:
+            TagNotFoundError: tag_id 不存在。
+            ContentUnitNotFoundError: content_unit_id 不存在（FK 违约）。
+        """
+        # 校验标签存在（同时给出清晰错误，而不是依赖 FK 违约）
+        if self._tag_repo.get_by_id(tag_id) is None:
+            raise TagNotFoundError(f"标签不存在：{tag_id}")
+        try:
+            return self._cut_repo.attach(content_unit_id, tag_id)
+        except RepositoryError as e:
+            # FK 违约通常表示 content_unit_id 不存在
+            raise ContentUnitNotFoundError(f"内容单元不存在：{content_unit_id}") from e
+
+    def detach_tag_from_unit(self, content_unit_id: str, tag_id: str) -> bool:
+        """移除内容单元的标签关联。
+
+        幂等：返回 True 表示实际移除一行，False 表示原本就无关联。
+        """
+        return self._cut_repo.detach(content_unit_id, tag_id)
+
+    def list_tags_of_content_unit(
+        self, content_unit_id: str
+    ) -> list[tuple[TagCategory, list[Tag]]]:
+        """返回指定内容单元的标签，按分类分组。
+
+        每个元组为 (TagCategory, list[Tag])，分类按 name 排序，分类内标签按 name 排序。
+        无标签时返回空列表。
+
+        Raises:
+            RepositoryError: 数据库查询失败。
+        """
+        rows = self._cut_repo.list_tag_rows_by_content_unit(content_unit_id)
+        if not rows:
+            return []
+
+        # 收集所有相关分类（按首次出现顺序去重）
+        category_map: dict[str, TagCategory] = {}
+        for row in rows:
+            cid = row["category_id"]
+            if cid not in category_map:
+                cat = self._category_repo.get_by_id(cid)
+                if cat is not None:
+                    category_map[cid] = cat
+
+        # 按 category name 排序分类
+        sorted_categories = sorted(category_map.values(), key=lambda c: c.name)
+
+        # 按 category_id 分组标签
+        result: list[tuple[TagCategory, list[Tag]]] = []
+        for cat in sorted_categories:
+            tags = [
+                Tag(
+                    id=row["id"],
+                    name=row["name"],
+                    category_id=row["category_id"],
+                )
+                for row in rows
+                if row["category_id"] == cat.id
+            ]
+            result.append((cat, tags))
+        return result
+
+    def search_tags(self, query: str, limit: int = 20) -> list[Tag]:
+        """标签搜索（前缀匹配，用于 UI 自动补全）。
+
+        Args:
+            query: 搜索前缀。空字符串返回空列表。
+            limit: 最大返回数，默认 20。
+
+        Returns:
+            匹配的标签列表，按 name 升序。
+        """
+        return self._tag_repo.search_by_name_prefix(query.strip(), limit=limit)
+
+    def batch_attach_tags(self, content_unit_ids: list[str], tag_id: str) -> int:
+        """为多个内容单元批量添加同一标签。
+
+        幂等：已存在的关联跳过，不抛错。
+
+        Returns:
+            实际新增关联的数量。
+
+        Raises:
+            TagNotFoundError: tag_id 不存在。
+            ContentUnitNotFoundError: 任一 content_unit_id 不存在（FK 违约）。
+        """
+        if self._tag_repo.get_by_id(tag_id) is None:
+            raise TagNotFoundError(f"标签不存在：{tag_id}")
+        attached = 0
+        for unit_id in content_unit_ids:
+            try:
+                if self._cut_repo.attach(unit_id, tag_id):
+                    attached += 1
+            except RepositoryError as e:
+                raise ContentUnitNotFoundError(f"内容单元不存在：{unit_id}") from e
+        return attached
+
+    def batch_detach_tags(self, content_unit_ids: list[str], tag_id: str) -> int:
+        """为多个内容单元批量移除同一标签。
+
+        幂等：原本无关联的跳过。
+
+        Returns:
+            实际移除关联的数量。
+        """
+        detached = 0
+        for unit_id in content_unit_ids:
+            if self._cut_repo.detach(unit_id, tag_id):
+                detached += 1
+        return detached
 
     # --- JSON 导入导出 ---
 

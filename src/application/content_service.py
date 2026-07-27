@@ -16,6 +16,11 @@ list_directory_entries：从文件系统读取目录下所有条目（roadmap Ta
 
 路径比较统一使用 make_path_key()（normcase + normpath）归一化，
 不依赖 Path.resolve()（后者会访问文件系统解析符号链接，语义不一致）。
+
+Stage 4 Task 2 新增：
+- update_metadata：编辑 title / source_url / notes / cover_path。
+- list_cover_candidates：列出内容单元目录内所有支持的图片格式（用于 CoverPickerDialog）。
+- 委托 TagService 完成标签关联与批量打标签。
 """
 
 from __future__ import annotations
@@ -28,7 +33,12 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from application.errors import ContentUnitNotFoundError, InvalidContentUnitPathError
+from application.errors import (
+    ContentUnitNotFoundError,
+    CoverImageNotFoundError,
+    InvalidContentUnitPathError,
+    InvalidMetadataError,
+)
 from domain.models import ContentUnit, FileEntry
 from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.content_unit import ContentUnitRepository
@@ -38,6 +48,17 @@ from infrastructure.repositories.errors import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 支持的封面图片扩展名（spec §9）
+_COVER_IMAGE_EXTENSIONS = frozenset(
+    {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".ico"}
+)
+
+# title 最大长度（避免过长破坏 UI 布局）
+_TITLE_MAX_LENGTH = 200
+
+# source_url 最大长度
+_URL_MAX_LENGTH = 2000
 
 
 def _default_now_utc() -> str:
@@ -323,6 +344,138 @@ class ContentService:
         # 文件夹在前，名称不区分大小写升序
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower(), e.name))
         return entries
+
+    # --- 元数据编辑（Stage 4 Task 2） ---
+
+    def update_metadata(
+        self,
+        unit_id: str,
+        title: str | None = None,
+        source_url: str | None = None,
+        notes: str | None = None,
+        cover_path: str | None = None,
+    ) -> ContentUnit:
+        """更新内容单元的元数据字段。
+
+        仅修改显式传入的字段；None 参数表示「不改」。空字符串表示「清空」。
+        每次更新自动更新 updated_at。
+
+        Args:
+            unit_id: 内容单元 ID。
+            title: 新标题。None 不改；"" 清空；strip 后为空视为清空。
+            source_url: 新来源 URL。None 不改；"" 清空。
+            notes: 新备注。None 不改；"" 清空。
+            cover_path: 新封面相对路径。None 不改；"" 清空。
+                非 None 且非空时校验图片在内容单元目录下存在。
+
+        Returns:
+            更新后的 ContentUnit。
+
+        Raises:
+            ContentUnitNotFoundError: unit_id 不存在。
+            InvalidMetadataError: title 过长 / source_url 过长 / cover_path 不存在。
+            CoverImageNotFoundError: cover_path 指定的图片在内容单元目录下不存在。
+        """
+        unit = self._repo.get_by_id(unit_id)
+        if unit is None:
+            raise ContentUnitNotFoundError(f"内容单元不存在：{unit_id}")
+
+        # 校验并应用各字段
+        if title is not None:
+            title = title.strip()
+            if len(title) > _TITLE_MAX_LENGTH:
+                raise InvalidMetadataError(f"标题不能超过 {_TITLE_MAX_LENGTH} 个字符")
+            unit.title = title or None  # 空字符串 → None
+
+        if source_url is not None:
+            source_url = source_url.strip()
+            if len(source_url) > _URL_MAX_LENGTH:
+                raise InvalidMetadataError(f"来源 URL 不能超过 {_URL_MAX_LENGTH} 个字符")
+            unit.source_url = source_url or None
+
+        if notes is not None:
+            unit.notes = notes  # 保留原样（包括首尾空白）但空字符串 → None
+            if not unit.notes:
+                unit.notes = None
+
+        if cover_path is not None:
+            cover_path = cover_path.strip()
+            if cover_path:
+                # 校验图片在内容单元目录下存在
+                self._validate_cover_path(unit.path, cover_path)
+                unit.cover_path = cover_path
+            else:
+                unit.cover_path = None  # 清空
+
+        unit.updated_at = self._now()
+        return self._repo.update(unit)
+
+    def _validate_cover_path(self, unit_path: str, cover_path: str) -> None:
+        """校验 cover_path 是 unit_path 下的图片文件且存在。
+
+        cover_path 应为相对内容单元路径的相对路径。绝对路径或包含 .. 的路径被拒绝。
+        文件扩展名必须在支持列表内。
+
+        Raises:
+            InvalidMetadataError: 路径非法（绝对路径 / 包含 .. / 扩展名不支持）。
+            CoverImageNotFoundError: 文件不存在。
+        """
+        # 路径合法性
+        if Path(cover_path).is_absolute():
+            raise InvalidMetadataError("封面路径必须是相对路径，不能是绝对路径")
+        try:
+            normalized = Path(cover_path)
+            # 检查 .. 出现在路径中
+            if ".." in normalized.parts:
+                raise InvalidMetadataError("封面路径不能包含 ..")
+        except ValueError as e:
+            raise InvalidMetadataError(f"封面路径非法：{e}") from e
+
+        # 扩展名校验
+        ext = normalized.suffix.lower()
+        if ext not in _COVER_IMAGE_EXTENSIONS:
+            raise InvalidMetadataError(
+                f"封面图片扩展名不支持：{ext}（支持：{sorted(_COVER_IMAGE_EXTENSIONS)}）"
+            )
+
+        # 文件存在性
+        full_path = Path(unit_path) / normalized
+        if not full_path.is_file():
+            raise CoverImageNotFoundError(f"封面图片不存在：{full_path}")
+
+    def list_cover_candidates(self, unit_path: str) -> list[Path]:
+        """列出内容单元目录下所有支持的图片格式文件，按文件名升序排序。
+
+        用于 CoverPickerDialog 的图片网格。仅扫描目录顶层（不递归子目录）。
+        跳过符号链接与子目录。
+
+        若 unit_path 不存在或不是目录，返回空列表（记日志）。
+        """
+        root = Path(unit_path)
+        try:
+            if not root.is_dir():
+                return []
+        except OSError as e:
+            logger.warning("list_cover_candidates: 路径检查失败 %s: %s", unit_path, e)
+            return []
+
+        candidates: list[Path] = []
+        try:
+            for child in root.iterdir():
+                try:
+                    if child.is_symlink() or not child.is_file():
+                        continue
+                    if child.suffix.lower() in _COVER_IMAGE_EXTENSIONS:
+                        candidates.append(child)
+                except OSError as e:
+                    logger.warning("list_cover_candidates: 跳过条目 %s: %s", child, e)
+        except OSError as e:
+            logger.warning("list_cover_candidates: 读取目录失败 %s: %s", unit_path, e)
+            return []
+
+        # 按文件名升序（不区分大小写）
+        candidates.sort(key=lambda p: (p.name.lower(), p.name))
+        return candidates
 
     def _build_entry(self, child: Path) -> FileEntry | None:
         """从单个 Path 构建 FileEntry（单次精确查询 content_unit）。跳过符号链接。"""

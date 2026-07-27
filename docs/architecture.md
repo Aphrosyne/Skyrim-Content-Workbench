@@ -81,14 +81,19 @@ MainWindow
   │       └─ AssemblyPanel (QWidget)
   │           └─ 正在组装的内容单元文件夹内容
   │
-  └─ MetadataPanel (右侧，QWidget)
-      ├─ 标题（中文别名）
-      ├─ 标签选择器（自动补全）
-      ├─ 来源 URL
-      ├─ 备注（多行文本）
-      ├─ 封面预览 + 设置按钮
-      └─ [保存] 按钮
+  └─ MetadataPanel (右侧，QWidget，注入 TagService 时显示；浏览/整理模式均可见)
+        ├─ 标题（QLineEdit，中文别名）
+        ├─ 标签 chip 列表 + 独立输入框（QListWidget LeftToRight + Wrapping + QCompleter 自动补全）
+        ├─ 标签预选区域（输入框下方，单击快速添加到 chip，排除已在 chip 列表的）
+        ├─ 来源 URL（QLineEdit）
+        ├─ 备注（QTextEdit，多行）
+        ├─ 封面预览 + 设置封面按钮 + 清除封面按钮
+        └─ [保存] 按钮（显式保存，不自提交）
 ```
+
+> 整理模式保留右栏 MetadataPanel（2026-07-25 决策修正：原决策 4/8 推翻，方案 B），
+> 用户可在装配同时编辑元数据，避免创建完内容单元后切回浏览模式才能编辑元数据的多余步骤。
+> 未注入 TagService 时降级为只读 `_metadata_label`（兼容旧测试）。
 
 ### 3.2 组件职责
 
@@ -99,7 +104,9 @@ MainWindow
 | `ContentUnitListModel` | `content_model.py`（新建） | 内容单元列表的 Qt Model |
 | `TagFilterBar` | `tag_filter.py`（新建） | 标签分类展开 + 标签多选筛选 |
 | `AssemblyPanel` | `assembly_panel.py`（新建） | Mod 组装配面板 |
-| `MetadataPanel` | `metadata_panel.py`（新建） | 元数据编辑表单 |
+| `MetadataPanel` | `metadata_panel.py`（新建） | 元数据编辑表单（标题/标签/来源/备注/封面），显式保存按钮，标签 chip + 自动补全 |
+| `BatchTagDialog` | `batch_tag_dialog.py`（新建） | 批量打标签对话框（添加/移除模式 + chip + 自动补全） |
+| `CoverPickerDialog` | `cover_picker_dialog.py`（新建） | 封面选择对话框（IconMode 缩略图列表，默认选中第一张或当前封面） |
 | `ScanWorker` | `scan_worker.py`（改造） | Qt 后台线程执行扫描 |
 | `ThumbnailWorker` | `thumbnail_worker.py`（改造） | Qt 后台线程生成缩略图 |
 | `ui_constants.py` | `ui_constants.py` | UI 文本常量集中定义 |
@@ -122,13 +129,13 @@ MainWindow
 | `ManagedRootService` | 受管理根目录 CRUD | `add_root(path)` / `remove_root(id)` / `list_roots()` |
 | `FolderTreeService` | 目录树数据源（folder_cache） | `list_root_nodes()` / `list_children(path)` / `count_children(path)` |
 | `StagingService` | 暂存区标记与管理 | `set_staging(path)` / `list_staging_files()` / `is_staging(path)` |
-| `ContentService` | 内容单元元数据 + 目录条目 | `mark_as_content_unit(path)` / `unmark_content_unit(id)` / `list_directory_entries(path)` |
+| `ContentService` | 内容单元元数据 + 目录条目 | `mark_as_content_unit(path)` / `unmark_content_unit(id)` / `list_directory_entries(path)` / `update_metadata(unit_id, title, source_url, notes, cover_path)`（阶段 4 Task 2）/ `list_cover_candidates(unit_path)`（阶段 4 Task 2） |
 | `ModGroupService` | 创建 Mod 组（Task 3） | `create_mod_group(source_file, staging_path, name)` |
 | `AssemblyService` | 装配面板文件加入/移除（Task 4） | `add_file(src, mod_group)` / `remove_file(file, mod_group)` / `rename_preview(...)` |
 | `QuickInsertService` | 快速插入 Mod 组到目标分类目录（Task 5） | `quick_insert(unit_id, target_dir)` |
 | `FileOperationService` | 文件操作（简化） | `new_folder(path)` / `move(src, dst)` |
 | `ScanService` | 增量/全量扫描 | `scan_root(root_id, incremental)` / `scan_root_by_path(path, incremental)` |
-| `TagService` | 标签系统（阶段 4） | `create_category()` / `create_tag()` / `list_categories_with_tags()` / `import_from_json()` / `export_to_json()` |
+| `TagService` | 标签系统（阶段 4） | `create_category()` / `create_tag()` / `list_categories_with_tags()` / `import_from_json()` / `export_to_json()` / `search_tags(prefix)` / `list_tags_by_content_unit(unit_id)` / `set_content_unit_tags(unit_id, tag_ids)` / `batch_attach_tags(unit_ids, tag_ids)` / `batch_detach_tags(unit_ids, tag_ids)`（后 5 项为阶段 4 Task 2） |
 | `SearchService` | 全局搜索（阶段 5） | `search(query)` |
 
 ### 4.2 Service 依赖关系
@@ -197,7 +204,7 @@ SearchService ──→ ContentService + TagService（阶段 5）
 
 **快速插入流程（阶段 3 Task 5）：**
 ```
-整理模式 + 装配面板已绑定 Mod 组 + 目录树选中目标分类目录 → 点击「快速插入」
+整理模式 + 装配面板已绑定 Mod 组 + 目录树选中目标分类目录 → 点击「快速插入」按钮
   → MainWindow._on_quick_insert_clicked()
   → 弹出确认对话框（源路径 → 目标路径）
   → QuickInsertService.quick_insert(unit_id, target_dir)
@@ -207,6 +214,71 @@ SearchService ──→ ContentService + TagService（阶段 5）
     4. sync：同步 folder_cache（删除旧节点 + 插入新节点 + 更新目标父目录 mtime）
   → MainWindow._commit()
   → 解绑装配面板 + 刷新目录树 + 刷新暂存区列表 + 状态栏提示
+```
+
+**元数据保存流程（阶段 4 Task 2；2026-07-25 调整：单击加载）：**
+```
+浏览/整理模式 + 单击内容单元 → MetadataPanel.load_unit(unit) 加载字段
+  （双击兼容保留；单击非内容单元 → clear_panel 清空元数据面板）
+  → 用户编辑标题 / 来源 URL / 备注 / 添加或移除标签 chip（输入回车 / 单击预选标签） / （可选）设置封面
+  → 点击「保存」按钮
+  → MetadataPanel._on_save_clicked()
+    1. ContentService.update_metadata(unit_id, title, source_url, notes, cover_path)
+       - 字段校验：title ≤ 200、source_url ≤ 2000
+       - cover_path 校验：拒绝绝对路径和 ..，统一转 POSIX 分隔符
+       - cover_path 语义：None=不改、""=清空、非空=设置
+    2. TagService.set_content_unit_tags(unit_id, current_tag_ids)
+       - diff 计算 original_tag_ids vs current_ids → to_add / to_remove
+       - 事务内 attach / detach（INSERT OR IGNORE 幂等）
+  → 发射 on_saved(updated_unit) 信号
+  → MainWindow._on_metadata_saved()
+    → _commit()（事务边界，Service 不自提交）
+    → _refresh_content_list_for_current_mode()
+    → _update_metadata(updated_unit)（重新加载 panel）
+    → 状态栏提示「元数据已保存」
+```
+
+**封面选择流程（阶段 4 Task 2）：**
+```
+浏览模式 + MetadataPanel 已加载内容单元 → 点击「设置封面」按钮
+  → MetadataPanel 发射 on_pick_cover_requested(unit_id) 信号
+  → MainWindow._on_pick_cover_requested(unit_id)
+    → ContentService.get_by_id(unit_id) 取 ContentUnit
+    → ContentService.list_cover_candidates(unit.path)
+      - 扫描内容单元目录下所有图片文件（jpg/jpeg/png/webp/gif/bmp/tif/tiff/ico）
+    → 若无候选 → QMessageBox.information 提示，结束
+    → 弹出 CoverPickerDialog(candidates, unit_path, current_cover)
+      - 默认选中第一张，或当前封面（若提供且在候选中）
+      - 用户在 IconMode 列表中切换选择
+    → 用户点击「确定」 → dialog.selected_relative_path()
+      - 返回 POSIX 风格相对路径（相对内容单元路径）
+    → MetadataPanel.set_cover_path(rel_path)（仅更新界面预览，不立即写库）
+    → 用户点击「保存」按钮 → 走元数据保存流程
+```
+
+**批量打标签流程（阶段 4 Task 2；2026-07-25 调整：预选标签 + 回车不关闭窗口）：**
+```
+浏览/整理模式 + 文件列表多选（≥2 项且至少一个内容单元）→ 右键 → 「批量打标签」
+  → MainWindow._on_batch_tag(entries)
+    → 收集所有 entries 中 content_unit is not None 的 id 列表
+    → 若无内容单元 → QMessageBox.information 提示，结束
+    → 弹出 BatchTagDialog(tag_service, content_unit_ids)
+      - 默认 add 模式 + 空 chip 列表
+      - 用户输入标签名 + 回车 → 前缀匹配自动补全（QCompleter + TagRepository.search_by_name_prefix）
+        回车仅添加到 chip 列表，不关闭窗口（setAutoDefault(False) 禁用默认按钮）
+      - 单击预选标签 → 快速添加到 chip（与回车等效）
+      - 重复标签警告 / 未知标签警告 / 空白名称 no-op
+      - 单击 chip 移除
+      - 切换 add / remove 模式（RadioButton）
+    → 用户点击「应用」（此时才执行批量操作 + accept 关闭窗口）
+      - add 模式：TagService.batch_attach_tags(unit_ids, tag_ids)
+      - remove 模式：TagService.batch_detach_tags(unit_ids, tag_ids)
+      - 每个 (unit, tag) 对独立 attach/detach，已关联/未关联的跳过（幂等）
+      - 收集 result_messages（如「已为 3 个内容单元添加标签『重甲』」）
+    → dialog.exec() 返回 Accepted
+    → MainWindow._commit()
+    → _refresh_content_list_for_current_mode()
+    → 状态栏显示 result_messages（；分隔）
 ```
 
 ---
