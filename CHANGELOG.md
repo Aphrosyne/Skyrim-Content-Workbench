@@ -10,6 +10,47 @@
 
 ---
 
+## [0.30.1] - 2026-07-29
+
+Stage 5 Task 0：前置技术债修复
+
+为 Stage 5 undo 与文件操作功能做基础，修复三项技术债。schema_version 维持 6，无数据库迁移。Stage 5 Task 顺序确认为：Task 0 → Task 1 → Task 2 → Task 3a → Task 6 → Task 4 → Task 3b → Task 5 → Task 3c → Task 7（原 Task 3 拆分为 3a/3b/3c，原 Task 6 提前到 Task 3a 之后）。
+
+**修复**
+
+- **TD-H1**：[models.py](src/domain/models.py) `OperationHistory.__post_init__` 增加 operation_type 与 target_path 一致性校验。move/rename/new_folder 要求 target_path 非空；delete 要求 target_path 为 None。避免 undo 链路数据不一致。
+- **TD-L19**：`OperationHistory` delete 操作的 can_undo 必须为 False（delete 不可撤销，回收站已支持还原）。move/rename/new_folder 的 can_undo 校验留待 Task 6 实现 undo 时配合运行时安全检查一并落地。
+- **TD-M11**：[main_window.py](src/app/main_window.py) `_commit` 失败时通过 `QMessageBox.critical` 提示用户，标题与消息来自新增的 `ui_constants.DB_COMMIT_FAILED_TITLE` / `DB_COMMIT_FAILED_MESSAGE`。同时保留 `logger.exception` 记录技术细节。
+
+**Stage 5 Task 拆分与顺序调整**
+
+- 原 Task 3 拆分为 Task 3a（新建文件夹 + 重命名 + 删除）/ 3b（复制/剪切/粘贴 + 任意目录间移动）/ 3c（路径丢失检测），原因：原 Task 3 含 6+ 独立子功能，体量过大违反"小而可审查"原则。
+- 原 Task 6（操作历史与撤销）提前到 Task 3a 之后，原因：undo 框架是 Task 3b/5 的依赖，提前实现避免后期补写 operation_history。
+
+**Stage 5 已确认的设计决策（用户 2026-07-29 确认）**
+
+- Q1: B — Windows 回收站采用 ctypes SHFileOperation，不引入 send2trash
+- Q2: A — 全局搜索使用 LIKE，不引入 FTS5
+- Q3: A — 应用内剪贴板，不与系统剪贴板混用
+- Q4: A — 操作历史采用 QDialog 弹出
+- Q5: 路径丢失仅扫描时检测 + 状态栏提示 + 新增 "missing" status
+- Q6: B — 大图卡片视图复用 FileListModel，避免数据源同步问题
+- Q7: C — undo 不安全状态在列表标注 + 弹窗提示
+- Q8: C — MainWindow 边开发边小规模拆分，不单独开启重构 Task
+
+**测试**
+
+- 新增 9 个测试：`tests/test_domain_models.py` 6 个 OperationHistory 校验测试 + `tests/test_main_window_commit_error.py` 3 个 _commit 失败 UI 反馈测试
+- 修复 2 个既有测试：`test_create_delete_without_target` 补 `can_undo=False`；`test_can_undo_false` 补 `target_path`
+- 全量回归：991 passed, 3 skipped, ruff check + format 全通过
+
+**文档**
+
+- 更新 [docs/roadmap.md](docs/roadmap.md) Stage 5 部分：标记 Task 0 完成，Task 顺序调整为确认后顺序，记录 Task 拆分原因与设计决策
+- 更新 [docs/technical-debt.md](docs/technical-debt.md)：标记 TD-H1 / TD-L19 / TD-M11 已修复
+
+---
+
 ## [0.27.0] - 2026-07-29
 
 开发环境清理脚本

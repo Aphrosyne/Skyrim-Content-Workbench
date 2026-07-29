@@ -148,8 +148,10 @@ class TestOperationHistory:
             operation_type="delete",
             source_path="/mods/a",
             created_at="t",
+            can_undo=False,
         )
         assert op.target_path is None
+        assert op.can_undo is False
 
     def test_invalid_operation_type_raises(self) -> None:
         with pytest.raises(ValueError, match="operation_type"):
@@ -174,9 +176,79 @@ class TestOperationHistory:
             id="op",
             operation_type="new_folder",
             source_path="/x",
+            target_path="/x/new",
             created_at="t",
             can_undo=False,
         )
+        assert op.can_undo is False
+
+    # === TD-H1：operation_type 与 target_path 一致性校验 ===
+
+    def test_move_without_target_raises(self) -> None:
+        with pytest.raises(ValueError, match="target_path 非空"):
+            OperationHistory(
+                id="op",
+                operation_type="move",
+                source_path="/a",
+                target_path=None,
+                created_at="t",
+            )
+
+    def test_rename_without_target_raises(self) -> None:
+        with pytest.raises(ValueError, match="target_path 非空"):
+            OperationHistory(
+                id="op",
+                operation_type="rename",
+                source_path="/a",
+                target_path=None,
+                created_at="t",
+            )
+
+    def test_new_folder_without_target_raises(self) -> None:
+        with pytest.raises(ValueError, match="target_path 非空"):
+            OperationHistory(
+                id="op",
+                operation_type="new_folder",
+                source_path="/a",
+                target_path=None,
+                created_at="t",
+            )
+
+    def test_delete_with_target_raises(self) -> None:
+        with pytest.raises(ValueError, match="target_path 为 None"):
+            OperationHistory(
+                id="op",
+                operation_type="delete",
+                source_path="/a",
+                target_path="/b",
+                created_at="t",
+                can_undo=False,
+            )
+
+    # === TD-L19：delete 不可撤销 ===
+
+    def test_delete_can_undo_true_raises(self) -> None:
+        with pytest.raises(ValueError, match="can_undo 必须为 False"):
+            OperationHistory(
+                id="op",
+                operation_type="delete",
+                source_path="/a",
+                target_path=None,
+                created_at="t",
+                can_undo=True,
+            )
+
+    def test_delete_valid(self) -> None:
+        op = OperationHistory(
+            id="op",
+            operation_type="delete",
+            source_path="/a",
+            target_path=None,
+            created_at="t",
+            can_undo=False,
+        )
+        assert op.operation_type == "delete"
+        assert op.target_path is None
         assert op.can_undo is False
 
 

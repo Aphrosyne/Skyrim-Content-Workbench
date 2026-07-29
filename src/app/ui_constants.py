@@ -288,6 +288,10 @@ ERR_DUPLICATE_ROOT = "该目录已添加。"
 ERR_INVALID_ROOT = "路径不存在或不是目录。"
 ERR_REMOVE_ROOT_FAILED = "移除目录配置失败"
 
+# 数据库错误提示（TD-M11）
+DB_COMMIT_FAILED_TITLE = "数据库提交失败"
+DB_COMMIT_FAILED_MESSAGE = "数据未能保存到数据库，请查看日志。最近的操作可能未持久化。"
+
 # 模式切换（spec §5.1/§5.2，roadmap 阶段 2 Task 5）
 MODE_SWITCH_GROUP_TITLE = "模式"
 MODE_BROWSE = "浏览"

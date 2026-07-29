@@ -213,7 +213,13 @@ class MainWindow(QMainWindow):
             try:
                 self._commit_callback()
             except Exception:  # noqa: BLE001
+                # TD-M11：提交失败时通过 QMessageBox 提示用户，避免静默失败
                 logger.exception("数据库提交失败")
+                QMessageBox.critical(
+                    self,
+                    ui.DB_COMMIT_FAILED_TITLE,
+                    ui.DB_COMMIT_FAILED_MESSAGE,
+                )
 
     def _rollback(self) -> None:
         """回滚当前数据库事务。

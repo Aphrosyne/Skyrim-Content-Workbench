@@ -12,11 +12,12 @@
 
 ## High（影响正确性、稳定性、可用性）
 
-### TD-H1: OperationHistory 缺少 target_path 与 operation_type 一致性校验
+### TD-H1: OperationHistory 缺少 target_path 与 operation_type 一致性校验 ✅ 已修复（Stage 5 Task 0）
 
 - **位置**: [models.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/domain/models.py) `OperationHistory.__post_init__`
 - **问题**: `move`/`rename`/`new_folder` 操作允许 `target_path=None`，`delete` 操作允许 `target_path` 非 None，无一致性校验。一旦 `FileOperationService` 实现，撤销链路会数据不一致。
-- **建议**: 在 `__post_init__` 增加操作类型与 target_path 的一致性校验。
+- **修复（Stage 5 Task 0）**: 在 `__post_init__` 增加操作类型与 target_path 的一致性校验。move/rename/new_folder 要求 target_path 非空；delete 要求 target_path 为 None。
+- **测试**: `tests/test_domain_models.py::TestOperationHistory::test_move_without_target_raises` 等 4 个新增测试。
 
 ### TD-H2: ScanService 持久化缺少事务边界与异常隔离 ✅ 已修复（Stage 4.5）
 
@@ -152,11 +153,12 @@
 - **问题**: `fc_root` 参数无类型标注，违反 AGENTS.md 类型标注要求。
 - **建议**: 改为 `fc_root: FolderCache`。
 
-### TD-M11: _commit 数据库提交失败无 UI 反馈
+### TD-M11: _commit 数据库提交失败无 UI 反馈 ✅ 已修复（Stage 5 Task 0）
 
 - **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) `_commit`
 - **问题**: 提交失败仅 `logger.exception`，用户不知操作未持久化。违反 AGENTS.md"所有异常必须转换为用户可理解的错误信息"。
-- **建议**: 提交失败时通过 QMessageBox 或状态栏提示用户。
+- **修复（Stage 5 Task 0）**: 提交失败时调用 `QMessageBox.critical`，标题与消息来自 `ui_constants.DB_COMMIT_FAILED_TITLE` / `DB_COMMIT_FAILED_MESSAGE`。同时保留 `logger.exception` 记录技术细节。
+- **测试**: `tests/test_main_window_commit_error.py` 新增 3 个测试覆盖失败/成功/无 callback 场景。
 
 ### TD-M12: _refresh_content_list 失败时静默显示"空目录"
 
@@ -433,15 +435,17 @@
   失败抛 `FileOperationError`。`AssemblyService` 移除 `_sync_folder_mtime`，
   由 `FileOperationService.move` 内部 helper 自动同步 mtime。
 
-### TD-L19: OperationHistory.can_undo 恒为 True，但 undo 未实现
+### TD-L19: OperationHistory.can_undo 恒为 True，但 undo 未实现 ✅ 已修复（Stage 5 Task 0）
 
 - **位置**: [file_operation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/file_operation_service.py) `new_folder` / `move`
 - **背景**: 写历史时 `can_undo=True`，但 Stage 3 没有 undo 实现。
   这是已知的 Stage 5 范围，但 `can_undo` 字段语义在 Stage 3 期间是
   "承诺可撤销"而非"实际可撤销"。UI 若基于此字段显示"可撤销"标识会误导用户。
-- **影响范围**: 当前 UI 未使用该字段，无实际影响。
-- **推荐修复方案**: Stage 5 实现 undo 时校验 `can_undo` 并实际执行撤销；
-  或在 Stage 3 期间将该字段默认设为 False，Stage 5 实现时再改 True。
+- **修复（Stage 5 Task 0）**: 在 `OperationHistory.__post_init__` 增加
+  `delete` 操作的 `can_undo` 校验：delete 不可撤销，`can_undo` 必须为 False。
+  move/rename/new_folder 的 `can_undo` 校验留待 Stage 5 Task 6 实现 undo 时
+  配合"安全状态检查"一并落地（届时根据运行时文件状态决定是否可撤销）。
+- **测试**: `tests/test_domain_models.py::TestOperationHistory::test_delete_can_undo_true_raises` 等。
 - **建议修复阶段**: **Stage 5**（undo 实现时）。
 
 ### TD-L20: list_by_path_prefix（旧 broken 方法）保留待删除 ✅ 已修复（Stage 4 Task 0）
@@ -566,8 +570,13 @@
    - ~~TD-L18（AssemblyService._sync_folder_mtime 策略统一，与 TD-M22 一并处理）~~ ✅ 已修复（Stage 4.5）
    - TD-H10（FileOperationService 分层归属，Stage 5 文件操作重构时处理）
    - TD-M24（rename_as_cover 9999 上限错误类型语义错位，Stage 5 错误提示体系统一时处理）
-   - TD-L19（OperationHistory.can_undo 恒为 True，Stage 5 实现 undo 时校验）
+   - ~~TD-L19（OperationHistory.can_undo 恒为 True，Stage 5 实现 undo 时校验）~~ ✅ 已修复（Stage 5 Task 0）
    - TD-M27（SQLite 并发写测试，Stage 5 undo 前验证并发安全）
+
+5a. **Stage 5 Task 0 已修复**（为 undo 与文件操作做基础）：
+   - ~~TD-H1（OperationHistory 一致性校验，影响 undo 安全性）~~ ✅ 已修复（Stage 5 Task 0）
+   - ~~TD-L19（OperationHistory.can_undo 恒为 True，Stage 5 实现 undo 时校验）~~ ✅ 已修复（Stage 5 Task 0）
+   - ~~TD-M11（_commit 数据库提交失败无 UI 反馈，Stage 5 频繁写操作需用户反馈）~~ ✅ 已修复（Stage 5 Task 0）
 
 6. **后续迭代批量处理**（非阻塞，性能优化为主）：
    - TD-H9（content_unit.path UNIQUE 绕过 make_path_key，v7 迁移时处理）

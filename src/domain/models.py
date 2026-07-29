@@ -107,6 +107,20 @@ class OperationHistory:
             raise ValueError("OperationHistory.source_path 不能为空")
         if not self.created_at:
             raise ValueError("OperationHistory.created_at 不能为空")
+        # TD-H1：operation_type 与 target_path 一致性校验
+        # move/rename/new_folder 必须有 target_path；delete 不允许 target_path
+        if self.operation_type in ("move", "rename", "new_folder"):
+            if not self.target_path:
+                raise ValueError(
+                    f"OperationHistory.operation_type={self.operation_type} 要求 target_path 非空"
+                )
+        elif self.operation_type == "delete" and self.target_path is not None:
+            raise ValueError("OperationHistory.operation_type=delete 要求 target_path 为 None")
+        # TD-L19：delete 不可撤销，can_undo 必须为 False
+        if self.operation_type == "delete" and self.can_undo:
+            raise ValueError(
+                "OperationHistory.operation_type=delete 不可撤销，can_undo 必须为 False"
+            )
 
 
 @dataclass
