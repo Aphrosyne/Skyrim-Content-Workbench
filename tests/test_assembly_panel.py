@@ -25,6 +25,7 @@ from application.content_service import ContentService  # noqa: E402
 from domain.models import ContentUnit, FileEntry  # noqa: E402
 from infrastructure.db import get_connection, init_db  # noqa: E402
 from infrastructure.file_operation_service import FileOperationService  # noqa: E402
+from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper  # noqa: E402
 from infrastructure.repositories.content_unit import ContentUnitRepository  # noqa: E402
 from infrastructure.repositories.folder_cache import FolderCacheRepository  # noqa: E402
 from infrastructure.repositories.operation_history import (  # noqa: E402
@@ -36,14 +37,22 @@ from infrastructure.repositories.operation_history import (  # noqa: E402
 
 @pytest.fixture
 def assembly_service(tmp_path: Path) -> tuple[AssemblyService, sqlite3.Connection]:
-    """构造 AssemblyService + 内存数据库连接。"""
+    """构造 AssemblyService + 内存数据库连接。
+
+    Stage 4.5 H4：FileOperationService 注入 FolderCacheSyncHelper，
+    AssemblyService 不再需要 folder_cache_repo。
+    """
     db_path = tmp_path / "test.db"
     init_db(db_path)
     conn = get_connection(db_path)
     conn.row_factory = sqlite3.Row
-    file_op = FileOperationService(OperationHistoryRepository(conn))
     folder_cache_repo = FolderCacheRepository(conn)
-    service = AssemblyService(file_op, ContentUnitRepository(conn), folder_cache_repo)
+    helper = FolderCacheSyncHelper(folder_cache_repo)
+    file_op = FileOperationService(
+        OperationHistoryRepository(conn),
+        folder_cache_helper=helper,
+    )
+    service = AssemblyService(file_op, ContentUnitRepository(conn))
     yield service, conn
     conn.close()
 

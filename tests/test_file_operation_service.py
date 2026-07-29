@@ -5,6 +5,7 @@
 - move：移动文件 / 移动目录 / 源不存在 / 目标已存在 / 跨盘检测 / 自目录检测 /
         保留元数据 / 写 operation_history / 中文路径
 - 写操作不自提交
+- Stage 4.5 H4：注入 FolderCacheSyncHelper + ContentUnitRepository 后自动同步
 """
 
 from __future__ import annotations
@@ -17,12 +18,17 @@ import pytest
 from application.errors import (
     ConflictError,
     CrossDriveError,
+    FileOperationError,
     SelfSubdirectoryError,
     SourceNotFoundError,
 )
-from domain.models import OperationHistory
+from domain.models import ContentUnit, OperationHistory
 from infrastructure.db import get_connection, init_db
 from infrastructure.file_operation_service import FileOperationService
+from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper
+from infrastructure.path_utils import make_path_key
+from infrastructure.repositories.content_unit import ContentUnitRepository
+from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.operation_history import OperationHistoryRepository
 
 
@@ -318,3 +324,269 @@ def test_operation_does_not_auto_commit(tmp_path: Path) -> None:
 
     conn1.close()
     conn2.close()
+
+
+# === Stage 4.5 H4：自动同步 folder_cache + ContentUnit.path ===
+
+
+@pytest.fixture
+def service_with_sync(
+    tmp_path: Path,
+) -> tuple[FileOperationService, sqlite3.Connection, FolderCacheRepository, ContentUnitRepository]:
+    """构造注入了 helper + content_unit_repo 的 FileOperationService。"""
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    conn = get_connection(db_path)
+    conn.row_factory = sqlite3.Row
+    history_repo = OperationHistoryRepository(conn)
+    folder_cache_repo = FolderCacheRepository(conn)
+    content_unit_repo = ContentUnitRepository(conn)
+    helper = FolderCacheSyncHelper(
+        folder_cache_repo,
+        now_provider=lambda: "2026-07-28T00:00:00Z",
+        uuid_provider=lambda: "fc-sync-id",
+    )
+    svc = FileOperationService(
+        history_repo,
+        now_provider=lambda: "2026-07-28T00:00:00Z",
+        uuid_provider=lambda: "uuid-h4",
+        folder_cache_helper=helper,
+        content_unit_repo=content_unit_repo,
+    )
+    yield svc, conn, folder_cache_repo, content_unit_repo
+    conn.close()
+
+
+def _seed_content_unit(
+    repo: ContentUnitRepository, unit_id: str, path: str, status: str = "unorganized"
+) -> ContentUnit:
+    """插入一条 ContentUnit 测试数据。"""
+    unit = ContentUnit(
+        id=unit_id,
+        path=path,
+        title=path.rsplit("/", 1)[-1],
+        content_type="mod",
+        status=status,
+        created_at="2026-07-28T00:00:00Z",
+        updated_at="2026-07-28T00:00:00Z",
+    )
+    return repo.create(unit)
+
+
+class TestNewFolderAutoSync:
+    """H4：new_folder 注入 helper 后自动同步 folder_cache。"""
+
+    def test_new_folder_syncs_folder_cache(self, service_with_sync, tmp_path: Path) -> None:
+        svc, conn, folder_cache_repo, _ = service_with_sync
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        target = parent / "NewMod"
+
+        svc.new_folder(target)
+        conn.commit()
+
+        fc = folder_cache_repo.get_by_path(str(target))
+        assert fc is not None
+        assert fc.path == str(target)
+
+    def test_new_folder_sync_failure_cleans_up(self, service_with_sync, tmp_path: Path) -> None:
+        """folder_cache 写入失败时清理已创建的空文件夹 + 抛 FileOperationError。"""
+        svc, conn, folder_cache_repo, _ = service_with_sync
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        target = parent / "NewMod"
+
+        # 预插入相同 path 的 folder_cache → 触发唯一约束冲突
+        from domain.models import FolderCache
+
+        folder_cache_repo.create(
+            FolderCache(
+                id="dup",
+                path=str(target),
+                parent_id=None,
+                last_scanned_mtime=0.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+
+        with pytest.raises(FileOperationError, match="写入 folder_cache 失败"):
+            svc.new_folder(target)
+
+        # 空文件夹已被清理
+        assert not target.exists()
+
+
+class TestMoveDirectoryAutoSync:
+    """H4：move 目录注入 helper + repo 后自动同步 folder_cache + ContentUnit.path。"""
+
+    def test_move_directory_syncs_folder_cache(self, service_with_sync, tmp_path: Path) -> None:
+        svc, conn, folder_cache_repo, _ = service_with_sync
+        # 构造：OldDir/MyMod（含子文件）→ NewDir/MyMod
+        old_parent = tmp_path / "OldDir"
+        old_parent.mkdir()
+        new_parent = tmp_path / "NewDir"
+        new_parent.mkdir()
+        src = old_parent / "MyMod"
+        src.mkdir()
+        (src / "file.7z").write_bytes(b"data")
+        dst = new_parent / "MyMod"
+
+        # 预置 folder_cache：旧目录 + MyMod
+        from domain.models import FolderCache
+
+        old_parent_fc = folder_cache_repo.create(
+            FolderCache(
+                id="fc-old-parent",
+                path=str(old_parent),
+                parent_id=None,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+        new_parent_fc = folder_cache_repo.create(
+            FolderCache(
+                id="fc-new-parent",
+                path=str(new_parent),
+                parent_id=None,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+        folder_cache_repo.create(
+            FolderCache(
+                id="fc-src",
+                path=str(src),
+                parent_id=old_parent_fc.id,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+
+        svc.move(src, dst)
+        conn.commit()
+
+        # 旧 folder_cache 已删除
+        assert folder_cache_repo.get_by_path(str(src)) is None
+        # 新 folder_cache 已插入
+        new_fc = folder_cache_repo.get_by_path(str(dst))
+        assert new_fc is not None
+        assert new_fc.parent_id == new_parent_fc.id
+        # 目标父目录 mtime 已更新
+        new_parent_after = folder_cache_repo.get_by_path(str(new_parent))
+        assert new_parent_after.last_scanned_mtime != 1000.0
+
+    def test_move_directory_updates_content_unit_paths(
+        self, service_with_sync, tmp_path: Path
+    ) -> None:
+        """move 目录时更新 ContentUnit.path：精确匹配 + 子路径前缀重写。"""
+        svc, conn, _, content_unit_repo = service_with_sync
+        old_root = tmp_path / "OldRoot"
+        old_root.mkdir()
+        new_root = tmp_path / "NewRoot"
+        new_root.mkdir()
+        src = old_root / "MyMod"
+        src.mkdir()
+        (src / "sub.7z").write_bytes(b"data")
+        dst = new_root / "MyMod"
+
+        # 预置 ContentUnit：
+        # - unit-folder：path == src（精确匹配，移动后 → dst）
+        # - unit-child：path == src/sub.7z（子路径，移动后 → dst/sub.7z）
+        # - unit-unrelated：path == old_root/Other（不在 src 子树，不应更新）
+        unit_folder = _seed_content_unit(content_unit_repo, "cu-folder", str(src))
+        unit_child = _seed_content_unit(content_unit_repo, "cu-child", str(src / "sub.7z"))
+        unit_unrelated = _seed_content_unit(
+            content_unit_repo, "cu-unrelated", str(old_root / "Other")
+        )
+
+        svc.move(src, dst)
+        conn.commit()
+
+        # folder 的 path 已更新为 dst
+        updated_folder = content_unit_repo.get_by_id(unit_folder.id)
+        assert updated_folder is not None
+        assert make_path_key(updated_folder.path) == make_path_key(str(dst))
+
+        # child 的 path 已更新为 dst/sub.7z
+        updated_child = content_unit_repo.get_by_id(unit_child.id)
+        assert updated_child is not None
+        assert make_path_key(updated_child.path) == make_path_key(str(dst / "sub.7z"))
+
+        # unrelated 未变更
+        updated_unrelated = content_unit_repo.get_by_id(unit_unrelated.id)
+        assert updated_unrelated is not None
+        assert updated_unrelated.path == str(old_root / "Other")
+
+
+class TestMoveFileAutoSync:
+    """H4：move 文件注入 helper 后更新父目录 mtime（best-effort）。"""
+
+    def test_move_file_updates_parent_mtimes(self, service_with_sync, tmp_path: Path) -> None:
+        svc, conn, folder_cache_repo, _ = service_with_sync
+        src_dir = tmp_path / "SrcDir"
+        src_dir.mkdir()
+        dst_dir = tmp_path / "DstDir"
+        dst_dir.mkdir()
+        src = src_dir / "file.7z"
+        src.write_bytes(b"data")
+        dst = dst_dir / "file.7z"
+
+        # 预置 folder_cache：两个父目录
+        from domain.models import FolderCache
+
+        folder_cache_repo.create(
+            FolderCache(
+                id="fc-src",
+                path=str(src_dir),
+                parent_id=None,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+        folder_cache_repo.create(
+            FolderCache(
+                id="fc-dst",
+                path=str(dst_dir),
+                parent_id=None,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+
+        svc.move(src, dst)
+        conn.commit()
+
+        # 两个父目录 mtime 都已更新（不再是 1000.0）
+        src_after = folder_cache_repo.get_by_path(str(src_dir))
+        assert src_after.last_scanned_mtime != 1000.0
+        dst_after = folder_cache_repo.get_by_path(str(dst_dir))
+        assert dst_after.last_scanned_mtime != 1000.0
+
+
+class TestMoveWithoutSync:
+    """H4：未注入 helper/repo 时 move 不同步（向后兼容）。"""
+
+    def test_move_without_helper_no_sync(self, tmp_path: Path) -> None:
+        """未注入 helper/repo → move 不写 folder_cache，保持原行为。"""
+        db_path = tmp_path / "test.db"
+        init_db(db_path)
+        conn = get_connection(db_path)
+        conn.row_factory = sqlite3.Row
+        svc = FileOperationService(
+            OperationHistoryRepository(conn),
+            now_provider=lambda: "2026-07-28T00:00:00Z",
+            uuid_provider=lambda: "uuid-no-sync",
+        )
+        folder_cache_repo = FolderCacheRepository(conn)
+
+        src = tmp_path / "src.7z"
+        src.write_bytes(b"data")
+        dst = tmp_path / "dst.7z"
+
+        svc.move(src, dst)
+        conn.commit()
+
+        # folder_cache 表为空（无 helper 注入，不写）
+        assert folder_cache_repo.list_all() == []
+
+        conn.close()

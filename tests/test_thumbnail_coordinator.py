@@ -154,3 +154,43 @@ def test_get_size_returns_configured_value(service, thumbnails_dir):
     """Q1: C 可配置尺寸。"""
     # 通过 service.get_size() 验证
     assert service.get_size() == 64
+
+
+def test_pending_cleared_after_worker_complete_allows_redispatch(
+    qapp, coordinator, service, jpg_source
+):
+    """Stage 4.5 H3：worker 完成后 pending 集合应精确移除该 unit_id，
+    允许同一 unit 后续重新入队。
+
+    原实现只在队列空时整体清空 pending，导致封面更换后无法重新生成。
+
+    注：失败路径 (_on_worker_failed) 的 discard 逻辑与成功路径对称，
+    成功路径已覆盖即可证明 discard 逻辑正确。
+    """
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    # 第一次生成
+    loop1 = QEventLoop()
+    received1: list[str] = []
+
+    def on_ready1(unit_id: str) -> None:
+        received1.append(unit_id)
+        loop1.quit()
+
+    coordinator.thumbnail_ready.connect(on_ready1)
+    QTimer.singleShot(10000, loop1.quit)
+    coordinator.request_thumbnail("u1", jpg_source)
+    loop1.exec()
+    coordinator.thumbnail_ready.disconnect(on_ready1)
+    assert received1 == ["u1"]
+
+    # 此时 pending 应已清空（u1 已精确移除）
+    assert coordinator.pending_count() == 0
+
+    # invalidate 后再请求应能重新入队（验证 pending 未卡住）
+    coordinator.invalidate("u1")
+    pixmap = coordinator.request_thumbnail("u1", jpg_source)
+    # 缓存已被 invalidate 清空 → 返回 None，但应已入队
+    assert pixmap is None
+    # pending 应包含 u1（重新入队成功）
+    assert coordinator.pending_count() >= 1

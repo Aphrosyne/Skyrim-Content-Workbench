@@ -129,3 +129,31 @@ class TestDelete:
         repo.create(_make_unit(unit_id="u-2", path="/b"))
         repo.delete("u-1")
         assert repo.get_by_id("u-2") is not None
+
+    def test_delete_cascades_thumbnail_cache(self, repo, db_connection) -> None:
+        """Stage 4.5 H1：删除 ContentUnit 时级联清理 thumbnail_cache。
+
+        原实现遗漏 thumbnail_cache 清理，导致 FK 违约（PRAGMA foreign_keys = ON）。
+        """
+        from domain.models import ThumbnailCache
+        from infrastructure.repositories.thumbnail_cache import ThumbnailCacheRepository
+
+        repo.create(_make_unit(unit_id="u-tc", path="/with-thumb"))
+        cache_repo = ThumbnailCacheRepository(db_connection)
+        cache_repo.upsert(
+            ThumbnailCache(
+                content_unit_id="u-tc",
+                source_size_bytes=100,
+                source_modified_at="2026-07-01T00:00:00Z",
+                cache_filename="u-tc.png",
+                status="ok",
+                generated_at="2026-07-01T00:00:01Z",
+            )
+        )
+        assert cache_repo.get_by_id("u-tc") is not None
+
+        # 删除 ContentUnit 应同时清理 thumbnail_cache（不抛 FK 违约）
+        repo.delete("u-tc")
+
+        assert repo.get_by_id("u-tc") is None
+        assert cache_repo.get_by_id("u-tc") is None

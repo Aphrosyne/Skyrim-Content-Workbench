@@ -766,6 +766,56 @@ class TestMarkAsContentUnit:
         assert svc._repo.get_by_id(folder_unit.id) is not None  # noqa: SLF001
         assert folder_unit.path == str(folder)
 
+    def test_mark_folder_cascade_failure_aborts_parent(
+        self, db_connection, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Stage 4.5 H2：子项删除失败时抛 ContentUnitCascadeError，中止父标记。
+
+        spec §5.4 不变量：父子不可同时标记。
+        原实现静默吞异常 → 父标记继续创建 → 破坏不变量。
+        """
+        from application.content_service import ContentService
+        from application.errors import ContentUnitCascadeError
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-14T00:00:00Z",
+            uuid_provider=lambda: "uuid-cascade-test",
+        )
+        folder = tmp_path / "ParentFolder"
+        folder.mkdir()
+        child_file = folder / "child.7z"
+        child_file.write_bytes(b"data")
+
+        # 先标记子文件
+        child_unit = svc.mark_as_content_unit(child_file)
+        assert svc._repo.get_by_id(child_unit.id) is not None  # noqa: SLF001
+
+        # 让 ContentUnitRepository.delete 抛异常（模拟 FK 违约 / 磁盘错误）
+        original_delete = ContentUnitRepository.delete
+
+        def failing_delete(self_repo, unit_id: str) -> None:
+            if unit_id == child_unit.id:
+                from infrastructure.repositories.errors import RepositoryError
+
+                raise RepositoryError("模拟删除失败")
+            return original_delete(self_repo, unit_id)
+
+        monkeypatch.setattr(ContentUnitRepository, "delete", failing_delete)
+
+        # 标记父文件夹应抛 ContentUnitCascadeError
+        with pytest.raises(ContentUnitCascadeError) as exc_info:
+            svc.mark_as_content_unit(folder)
+
+        # 失败列表应包含子项 id
+        assert any(f[0] == child_unit.id for f in exc_info.value.failures)
+
+        # 父 ContentUnit 不应被创建（不变量保持）
+        # 查询父路径是否有 ContentUnit
+        parent_unit = svc._repo.get_by_path(str(folder))  # noqa: SLF001
+        assert parent_unit is None
+
     def test_mark_already_marked_returns_existing(self, db_connection, tmp_path: Path) -> None:
         """已标记的路径再次调用返回现有 ContentUnit（不重复创建）。"""
         from application.content_service import ContentService
@@ -795,6 +845,156 @@ class TestMarkAsContentUnit:
 
         with pytest.raises(InvalidContentUnitPathError):
             svc.mark_as_content_unit(nonexistent)
+
+
+class TestMarkAsContentUnitUoW:
+    """Stage 4.5 H6：mark_as_content_unit 的事务边界测试。
+
+    验证注入 UnitOfWork 后：
+    - 成功时事务自动提交（无需调用方 commit）
+    - 子项删除失败时事务自动回滚（已删除的子项不丢失）
+    - 嵌套调用（mark_as_content_unit 内部调用 create_content_unit）正确处理
+    """
+
+    def test_uow_commits_on_success(self, db_connection, tmp_path: Path) -> None:
+        """注入 UoW 后，mark_as_content_unit 成功时自动提交，无需调用方 commit。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+        from infrastructure.unit_of_work import UnitOfWork
+
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-28T00:00:00Z",
+            uuid_provider=lambda: "uuid-uow-success",
+            uow=UnitOfWork(db_connection),
+        )
+        path = tmp_path / "mod.7z"
+        path.write_bytes(b"data")
+
+        unit = svc.mark_as_content_unit(path)
+
+        # 不调用 db_connection.commit()，直接用新连接验证是否已持久化
+        assert unit.id == "uuid-uow-success"
+        assert unit.path == str(path)
+        # 用同一连接查询能查到（事务已提交）
+        result = svc._repo.get_by_id(unit.id)  # noqa: SLF001
+        assert result is not None
+        assert result.id == unit.id
+
+    def test_uow_rolls_back_on_cascade_failure(
+        self, db_connection, tmp_path: Path, monkeypatch
+    ) -> None:
+        """注入 UoW 后，子项删除失败时事务回滚，已删除的子项不丢失。
+
+        场景：folder 有两个子内容单元。第一个删除成功，第二个删除失败。
+        无 UoW 时：第一个删除已执行（未提交），但如果调用方 rollback，
+        两个子项都恢复。有 UoW 时：事务自动回滚，第一个子项恢复。
+        """
+        from application.content_service import ContentService
+        from application.errors import ContentUnitCascadeError
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+        from infrastructure.repositories.errors import RepositoryError
+        from infrastructure.unit_of_work import UnitOfWork
+
+        uuid_iter = iter(["uuid-child1", "uuid-child2", "uuid-parent"])
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-28T00:00:00Z",
+            uuid_provider=lambda: next(uuid_iter),
+            uow=UnitOfWork(db_connection),
+        )
+        folder = tmp_path / "ParentFolder"
+        folder.mkdir()
+        child1 = folder / "child1.7z"
+        child1.write_bytes(b"data")
+        child2 = folder / "child2.7z"
+        child2.write_bytes(b"data")
+
+        # 先标记两个子文件
+        child1_unit = svc.mark_as_content_unit(child1)
+        child2_unit = svc.mark_as_content_unit(child2)
+
+        # 让 delete 在删除 child2 时失败
+        original_delete = ContentUnitRepository.delete
+
+        def failing_delete(self_repo, unit_id: str) -> None:
+            if unit_id == child2_unit.id:
+                raise RepositoryError("模拟删除失败")
+            return original_delete(self_repo, unit_id)
+
+        monkeypatch.setattr(ContentUnitRepository, "delete", failing_delete)
+
+        # 标记父文件夹应抛 ContentUnitCascadeError
+        with pytest.raises(ContentUnitCascadeError):
+            svc.mark_as_content_unit(folder)
+
+        # 事务回滚：child1 应仍然存在（删除被回滚）
+        assert svc._repo.get_by_id(child1_unit.id) is not None  # noqa: SLF001
+        # child2 也仍然存在（删除失败）
+        assert svc._repo.get_by_id(child2_unit.id) is not None  # noqa: SLF001
+        # 父 ContentUnit 不应被创建
+        assert svc._repo.get_by_path(str(folder)) is None  # noqa: SLF001
+
+    def test_uow_nested_transaction_on_internal_create(self, db_connection, tmp_path: Path) -> None:
+        """UoW 嵌套：mark_as_content_unit 内部调用 create_content_unit。
+
+        mark_as_content_unit 进入 transaction (depth 0→1)，
+        内部调用 create_content_unit（单步写，不使用 UoW），
+        退出时 depth 1→0 提交。
+        """
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+        from infrastructure.unit_of_work import UnitOfWork
+
+        uow = UnitOfWork(db_connection)
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-28T00:00:00Z",
+            uuid_provider=lambda: "uuid-nested",
+            uow=uow,
+        )
+        path = tmp_path / "mod.7z"
+        path.write_bytes(b"data")
+
+        # mark_as_content_unit 内部调用 create_content_unit
+        unit = svc.mark_as_content_unit(path)
+
+        # 事务应已提交（depth 回到 0）
+        assert uow.depth == 0
+        assert unit.id == "uuid-nested"
+        # 数据已持久化
+        assert svc._repo.get_by_id(unit.id) is not None  # noqa: SLF001
+
+    def test_uow_mark_folder_cancels_children_commits(self, db_connection, tmp_path: Path) -> None:
+        """UoW + 文件夹级联取消：成功时子项删除 + 父标记创建原子提交。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+        from infrastructure.unit_of_work import UnitOfWork
+
+        uuid_iter = iter(["uuid-child", "uuid-folder"])
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-28T00:00:00Z",
+            uuid_provider=lambda: next(uuid_iter),
+            uow=UnitOfWork(db_connection),
+        )
+        folder = tmp_path / "ModGroup"
+        folder.mkdir()
+        child_file = folder / "mod.7z"
+        child_file.write_bytes(b"data")
+
+        # 先标记子文件
+        child_unit = svc.mark_as_content_unit(child_file)
+        assert svc._repo.get_by_id(child_unit.id) is not None  # noqa: SLF001
+
+        # 标记父文件夹
+        folder_unit = svc.mark_as_content_unit(folder)
+
+        # 子项应被删除（事务已提交）
+        assert svc._repo.get_by_id(child_unit.id) is None  # noqa: SLF001
+        # 父文件夹应存在
+        assert svc._repo.get_by_id(folder_unit.id) is not None  # noqa: SLF001
+        assert folder_unit.path == str(folder)
 
 
 class TestUnmarkContentUnit:
@@ -1154,6 +1354,178 @@ class TestUpdateMetadataCoverPath:
 
         updated = service.update_metadata("u1", cover_path="")
         assert updated.cover_path is None
+
+    def test_update_cover_path_invalidates_thumbnail_cache(
+        self,
+        db_connection: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        """Stage 4.5 M4：cover_path 变化时主动 invalidate 缩略图缓存。
+
+        验证 ContentService 注入 ThumbnailService 后，update_metadata 修改
+        cover_path 会触发 thumbnail_service.invalidate(unit_id)。
+        """
+        from application.content_service import ContentService
+        from application.thumbnail_service import ThumbnailService
+        from domain.models import ThumbnailCache
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+        from infrastructure.repositories.thumbnail_cache import (
+            ThumbnailCacheRepository,
+        )
+
+        # 准备 ContentUnit + 已存在的缩略图缓存
+        unit_dir = tmp_path / "ModA"
+        unit_dir.mkdir()
+        cover_old = unit_dir / "cover_old.jpg"
+        cover_old.write_bytes(b"\x00")
+        cover_new = unit_dir / "cover_new.jpg"
+        cover_new.write_bytes(b"\x00")
+
+        repo = ContentUnitRepository(db_connection)
+        repo.create(
+            ContentUnit(
+                id="u-m4",
+                path=str(unit_dir),
+                cover_path="cover_old.jpg",
+                status="unorganized",
+                created_at="2026-07-01T00:00:00Z",
+                updated_at="2026-07-01T00:00:00Z",
+            )
+        )
+        cache_repo = ThumbnailCacheRepository(db_connection)
+        thumbnails_dir = tmp_path / "thumbs"
+        thumbnails_dir.mkdir()
+        thumb_service = ThumbnailService(
+            cache_repo=cache_repo,
+            content_unit_repo=repo,
+            thumbnails_dir=thumbnails_dir,
+            size=64,
+        )
+        # 插入缓存记录 + 文件
+        cache_repo.upsert(
+            ThumbnailCache(
+                content_unit_id="u-m4",
+                source_size_bytes=1,
+                source_modified_at="2026-07-01T00:00:00Z",
+                cache_filename="u-m4.png",
+                status="ok",
+                generated_at="2026-07-01T00:00:01Z",
+            )
+        )
+        (thumbnails_dir / "u-m4.png").write_bytes(b"fake png")
+        assert cache_repo.get_by_id("u-m4") is not None
+
+        # 构造注入 thumbnail_service 的 ContentService
+        svc = ContentService(repo, thumbnail_service=thumb_service)
+
+        # 更新 cover_path 为新文件
+        svc.update_metadata("u-m4", cover_path="cover_new.jpg")
+
+        # 缩略图缓存应被 invalidate
+        assert cache_repo.get_by_id("u-m4") is None
+        assert not (thumbnails_dir / "u-m4.png").exists()
+
+    def test_update_cover_path_no_invalidate_when_thumbnail_service_none(
+        self,
+        db_connection: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        """Stage 4.5 M4：thumbnail_service 为 None 时不 invalidate（向后兼容）。"""
+        from application.content_service import ContentService
+        from domain.models import ThumbnailCache
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+        from infrastructure.repositories.thumbnail_cache import (
+            ThumbnailCacheRepository,
+        )
+
+        unit_dir = tmp_path / "ModB"
+        unit_dir.mkdir()
+        cover_new = unit_dir / "cover_new.jpg"
+        cover_new.write_bytes(b"\x00")
+
+        repo = ContentUnitRepository(db_connection)
+        repo.create(
+            ContentUnit(
+                id="u-m4-none",
+                path=str(unit_dir),
+                status="unorganized",
+                created_at="2026-07-01T00:00:00Z",
+                updated_at="2026-07-01T00:00:00Z",
+            )
+        )
+        cache_repo = ThumbnailCacheRepository(db_connection)
+        cache_repo.upsert(
+            ThumbnailCache(
+                content_unit_id="u-m4-none",
+                source_size_bytes=1,
+                source_modified_at="2026-07-01T00:00:00Z",
+                cache_filename="u-m4-none.png",
+                status="ok",
+                generated_at="2026-07-01T00:00:01Z",
+            )
+        )
+
+        # 不注入 thumbnail_service
+        svc = ContentService(repo)
+        svc.update_metadata("u-m4-none", cover_path="cover_new.jpg")
+
+        # 缓存仍存在（未触发 invalidate）
+        assert cache_repo.get_by_id("u-m4-none") is not None
+
+    def test_update_metadata_no_cover_change_no_invalidate(
+        self,
+        db_connection: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        """Stage 4.5 M4：cover_path 未变化时不触发 invalidate。"""
+        from application.content_service import ContentService
+        from application.thumbnail_service import ThumbnailService
+        from domain.models import ThumbnailCache
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+        from infrastructure.repositories.thumbnail_cache import (
+            ThumbnailCacheRepository,
+        )
+
+        unit_dir = tmp_path / "ModC"
+        unit_dir.mkdir()
+
+        repo = ContentUnitRepository(db_connection)
+        repo.create(
+            ContentUnit(
+                id="u-m4-nochange",
+                path=str(unit_dir),
+                cover_path="cover.jpg",
+                status="unorganized",
+                created_at="2026-07-01T00:00:00Z",
+                updated_at="2026-07-01T00:00:00Z",
+            )
+        )
+        cache_repo = ThumbnailCacheRepository(db_connection)
+        thumbnails_dir = tmp_path / "thumbs"
+        thumbnails_dir.mkdir()
+        thumb_service = ThumbnailService(
+            cache_repo=cache_repo,
+            content_unit_repo=repo,
+            thumbnails_dir=thumbnails_dir,
+            size=64,
+        )
+        cache_repo.upsert(
+            ThumbnailCache(
+                content_unit_id="u-m4-nochange",
+                source_size_bytes=1,
+                source_modified_at="2026-07-01T00:00:00Z",
+                cache_filename="u-m4-nochange.png",
+                status="ok",
+                generated_at="2026-07-01T00:00:01Z",
+            )
+        )
+
+        svc = ContentService(repo, thumbnail_service=thumb_service)
+        # 仅更新 title（不改 cover_path）
+        svc.update_metadata("u-m4-nochange", title="新标题")
+
+        # 缓存应仍存在（未触发 invalidate）
+        assert cache_repo.get_by_id("u-m4-nochange") is not None
 
     def test_update_cover_path_nonexistent_raises(
         self,

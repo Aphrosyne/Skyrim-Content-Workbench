@@ -65,10 +65,8 @@ from app import ui_constants as ui
 from application.content_service import ContentService
 from application.errors import (
     ApplicationError,
-    ContentUnitNotFoundError,
     CoverImageNotFoundError,
     InvalidMetadataError,
-    TagNotFoundError,
 )
 from application.tag_service import TagService
 from domain.models import ContentUnit, Tag
@@ -91,6 +89,8 @@ class MetadataPanel(QWidget):
 
     # 保存成功后发射（MainWindow 据此 commit + 刷新中栏）
     on_saved = Signal(object)  # ContentUnit
+    # 保存失败后发射（MainWindow 据此 rollback 事务，避免未提交的 metadata 残留）
+    on_save_failed = Signal(str)  # 用户可读错误消息
     # 请求打开封面选择对话框
     on_pick_cover_requested = Signal(str)  # unit_id
 
@@ -620,9 +620,12 @@ class MetadataPanel(QWidget):
         2. 计算标签 diff：original_ids 与 current_ids 比较，分别 attach/detach。
         3. 发射 on_saved(unit) 信号通知 MainWindow 提交事务 + 刷新中栏。
 
-        异常处理：
+        异常处理（Stage 4.5 M18 修复）：
         - InvalidMetadataError / CoverImageNotFoundError → 弹 QMessageBox 提示。
-        - TagNotFoundError / ContentUnitNotFoundError → 同上。
+        - TagNotFoundError / ContentUnitNotFoundError → 标签关联失败时发射
+          on_save_failed 信号通知 MainWindow rollback 事务（避免 metadata 已写入
+          但标签关联失败的"部分成功"状态被意外提交），不发射 on_saved。
+        - 其他 ApplicationError → 同上。
         """
         if self._current_unit is None:
             return
@@ -648,17 +651,13 @@ class MetadataPanel(QWidget):
             to_add = current_ids - self._original_tag_ids
             to_remove = self._original_tag_ids - current_ids
 
+            # M18 修复：标签 attach/detach 失败不再静默吞异常，而是抛出
+            # 让外层 except 捕获后发射 on_save_failed 通知 MainWindow rollback。
             for tag_id in to_add:
-                try:
-                    self._tag_service.attach_tag_to_unit(unit.id, tag_id)
-                except (TagNotFoundError, ContentUnitNotFoundError) as e:
-                    logger.warning("attach_tag 失败：%s", e)
+                self._tag_service.attach_tag_to_unit(unit.id, tag_id)
 
             for tag_id in to_remove:
-                try:
-                    self._tag_service.detach_tag_from_unit(unit.id, tag_id)
-                except ApplicationError as e:
-                    logger.warning("detach_tag 失败：%s", e)
+                self._tag_service.detach_tag_from_unit(unit.id, tag_id)
 
             # 3. 更新内部状态
             self._current_unit = updated_unit
@@ -667,14 +666,15 @@ class MetadataPanel(QWidget):
             # 4. 发射信号
             self.on_saved.emit(updated_unit)
 
-        except InvalidMetadataError as e:
-            self._show_error(ui.METADATA_PANEL_SAVE_FAILED, str(e))
-        except CoverImageNotFoundError as e:
-            self._show_error(ui.METADATA_PANEL_SAVE_FAILED, str(e))
-        except ContentUnitNotFoundError as e:
+        except (InvalidMetadataError, CoverImageNotFoundError) as e:
+            # 元数据校验失败：update_metadata 未写入，无需 rollback
             self._show_error(ui.METADATA_PANEL_SAVE_FAILED, str(e))
         except ApplicationError as e:
+            # 标签关联失败（TagNotFoundError 等）：metadata 已写入但标签失败，
+            # 发射 on_save_failed 通知 MainWindow rollback，避免部分成功状态残留。
+            logger.warning("保存失败（将通知 MainWindow rollback）：%s", e)
             self._show_error(ui.METADATA_PANEL_SAVE_FAILED, str(e))
+            self.on_save_failed.emit(str(e))
         finally:
             self._save_button.setText(ui.METADATA_PANEL_SAVE_BUTTON)
             self._save_button.setEnabled(True)

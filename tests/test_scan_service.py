@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 
@@ -394,3 +395,149 @@ class TestCleanupDeletedFolders:
         assert str(mod_tree / "Weapons") in result.all_visited_dirs
         assert str(mod_tree / "Weapons" / "sub") in result.all_visited_dirs
         assert str(mod_tree / "普通文件夹") in result.all_visited_dirs
+
+
+class TestPersistScanResultUoW:
+    """Stage 4.5 TD-H2：_persist_scan_result 的事务边界测试。
+
+    验证注入 UnitOfWork 后：
+    - 成功时事务自动提交（无需调用方 commit）
+    - folder_cache 写失败时事务自动回滚（已写记录不持久化）
+    """
+
+    def test_uow_commits_on_success(self, db_connection, db_path: Path, mod_tree: Path) -> None:
+        """注入 UoW 后，扫描成功时自动提交，无需调用方 commit。
+
+        用新连接验证持久化（同一连接能看到未提交数据，无法证明 commit）。
+        """
+        from infrastructure.db import get_connection
+        from infrastructure.unit_of_work import UnitOfWork
+
+        counter = {"n": 0}
+
+        def fake_uuid() -> str:
+            counter["n"] += 1
+            return f"uuid-commit-{counter['n']}"
+
+        svc = ScanService(
+            managed_root_repo=ManagedRootRepository(db_connection),
+            folder_cache_repo=FolderCacheRepository(db_connection),
+            content_unit_repo=ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-12T00:00:00Z",
+            uuid_provider=fake_uuid,
+            uow=UnitOfWork(db_connection),
+        )
+        summary = svc.scan_root_by_path(mod_tree, incremental=False)
+        assert summary.scanned_dirs > 0
+        assert summary.content_units_found == 3
+
+        # 不调用 db_connection.commit()，用新连接验证是否已持久化
+        verify_conn = get_connection(db_path)
+        try:
+            verify_conn.row_factory = sqlite3.Row
+            fc_repo = FolderCacheRepository(verify_conn)
+            cu_repo = ContentUnitRepository(verify_conn)
+            assert len(fc_repo.list_all()) > 0
+            assert len(cu_repo.list_all()) == 3
+        finally:
+            verify_conn.close()
+
+    def test_uow_rolls_back_on_folder_cache_failure(
+        self, db_connection, mod_tree: Path, monkeypatch
+    ) -> None:
+        """注入 UoW 后，folder_cache 写失败时事务回滚，已写记录不持久化。
+
+        场景：扫描多目录树，第一次 folder_cache.create 成功（未提交），
+        第二次失败 → 异常传播 → UoW 回滚 → 第一次 create 也被撤销。
+        """
+        from infrastructure.repositories.errors import RepositoryError
+        from infrastructure.unit_of_work import UnitOfWork
+
+        counter = {"n": 0}
+
+        def fake_uuid() -> str:
+            counter["n"] += 1
+            return f"uuid-rollback-{counter['n']}"
+
+        svc = ScanService(
+            managed_root_repo=ManagedRootRepository(db_connection),
+            folder_cache_repo=FolderCacheRepository(db_connection),
+            content_unit_repo=ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-12T00:00:00Z",
+            uuid_provider=fake_uuid,
+            uow=UnitOfWork(db_connection),
+        )
+
+        # 让 folder_cache_repo.create 在第二次调用时失败
+        original_create = FolderCacheRepository.create
+        call_count = {"n": 0}
+
+        def failing_create(self_repo, folder):
+            call_count["n"] += 1
+            if call_count["n"] >= 2:
+                raise RepositoryError("模拟 folder_cache 创建失败")
+            return original_create(self_repo, folder)
+
+        monkeypatch.setattr(FolderCacheRepository, "create", failing_create)
+
+        # 扫描应抛 RepositoryError（未预期异常传播，触发回滚）
+        with pytest.raises(RepositoryError):
+            svc.scan_root_by_path(mod_tree, incremental=False)
+
+        # 事务回滚：folder_cache 应为空（第一次 create 也被回滚）
+        fc_repo = FolderCacheRepository(db_connection)
+        assert len(fc_repo.list_all()) == 0
+        # content_unit 也应为空（事务回滚）
+        cu_repo = ContentUnitRepository(db_connection)
+        assert len(cu_repo.list_all()) == 0
+
+    def test_uow_preserves_single_content_unit_failure(
+        self, db_connection, mod_tree: Path, monkeypatch
+    ) -> None:
+        """注入 UoW 后，单个 content_unit 创建失败的预期异常不触发回滚。
+
+        场景：3 个压缩包候选。第二个 content_unit.create 失败（RepositoryError），
+        被 _persist_scan_result_core 的 except 捕获记入 summary.errors。
+        事务不回滚：folder_cache 和其余 2 个 content_unit 应正常提交。
+        """
+        from infrastructure.repositories.errors import RepositoryError
+        from infrastructure.unit_of_work import UnitOfWork
+
+        counter = {"n": 0}
+
+        def fake_uuid() -> str:
+            counter["n"] += 1
+            return f"uuid-partial-{counter['n']}"
+
+        svc = ScanService(
+            managed_root_repo=ManagedRootRepository(db_connection),
+            folder_cache_repo=FolderCacheRepository(db_connection),
+            content_unit_repo=ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-07-12T00:00:00Z",
+            uuid_provider=fake_uuid,
+            uow=UnitOfWork(db_connection),
+        )
+
+        # 让 content_unit_repo.create 在第二次调用时失败
+        original_create = ContentUnitRepository.create
+        call_count = {"n": 0}
+
+        def failing_create(self_repo, unit):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise RepositoryError("模拟 content_unit 创建失败")
+            return original_create(self_repo, unit)
+
+        monkeypatch.setattr(ContentUnitRepository, "create", failing_create)
+
+        # 扫描不应抛异常（单个 content_unit 失败被捕获）
+        summary = svc.scan_root_by_path(mod_tree, incremental=False)
+        # 3 个候选，1 个失败 → content_units_found == 2
+        assert summary.content_units_found == 2
+        assert any("无法创建内容单元" in err for err in summary.errors)
+
+        # 事务已提交：folder_cache 和 2 个成功的 content_unit 已持久化
+        fc_repo = FolderCacheRepository(db_connection)
+        cu_repo = ContentUnitRepository(db_connection)
+        assert len(fc_repo.list_all()) > 0
+        assert len(cu_repo.list_all()) == 2

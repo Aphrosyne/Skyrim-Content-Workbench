@@ -284,7 +284,8 @@ def test_nested_staging_rejected(qapp: QApplication, staging_window_env, monkeyp
 
     assert len(warnings) == 1, "嵌套拒绝应弹一次 QMessageBox.warning"
     title, text = warnings[0]
-    assert "无法标记" in title
+    # Stage 4.5 H7：统一为 _handle_service_error，title 为 "标记暂存区失败"
+    assert "标记" in title
     assert "嵌套" in text or "祖先" in text
 
 

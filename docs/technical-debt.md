@@ -5,6 +5,7 @@
 > 第二批已修复：TD-H4、TD-H5、TD-H6（详见 CHANGELOG v0.15.1）。
 > 第三批已修复：TD-H7（收敛为 normalized 接口）、TD-H8（folder_cache 同步事务一致性）。
 > 第四批已修复：TD-M25（application 层 except Exception 收窄）、TD-L20（删除旧 list_by_path_prefix）。
+> 第五批已修复（Stage 4.5）：TD-H2（ScanService 事务边界）、TD-M22（folder_cache 同步 helper）、TD-L18（mtime 同步策略统一）。
 > 以下问题按严重级别排列，将在阶段 3 及后续迭代中逐步处理。
 
 ---
@@ -17,11 +18,11 @@
 - **问题**: `move`/`rename`/`new_folder` 操作允许 `target_path=None`，`delete` 操作允许 `target_path` 非 None，无一致性校验。一旦 `FileOperationService` 实现，撤销链路会数据不一致。
 - **建议**: 在 `__post_init__` 增加操作类型与 target_path 的一致性校验。
 
-### TD-H2: ScanService 持久化缺少事务边界与异常隔离
+### TD-H2: ScanService 持久化缺少事务边界与异常隔离 ✅ 已修复（Stage 4.5）
 
 - **位置**: [scan_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/scan_service.py) `_persist_scan_result`
 - **问题**: 写入 `folder_cache` 与 `content_unit` 两张表既未显式开启事务也未 commit。H5 修复后 Repository 不自提交，但 ScanService 未持有 connection 引用，无法控制事务边界。中途异常会导致部分提交或全部回滚，行为不可预测。
-- **建议**: 给 ScanService 注入 connection（或 Unit of Work），用 `with conn:` 包裹持久化逻辑，收窄异常捕获。
+- **修复（Stage 4.5）**: ScanService 注入 `UnitOfWork`，`_persist_scan_result` 在 UoW 事务内执行多步写操作，任一失败整体回滚。与 H6（Service 多步写事务边界）同源一并修复。
 
 ### TD-H3: 文件列表加载在主线程同步执行 I/O + N+1 数据库查询
 
@@ -329,7 +330,7 @@
 - **建议修复阶段**: **Stage 4 中期**（在加搜索/标签 UI 之前先拆分，
   避免新功能继续堆进 MainWindow）。
 
-### TD-M22: folder_cache 同步辅助逻辑在多个 Service 中重复
+### TD-M22: folder_cache 同步辅助逻辑在多个 Service 中重复 ✅ 已修复（Stage 4.5）
 
 - **位置**: [mod_group_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/mod_group_service.py) `_resolve_parent_id_by_path` / [quick_insert_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/quick_insert_service.py) `_resolve_parent_id_by_path` / `_delete_folder_cache_by_path` / `_create_folder_cache_for_new_path` / `_update_parent_mtime` / [assembly_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/assembly_service.py) `_sync_folder_mtime`
 - **背景**: `_resolve_parent_id_by_path` / `_new_folder_cache_id` / `_now_iso`
@@ -339,12 +340,14 @@
 - **影响范围**: Stage 5 加 undo 时需要反向同步 folder_cache（删新 + 插旧 +
   更新两个父 mtime），如果不抽公共方法，undo 路径会再次复制一份，届时
   4 份重复。任何一处修 bug 都要同步改 4 处。
-- **推荐修复方案**: 抽 `FolderCacheSyncHelper`（application 层），提供
-  `on_folder_moved(old, new, parent)` / `on_folder_created(new, parent)` /
-  `on_folder_deleted(old)` / `on_folder_mtime_changed(folder)` 等语义化方法。
-  各 Service 调用它，不再直接操作 `FolderCacheRepository`。
-- **建议修复阶段**: **Stage 5 前**（undo 实现前必须收敛，否则反向同步逻辑
-  会复制粘贴出 4 份）。
+- **修复（Stage 4.5）**: 新建 [FolderCacheSyncHelper](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/folder_cache_sync_helper.py)，
+  提供 `on_folder_created` / `on_folder_moved` / `on_folder_deleted` /
+  `update_folder_mtime` 语义化方法。多步同步失败抛 `FileOperationError`，
+  单字段 mtime 更新保留 best-effort（TD-L18 策略统一）。
+  `ModGroupService` / `QuickInsertService` / `AssemblyService` 移除各自的
+  重复同步逻辑，`FileOperationService.move` / `new_folder` 注入 helper 后
+  自动同步 folder_cache + ContentUnit.path（H4），消除调用方手动同步的
+  隐式契约。
 
 ### TD-M23: folder_cache 同步中多次 list_all() 全表扫描
 
@@ -414,7 +417,7 @@
 - **建议修复阶段**: **Stage 4 后**（非阻塞，但建议在 Stage 5 undo
   实现前验证并发安全）。
 
-### TD-L18: AssemblyService._sync_folder_mtime 与 H2 修复后的同步策略不一致
+### TD-L18: AssemblyService._sync_folder_mtime 与 H2 修复后的同步策略不一致 ✅ 已修复（Stage 4.5）
 
 - **位置**: [assembly_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/assembly_service.py) `_sync_folder_mtime`
 - **背景**: H2 修复后 `QuickInsertService._sync_folder_cache` 和
@@ -424,10 +427,11 @@
   部分提交风险低，最坏情况是下次扫描重新处理该文件夹——不会数据不一致。
   但策略不一致本身是认知负担。
 - **影响范围**: 无数据一致性风险，仅策略一致性。
-- **推荐修复方案**: 在 TD-M22 抽 `FolderCacheSyncHelper` 时统一策略：
-  单字段 mtime 更新可保留 best-effort（记日志），多步同步必须抛异常。
-  在 helper 的方法签名 / docstring 中明确区分两类契约。
-- **建议修复阶段**: **Stage 5 前**（与 TD-M22 一并处理）。
+- **修复（Stage 4.5）**: 与 TD-M22 一并处理。`FolderCacheSyncHelper` 明确
+  区分两类契约：`update_folder_mtime` 为 best-effort（单字段更新，失败仅记日志），
+  `on_folder_moved` / `on_folder_created` / `on_folder_deleted` 为多步原子操作，
+  失败抛 `FileOperationError`。`AssemblyService` 移除 `_sync_folder_mtime`，
+  由 `FileOperationService.move` 内部 helper 自动同步 mtime。
 
 ### TD-L19: OperationHistory.can_undo 恒为 True，但 undo 未实现
 
@@ -462,6 +466,79 @@
 
 ---
 
+## 第五批新增（Stage 4 Code Review 2026-07-28 确认登记）
+
+> 以下问题来自 Stage 4 正式 Code Review，经 Stage 4.5 评估后登记为技术债延后处理。
+> Stage 4.5 已修复的问题（H1-H4、H6-H7、M4、M19 等）详见 CHANGELOG。
+> 编号接续既有 TD 序列。
+
+### TD-H9: content_unit.path UNIQUE 约束绕过 make_path_key
+
+- **位置**: [db.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/db.py) `content_unit` 表 schema
+- **背景**: `content_unit.path` 列有 UNIQUE 约束，但数据库存储的路径字符串
+  大小写/分隔符不一致时（Windows 大小写不敏感），UNIQUE 约束无法防止
+  "同一路径不同表示"的重复记录。`make_path_key`（normcase + normpath）
+  在应用层统一了比较，但 DB 层 UNIQUE 约束未使用 path_key。
+- **影响范围**: 极端场景下可能产生重复 ContentUnit 记录（不同大小写路径）。
+- **推荐修复方案**: v7 schema 迁移时新增 `path_key` 列并加 UNIQUE 约束，
+  或改用 path_key 作为唯一性判断依据。
+- **建议修复阶段**: **v7 schema 迁移时**（非阻塞，当前应用层 make_path_key 已规避）。
+
+### TD-H10: FileOperationService 分层归属
+
+- **位置**: [file_operation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/file_operation_service.py)
+- **背景**: `FileOperationService` 位于 infrastructure 层，但 Stage 4.5 H4
+  修复后注入了 `FolderCacheSyncHelper` + `ContentUnitRepository`，进一步加深
+  了分层违反。当前 `FolderCacheSyncHelper` 放在 infrastructure 层避免反向依赖，
+  但长期来看 `FileOperationService` 应移到 application 层。
+- **影响范围**: 架构层次不清，但不影响正确性。Stage 5 文件操作重构时
+  （rename/delete/undo）会进一步增加耦合。
+- **推荐修复方案**: Stage 5 文件操作功能实现时，将 `FileOperationService`
+  移到 application 层，`FolderCacheSyncHelper` 一并迁移。
+- **建议修复阶段**: **Stage 5 文件操作重构时**（D5 决策 B：延后处理）。
+
+### TD-M28: 多处 N+1 查询
+
+- **位置**: [content_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/content_service.py) `list_directory_entries` / [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) `_refresh_content_list` 等
+- **背景**: Stage 4 Code Review 发现 7 处 N+1 查询：每个目录条目独立查询
+  ContentUnit / Tag 关联，大目录（数百文件）累计数十次 DB 查询。与 TD-H3
+  和 TD-M9 同源。
+- **影响范围**: 性能问题，大目录 UI 响应慢。不影响正确性。
+- **推荐修复方案**: 批量查询（`list_by_directory` 一次查全部子项 ContentUnit），
+  或用 `list_by_unit_ids` 批量查标签关联。
+- **建议修复阶段**: **Stage 5 中期**（与 TD-H3 性能优化一并处理）。
+
+### TD-M29: 测试组织风格不统一
+
+- **位置**: `tests/` 目录
+- **背景**: 各测试文件组织风格不一致：部分用 `class TestXxx` 分组，
+  部分用顶层函数；测试辅助方法混在主类中；fixture 命名和复用方式不统一。
+- **影响范围**: 不影响正确性，但增加测试维护成本。
+- **推荐修复方案**: 统一测试组织风格，抽公共测试辅助到 `tests/helpers/`。
+- **建议修复阶段**: **Stage 5 中期**（非阻塞）。
+
+### TD-L21: UI 样式表硬编码颜色
+
+- **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) / [metadata_panel.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/metadata_panel.py) 等
+- **背景**: 多处 QSS 样式表中硬编码颜色值（如 `#2d2d2d`），未使用
+  主题变量或常量。暗色模式或主题切换时需逐处修改。
+- **影响范围**: 不影响正确性，仅影响主题可维护性。
+- **推荐修复方案**: 提取颜色常量到 `ui_constants.py` 或 QSS 主题文件。
+- **建议修复阶段**: **暗色模式/主题切换时**（非阻塞）。
+
+### TD-M30: spec §10.3 "最近常用置顶"未实现
+
+- **位置**: spec §10.3
+- **背景**: spec 定义了"最近常用标签置顶"功能，但 Stage 4 Task 3
+  未实现。Stage 4 Code Review 确认此为产品范围决策（D7: C），登记为
+  技术债延后处理。
+- **影响范围**: 功能缺失，不影响正确性。用户使用标签筛选时无"最近常用"
+  排序辅助。
+- **推荐修复方案**: Stage 5 或后续迭代中实现，或从 spec 中移除。
+- **建议修复阶段**: **需用户决策后确定**（D7: C 登记为 TD）。
+
+---
+
 ## 处理优先级建议
 
 1. ~~**阶段 3 开发前优先处理**（影响安全/正确性）~~：
@@ -473,9 +550,9 @@
    - ~~TD-H8（folder_cache 同步吞异常导致部分提交态，已改为抛 FileOperationError 触发上层回滚）~~ ✅
    - **结论**：截至 v0.16.0，无阻塞 Stage 4 启动的 High 级别技术债。
 
-3. **阶段 4 开发中视情况处理**（影响性能/可用性）：
+3. ~~**阶段 4 开发中视情况处理**~~（Stage 4.5 已修复 TD-H2）：
    - TD-H3（UI 冻结，影响基本可用性）
-   - TD-H2（扫描事务边界）
+   - ~~TD-H2（扫描事务边界）~~ ✅ 已修复（Stage 4.5）
    - TD-M17（连接泄漏，影响测试稳定性）
 
 4. ~~**阶段 4 中期建议处理**~~（部分已修复）：
@@ -484,14 +561,19 @@
    - TD-M26（MainWindow 集成测试，与拆分同步进行）
    - ~~TD-L20（删除旧 list_by_path_prefix，确认无外部调用后）~~ ✅ 已修复（Stage 4 Task 0）
 
-5. **Stage 5 前/Stage 5 中处理**（undo 实现相关，必须在反向同步逻辑落地前收敛）：
-   - TD-M22（folder_cache 同步辅助逻辑抽公共 helper，避免 undo 路径复制粘贴 4 份）
-   - TD-L18（AssemblyService._sync_folder_mtime 策略统一，与 TD-M22 一并处理）
+5. ~~**Stage 5 前/Stage 5 中处理**~~（Stage 4.5 已修复 TD-M22 + TD-L18）：
+   - ~~TD-M22（folder_cache 同步辅助逻辑抽公共 helper，避免 undo 路径复制粘贴 4 份）~~ ✅ 已修复（Stage 4.5）
+   - ~~TD-L18（AssemblyService._sync_folder_mtime 策略统一，与 TD-M22 一并处理）~~ ✅ 已修复（Stage 4.5）
+   - TD-H10（FileOperationService 分层归属，Stage 5 文件操作重构时处理）
    - TD-M24（rename_as_cover 9999 上限错误类型语义错位，Stage 5 错误提示体系统一时处理）
    - TD-L19（OperationHistory.can_undo 恒为 True，Stage 5 实现 undo 时校验）
    - TD-M27（SQLite 并发写测试，Stage 5 undo 前验证并发安全）
 
 6. **后续迭代批量处理**（非阻塞，性能优化为主）：
+   - TD-H9（content_unit.path UNIQUE 绕过 make_path_key，v7 迁移时处理）
    - TD-M23（folder_cache 同步多次 list_all() 全表扫描）
-   - 其余 Medium 级别的代码质量/测试覆盖问题
-   - Low 级别的风格/命名/文档问题
+   - TD-M28（7 处 N+1 查询，Stage 5 中期与 TD-H3 一并处理）
+   - TD-M29（测试组织风格不统一，Stage 5 中期）
+   - TD-M30（spec §10.3 "最近常用置顶"，需用户决策）
+   - TD-L21（UI 样式表硬编码颜色，暗色模式时处理）
+   - 其余 Medium/Low 级别的代码质量/测试覆盖问题

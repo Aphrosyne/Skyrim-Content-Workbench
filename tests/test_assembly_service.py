@@ -26,6 +26,7 @@ from application.errors import (
 )
 from infrastructure.db import get_connection, init_db
 from infrastructure.file_operation_service import FileOperationService
+from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper
 from infrastructure.repositories.content_unit import ContentUnitRepository
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.operation_history import OperationHistoryRepository
@@ -33,7 +34,11 @@ from infrastructure.repositories.operation_history import OperationHistoryReposi
 
 @pytest.fixture
 def assembly_env(tmp_path: Path):
-    """构造 AssemblyService + ContentService + FileOperationService + 已初始化 DB。"""
+    """构造 AssemblyService + ContentService + FileOperationService + 已初始化 DB。
+
+    Stage 4.5 H4：FileOperationService 注入 FolderCacheSyncHelper，
+    move 时自动同步 folder_cache mtime。AssemblyService 不再需要 folder_cache_repo。
+    """
     db_path = tmp_path / "test.db"
     init_db(db_path)
     conn = get_connection(db_path)
@@ -45,18 +50,27 @@ def assembly_env(tmp_path: Path):
         counter["n"] += 1
         return f"uuid-{counter['n']}"
 
+    # Stage 4.5 H4：注入 helper，move 时自动更新 folder_cache mtime
+    folder_cache_repo = FolderCacheRepository(conn)
+    helper = FolderCacheSyncHelper(folder_cache_repo)
     file_op = FileOperationService(
         OperationHistoryRepository(conn),
         now_provider=lambda: "2026-07-16T00:00:00Z",
         uuid_provider=fake_uuid,
+        folder_cache_helper=helper,
     )
     content_svc = ContentService(
         ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-16T00:00:00Z",
         uuid_provider=fake_uuid,
     )
-    folder_cache_repo = FolderCacheRepository(conn)
-    assembly_svc = AssemblyService(file_op, ContentUnitRepository(conn), folder_cache_repo)
+    # Stage 4.5 H4：AssemblyService 不再需要 folder_cache_repo
+    assembly_svc = AssemblyService(
+        file_op,
+        ContentUnitRepository(conn),
+        now_provider=lambda: "2026-07-16T00:00:00Z",
+        uuid_provider=fake_uuid,
+    )
 
     # 构造暂存区 + Mod 组文件夹
     staging = tmp_path / "Stash"

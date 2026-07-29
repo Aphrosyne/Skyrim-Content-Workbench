@@ -148,13 +148,26 @@ class ThumbnailCoordinator(QObject):
         self._thread.start()
 
     def _on_worker_ready(self, unit_id: str, status: str) -> None:
-        """worker 完成。发射 thumbnail_ready 信号通知 UI 刷新。"""
+        """worker 完成。发射 thumbnail_ready 信号通知 UI 刷新。
+
+        Stage 4.5 H3 修复：精确移除 pending 标记，允许同一 unit 后续重新入队
+        （原实现只在队列空时整体清空，导致封面更换后无法重新生成）。
+        """
         logger.debug("缩略图生成完成：unit_id=%s status=%s", unit_id, status)
+        self._mutex.lock()
+        self._pending.discard(unit_id)
+        self._mutex.unlock()
         self.thumbnail_ready.emit(unit_id)
 
     def _on_worker_failed(self, unit_id: str, error_message: str) -> None:
-        """worker 异常。仅日志，不发射信号（避免 UI 误刷新）。"""
+        """worker 异常。仅日志，不发射信号（避免 UI 误刷新）。
+
+        Stage 4.5 H3 修复：同样精确移除 pending 标记。
+        """
         logger.warning("缩略图 worker 失败：unit_id=%s err=%s", unit_id, error_message)
+        self._mutex.lock()
+        self._pending.discard(unit_id)
+        self._mutex.unlock()
 
     def _on_thread_finished(self) -> None:
         """worker 线程结束：清理引用并派发下一个。"""
@@ -164,14 +177,8 @@ class ThumbnailCoordinator(QObject):
         if self._thread is not None:
             self._thread.deleteLater()
             self._thread = None
-        self._mutex.lock()
-        # 移除 pending 标记
-        # 注：unit_id 通过 worker.unit_id 获取，但 worker 可能已删除
-        # 改用队列空时清空 pending（简化处理）
-        if not self._queue:
-            self._pending.clear()
-        self._mutex.unlock()
-        # 派发下一个
+        # pending 已在 _on_worker_ready/_on_worker_failed 中精确移除
+        # 此处不再需要清空（原"队列空时清空 pending"逻辑已废弃）
         self._dispatch_next()
 
     def _load_pixmap(self, path: Path) -> QPixmap | None:

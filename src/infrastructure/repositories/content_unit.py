@@ -166,9 +166,12 @@ class ContentUnitRepository:
     def delete(self, unit_id: str) -> None:
         """按 ID 删除。不存在抛 NotFoundError。
 
-        级联清理 content_unit_tag 表中所有引用该 unit_id 的关联记录，
-        避免 FK 违约（content_unit_tag.content_unit_id REFERENCES content_unit(id)，
-        但 schema 未声明 ON DELETE CASCADE）。
+        级联清理以下表（schema 未声明 ON DELETE CASCADE，需仓储层显式删除）：
+        - content_unit_tag：所有引用该 unit_id 的标签关联
+        - thumbnail_cache：该 unit_id 对应的缩略图缓存记录
+
+        Stage 4.5 H1 修复：原实现遗漏 thumbnail_cache 清理，导致删除有缩略图的
+        ContentUnit 时触发 FK 违约（PRAGMA foreign_keys = ON）。
 
         写操作不自提交，由 application 层控制事务边界。
         """
@@ -176,6 +179,11 @@ class ContentUnitRepository:
             # 先清理 content_unit_tag 关联（避免 FK 违约）
             self._conn.execute(
                 "DELETE FROM content_unit_tag WHERE content_unit_id = ?",
+                (unit_id,),
+            )
+            # 清理 thumbnail_cache（Stage 4.5 H1 修复，避免 FK 违约）
+            self._conn.execute(
+                "DELETE FROM thumbnail_cache WHERE content_unit_id = ?",
                 (unit_id,),
             )
             cur = self._conn.execute(

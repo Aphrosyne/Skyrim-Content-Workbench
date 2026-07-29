@@ -10,7 +10,13 @@
 5. 为新文件夹标记 ContentUnit（mark_as_content_unit，spec §5.4 标记文件夹时
    取消子项标记；默认 title=path.name）。
 
+Stage 4.5 H4（TD-M22）：FileOperationService 注入 FolderCacheSyncHelper 后，
+new_folder/move 自动同步 folder_cache，ModGroupService 不再手动同步。
+移除了 _resolve_parent_id_by_path / _new_folder_cache_id / _now_iso 等
+重复逻辑（已集中到 FolderCacheSyncHelper）。
+
 失败回滚：若 move 失败，删除已创建的空文件夹（仅当为空时）。
+folder_cache 记录由上层 UoW 事务回滚自动撤销。
 
 约束（AGENTS 规则）：
 - 不覆盖已有文件/目录（FileOperationService 已保证）。
@@ -21,6 +27,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -32,10 +39,11 @@ from application.errors import (
     InvalidModGroupNameError,
     ModGroupSourceNotInStagingError,
 )
-from domain.models import ContentUnit, FolderCache
+from domain.models import ContentUnit
 from infrastructure.file_operation_service import FileOperationService
+from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.errors import RepositoryError
-from infrastructure.repositories.folder_cache import FolderCacheRepository
+from infrastructure.unit_of_work import UnitOfWork
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +136,11 @@ def extract_mod_name(filename: str) -> str:
 class ModGroupService:
     """Mod 组创建服务。
 
+    Stage 4.5 H4（TD-M22）：folder_cache 同步由 FileOperationService 内部
+    的 FolderCacheSyncHelper 自动处理，本服务不再手动同步。
+
     使用方式：
-        service = ModGroupService(file_op_service, content_service, folder_cache_repo)
+        service = ModGroupService(file_op_service, content_service, uow=uow)
         unit = service.create_mod_group(Path("D:/Stash/file.7z"), Path("D:/Stash"), "NewMod")
     """
 
@@ -137,11 +148,21 @@ class ModGroupService:
         self,
         file_op_service: FileOperationService,
         content_service: ContentService,
-        folder_cache_repo: FolderCacheRepository | None = None,
+        uow: UnitOfWork | None = None,
     ) -> None:
+        """初始化 ModGroupService。
+
+        Args:
+            file_op_service: 文件操作服务（Stage 4.5 H4：应注入 FolderCacheSyncHelper，
+                new_folder/move 自动同步 folder_cache）。
+            content_service: 内容单元服务。
+            uow: 事务边界管理器（可选）。Stage 4.5 H6 修复：
+                注入后 create_mod_group 的多步写操作在事务内执行，保证原子性。
+                None 时保持原行为（调用方控制事务边界）。
+        """
         self._file_op = file_op_service
         self._content = content_service
-        self._folder_cache_repo = folder_cache_repo
+        self._uow = uow
 
     def create_mod_group(
         self,
@@ -181,45 +202,40 @@ class ModGroupService:
         target_folder = staging_path / name
         target_file = target_folder / source_file.name
 
-        # 步骤 1：创建新文件夹
+        # DB + 文件操作在事务内执行（Stage 4.5 H6：保证多步写原子性）
+        # 文件操作（new_folder/move）不受事务保护（无法回滚），但异常时
+        # 各步骤的 except 块会做文件清理 + re-raise → UoW 回滚 DB 写操作。
+        if self._uow is not None:
+            with self._uow.transaction():
+                return self._create_mod_group_core(
+                    source_file, staging_path, target_folder, target_file
+                )
+        return self._create_mod_group_core(source_file, staging_path, target_folder, target_file)
+
+    def _create_mod_group_core(
+        self,
+        source_file: Path,
+        staging_path: Path,
+        target_folder: Path,
+        target_file: Path,
+    ) -> ContentUnit:
+        """create_mod_group 的核心逻辑（文件操作 + DB 写）。
+
+        Stage 4.5 H4（TD-M22）：folder_cache 同步由 FileOperationService.new_folder
+        内部的 FolderCacheSyncHelper 自动完成（删除旧 + 插入新 + 更新父 mtime），
+        本方法不再手动同步。
+
+        异常处理：move 失败时清理已创建的空文件夹 + re-raise。
+        re-raise 传播到 UoW transaction 时触发 DB 回滚（folder_cache 记录
+        由 new_folder 自动同步写入，会被 UoW 回滚撤销）。
+        """
+        # 步骤 1：创建新文件夹（FileOperationService 内部自动同步 folder_cache）
         # 若文件夹已存在，FileOperationService.new_folder 抛 ConflictError
         self._file_op.new_folder(target_folder)
 
-        # 步骤 1b：同步写入 folder_cache（目录树数据源），使目录树立即可见
-        # 父目录为 staging_path，需查找其 folder_cache.id 作为 parent_id。
-        # 注意：不能用 get_by_path（精确字符串匹配），因为 staging_path 字符串
-        # 与 folder_cache.path 存储的字符串可能存在大小写/分隔符差异。
-        # 改用 make_path_key 归一化后比较，与 ScanService._resolve_parent_id 一致。
-        #
-        # H2 修复（2026-07-17 Code Review）：folder_cache 写入失败不再吞异常。
-        # 原实现 ``except Exception: logger.exception(...)`` 让上层 _commit 把
-        # 部分成功状态提交进数据库，导致目录树静默缺节点。新契约：写入失败立即抛出
-        # FileOperationError，由上层 rollback 回滚 new_folder + move（move 尚未执行，
-        # 可安全回滚）。回滚后 _try_cleanup_empty_folder 由调用方在 move 失败路径处理。
-        if self._folder_cache_repo is not None:
-            try:
-                parent_id = self._resolve_parent_id_by_path(str(staging_path))
-                # 用当前 mtime 作为 last_scanned_mtime（近似值，下次全量扫描会修正）
-                mtime = target_folder.stat().st_mtime
-                folder = FolderCache(
-                    id=self._new_folder_cache_id(),
-                    path=str(target_folder),
-                    parent_id=parent_id,
-                    last_scanned_mtime=mtime,
-                    created_at=self._now_iso(),
-                )
-                self._folder_cache_repo.create(folder)
-            except (RepositoryError, sqlite3.Error, OSError) as fc_err:
-                logger.exception(
-                    "写入 folder_cache 失败（将回滚 new_folder）：path=%s",
-                    target_folder,
-                )
-                # 清理已创建的空文件夹，避免遗留
-                _try_cleanup_empty_folder(target_folder)
-                raise FileOperationError(f"写入 folder_cache 失败：{fc_err}") from fc_err
-
         # 步骤 2：移入源文件
         # 若 move 失败，回滚：删除刚创建的空文件夹（仅当为空时）
+        # folder_cache 记录由 UoW 回滚自动撤销
         try:
             self._file_op.move(source_file, target_file)
         except (FileOperationError, OSError) as move_err:
@@ -250,38 +266,6 @@ class ModGroupService:
             )
             raise FileOperationError(f"创建 ContentUnit 失败：{create_err}") from create_err
 
-    def _resolve_parent_id_by_path(self, parent_path: str) -> str | None:
-        """按路径查找 folder_cache.id（用于新建子文件夹时的 parent_id 关联）。
-
-        使用 make_path_key 归一化后比较，避免大小写/分隔符差异导致匹配失败。
-        与 ScanService._resolve_parent_id 保持一致的归一化策略。
-
-        Args:
-            parent_path: 父目录路径字符串。
-
-        Returns:
-            folder_cache.id；不存在返回 None。
-        """
-        from infrastructure.path_utils import make_path_key
-
-        target_key = make_path_key(parent_path)
-        for fc in self._folder_cache_repo.list_all():
-            if make_path_key(fc.path) == target_key:
-                return fc.id
-        return None
-
-    def _new_folder_cache_id(self) -> str:
-        """生成 folder_cache 的 UUID。"""
-        import uuid
-
-        return str(uuid.uuid4())
-
-    def _now_iso(self) -> str:
-        """返回当前 UTC 时间的 ISO 8601 字符串。"""
-        from datetime import UTC, datetime
-
-        return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
 
 def _is_in_directory(file_path: Path, dir_path: Path) -> bool:
     """判断 file_path 是否在 dir_path 之下（含 dir_path 自身）。
@@ -289,10 +273,6 @@ def _is_in_directory(file_path: Path, dir_path: Path) -> bool:
     使用 make_path_key 归一化后字符串前缀比较，避免大小写/分隔符差异。
     不访问文件系统，仅基于路径字符串比较。
     """
-    import os
-
-    from infrastructure.path_utils import make_path_key
-
     sep = os.sep
     dir_key = make_path_key(dir_path).rstrip(sep) + sep
     file_key = make_path_key(file_path)

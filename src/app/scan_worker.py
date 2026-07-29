@@ -33,6 +33,7 @@ from infrastructure.db import get_connection
 from infrastructure.repositories.content_unit import ContentUnitRepository
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
+from infrastructure.unit_of_work import UnitOfWork
 
 logger = logging.getLogger(__name__)
 
@@ -66,23 +67,27 @@ class ScanWorker(QObject):
         conn: sqlite3.Connection | None = None
         try:
             # 在本线程内创建独立连接，避免跨线程共享
-            conn = get_connection(self._db_path)
+            # timeout=30.0：容忍主线程偶发的长事务（如元数据保存），
+            # 避免短暂写锁冲突导致 "database is locked"（Stage 4.5 回归加固）
+            conn = get_connection(self._db_path, timeout=30.0)
             conn.row_factory = sqlite3.Row
 
             managed_root_repo = ManagedRootRepository(conn)
             folder_cache_repo = FolderCacheRepository(conn)
             content_unit_repo = ContentUnitRepository(conn)
+            # Stage 4.5 D3：注入 UnitOfWork，Service 内部管理事务边界。
+            # scan_worker（调用方）不再负责 commit/rollback，事务由 ScanService
+            # 的 _persist_scan_result 在 transaction() 内自动提交/回滚。
             service = ScanService(
                 managed_root_repo=managed_root_repo,
                 folder_cache_repo=folder_cache_repo,
                 content_unit_repo=content_unit_repo,
+                uow=UnitOfWork(conn),
             )
 
             self.scan_started.emit()
             self.scan_progress.emit("正在扫描…")
             summary: ScanSummary = service.scan_root(self._root_id, incremental=self._incremental)
-            # Repository 写操作均不自提交事务，必须在连接关闭前提交。
-            conn.commit()
             self.scan_finished.emit(summary)
         except Exception as e:  # noqa: BLE001 - worker 边界需捕获所有异常
             logger.exception("后台扫描失败：root_id=%s", self._root_id)

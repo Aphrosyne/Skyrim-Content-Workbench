@@ -271,11 +271,14 @@ class TestCreateModGroup:
 
 @pytest.fixture
 def mod_group_env_with_folder_cache(tmp_path: Path):
-    """构造注入了 FolderCacheRepository 的 ModGroupService 环境。
+    """构造注入了 FolderCacheSyncHelper 的 FileOperationService 环境。
 
-    用于测试 create_mod_group 同步写入 folder_cache 时 parent_id 的正确关联。
+    Stage 4.5 H4（TD-M22）：folder_cache 同步由 FileOperationService 内部的
+    FolderCacheSyncHelper 自动完成，ModGroupService 不再手动同步。
+    用于测试 create_mod_group 后 folder_cache 的 parent_id 正确关联。
     """
     from domain.models import FolderCache
+    from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper
     from infrastructure.repositories.folder_cache import FolderCacheRepository
 
     db_path = tmp_path / "test.db"
@@ -289,18 +292,26 @@ def mod_group_env_with_folder_cache(tmp_path: Path):
         counter["n"] += 1
         return f"uuid-{counter['n']}"
 
+    folder_cache_repo = FolderCacheRepository(conn)
+    # Stage 4.5 H4：注入 helper 到 FileOperationService，new_folder 自动同步 folder_cache
+    helper = FolderCacheSyncHelper(
+        folder_cache_repo,
+        now_provider=lambda: "2026-07-14T00:00:00Z",
+        uuid_provider=fake_uuid,
+    )
     file_op = FileOperationService(
         OperationHistoryRepository(conn),
         now_provider=lambda: "2026-07-14T00:00:00Z",
         uuid_provider=fake_uuid,
+        folder_cache_helper=helper,
     )
     content_svc = ContentService(
         ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-14T00:00:00Z",
         uuid_provider=fake_uuid,
     )
-    folder_cache_repo = FolderCacheRepository(conn)
-    mod_group_svc = ModGroupService(file_op, content_svc, folder_cache_repo)
+    # Stage 4.5 H4：ModGroupService 不再需要 folder_cache_repo
+    mod_group_svc = ModGroupService(file_op, content_svc)
 
     # 构造暂存区目录
     staging = tmp_path / "Stash"

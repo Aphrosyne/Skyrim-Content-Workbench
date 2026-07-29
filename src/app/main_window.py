@@ -83,20 +83,12 @@ from app.thumbnail_coordinator import ThumbnailCoordinator
 from application.assembly_service import AssemblyService
 from application.content_service import ContentService
 from application.errors import (
+    ApplicationError,
     ConflictError,
-    ContentUnitNotFoundError,
     CrossDriveError,
-    DuplicateManagedRootError,
-    DuplicateStagingAreaError,
     FileOperationError,
-    InvalidContentUnitPathError,
-    InvalidModGroupNameError,
-    InvalidRootPathError,
     ManagedRootNotFoundError,
-    ModGroupSourceNotInStagingError,
     SelfSubdirectoryError,
-    StagingAreaNestingError,
-    StagingAreaNotFoundError,
 )
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
@@ -234,6 +226,32 @@ class MainWindow(QMainWindow):
                 self._rollback_callback()
             except Exception:  # noqa: BLE001
                 logger.exception("数据库回滚失败")
+
+    def _handle_service_error(self, e: Exception, title: str, *, rollback: bool = True) -> None:
+        """统一处理 Service 调用异常（H7 修复）。
+
+        将异常分类转换为用户可读的 QMessageBox 提示，技术细节通过 logger 记录。
+        所有 handler 的 except 块统一调用本方法，避免错误处理代码重复散落。
+
+        Args:
+            e: Service 抛出的异常。
+            title: QMessageBox 标题（通常为 ui_constants 中的 *_FAILED 常量）。
+            rollback: 是否调用 _rollback()。D3 决策下，已注入 UnitOfWork 的
+                Service 内部已管理事务（成功 commit、失败 rollback），调用方
+                不再需要 rollback，设置 rollback=False。未注入 UoW 的 Service
+                仍需调用方 rollback，设置 rollback=True（默认）。
+        """
+        if rollback:
+            self._rollback()
+        if isinstance(e, ConflictError):
+            QMessageBox.warning(self, title, f"目标已存在：\n{e}")
+        elif isinstance(e, FileOperationError):
+            QMessageBox.warning(self, title, f"文件操作失败：\n{e}")
+        elif isinstance(e, ApplicationError):
+            QMessageBox.warning(self, title, str(e))
+        else:
+            logger.exception(title)
+            QMessageBox.critical(self, title, "操作失败，请查看日志。")
 
     # --- UI 构建 ---
 
@@ -474,6 +492,7 @@ class MainWindow(QMainWindow):
                 self._content_service, self._tag_service, parent=self._metadata_group
             )
             self._metadata_panel.on_saved.connect(self._on_metadata_saved)
+            self._metadata_panel.on_save_failed.connect(self._on_metadata_save_failed)
             self._metadata_panel.on_pick_cover_requested.connect(self._on_pick_cover_requested)
             self._metadata_panel.setVisible(False)
             metadata_layout.addWidget(self._metadata_panel)
@@ -877,15 +896,8 @@ class MainWindow(QMainWindow):
             self._tree_service.refresh_staging_cache()
             self._tree_model.refresh()
             self.statusBar().showMessage("已标记为暂存区", 3000)
-        except DuplicateStagingAreaError:
-            QMessageBox.warning(self, "提示", "该目录已是暂存区。")
-        except StagingAreaNestingError as e:
-            QMessageBox.warning(self, "无法标记", f"暂存区不允许嵌套：\n{e}")
-        except StagingAreaNotFoundError as e:
-            QMessageBox.warning(self, "无法标记", f"路径无效：\n{e}")
-        except Exception:  # noqa: BLE001
-            logger.exception("标记暂存区失败")
-            QMessageBox.critical(self, "错误", "标记暂存区失败，请查看日志。")
+        except Exception as e:  # noqa: BLE001
+            self._handle_service_error(e, "标记暂存区失败")
 
     def _unmark_staging_from_node(self, node) -> None:
         """通过目录树节点取消暂存区标记。"""
@@ -907,11 +919,8 @@ class MainWindow(QMainWindow):
             self._tree_service.refresh_staging_cache()
             self._tree_model.refresh()
             self.statusBar().showMessage("已取消暂存区标记", 3000)
-        except StagingAreaNotFoundError:
-            QMessageBox.warning(self, "提示", "该目录未标记为暂存区。")
-        except Exception:  # noqa: BLE001
-            logger.exception("取消暂存区标记失败")
-            QMessageBox.critical(self, "错误", "取消暂存区标记失败，请查看日志。")
+        except Exception as e:  # noqa: BLE001
+            self._handle_service_error(e, "取消暂存区标记失败")
 
     def _on_content_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
         """文件列表右键菜单：根据选中条目与模式动态构造。
@@ -1042,7 +1051,7 @@ class MainWindow(QMainWindow):
                 Path(self._organize_workarea_path),
                 name=chosen_name,
             )
-            self._commit()
+            # D3：ModGroupService 已注入 UoW，事务由 Service 内部管理，无需 _commit
             # 刷新目录树（新文件夹已写入 folder_cache）
             self._refresh_tree()
             # 刷新暂存区文件列表
@@ -1052,24 +1061,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 ui.CREATE_MOD_GROUP_DEFAULT_OK.format(name=chosen_name), 3000
             )
-        except ConflictError:
-            self._rollback()
-            QMessageBox.warning(
-                self, ui.CREATE_MOD_GROUP_FAILED, f"目标文件夹已存在：{chosen_name}"
-            )
-        except ModGroupSourceNotInStagingError as e:
-            self._rollback()
-            QMessageBox.warning(self, ui.CREATE_MOD_GROUP_FAILED, f"源文件不在暂存区下：\n{e}")
-        except InvalidModGroupNameError as e:
-            self._rollback()
-            QMessageBox.warning(self, ui.CREATE_MOD_GROUP_FAILED, f"名称无效：\n{e}")
-        except FileOperationError as e:
-            self._rollback()
-            QMessageBox.warning(self, ui.CREATE_MOD_GROUP_FAILED, f"文件操作失败：\n{e}")
-        except Exception:  # noqa: BLE001
-            self._rollback()
-            logger.exception("创建 Mod 组失败")
-            QMessageBox.critical(self, ui.CREATE_MOD_GROUP_FAILED, "创建 Mod 组失败，请查看日志。")
+        except Exception as e:  # noqa: BLE001
+            self._handle_service_error(e, ui.CREATE_MOD_GROUP_FAILED, rollback=False)
 
     def _show_create_mod_group_dialog(self, pure_name: str, full_name: str) -> str | None:
         """弹出创建 Mod 组对话框，返回用户选择的名称；取消返回 None。
@@ -1111,14 +1104,11 @@ class MainWindow(QMainWindow):
         """标记单个条目为内容单元。"""
         try:
             self._content_service.mark_as_content_unit(Path(entry.path))
-            self._commit()
+            # D3：ContentService 已注入 UoW，事务由 Service 内部管理，无需 _commit
             self._refresh_content_list_for_current_mode()
             self.statusBar().showMessage(ui.MARK_CONTENT_UNIT_OK, 3000)
-        except InvalidContentUnitPathError as e:
-            QMessageBox.warning(self, ui.MARK_CONTENT_UNIT_FAILED, f"路径无效：\n{e}")
-        except Exception:  # noqa: BLE001
-            logger.exception("标记内容单元失败")
-            QMessageBox.critical(self, ui.MARK_CONTENT_UNIT_FAILED, "标记失败，请查看日志。")
+        except Exception as e:  # noqa: BLE001
+            self._handle_service_error(e, ui.MARK_CONTENT_UNIT_FAILED, rollback=False)
 
     def _on_unmark_content_unit(self, entry: FileEntry) -> None:
         """取消单个条目的内容单元标记。"""
@@ -1126,19 +1116,20 @@ class MainWindow(QMainWindow):
             return
         try:
             self._content_service.unmark_content_unit(entry.content_unit.id)
+            # unmark_content_unit 是单步写方法，未使用 UoW（仅 mark_as_content_unit
+            # 的多步写在 UoW 事务内）。调用方需显式提交。
             self._commit()
             self._refresh_content_list_for_current_mode()
             self.statusBar().showMessage(ui.UNMARK_CONTENT_UNIT_OK, 3000)
-        except ContentUnitNotFoundError:
-            QMessageBox.warning(
-                self, ui.UNMARK_CONTENT_UNIT_FAILED, "内容单元不存在（可能已被删除）。"
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("取消标记失败")
-            QMessageBox.critical(self, ui.UNMARK_CONTENT_UNIT_FAILED, "取消标记失败，请查看日志。")
+        except Exception as e:  # noqa: BLE001
+            self._handle_service_error(e, ui.UNMARK_CONTENT_UNIT_FAILED, rollback=True)
 
     def _on_batch_mark_content_unit(self, entries: list[FileEntry]) -> None:
-        """批量标记多个条目为内容单元（各自独立，已标记项跳过）。"""
+        """批量标记多个条目为内容单元（各自独立，已标记项跳过）。
+
+        容错策略：循环内单条失败仅计数不中断。ContentService 已注入 UoW，
+        每条 mark_as_content_unit 成功时内部已 commit，失败时内部已 rollback。
+        """
         success_count = 0
         failure_count = 0
         for entry in entries:
@@ -1151,7 +1142,7 @@ class MainWindow(QMainWindow):
                 logger.exception("批量标记失败：path=%s", entry.path)
                 failure_count += 1
         if success_count > 0:
-            self._commit()
+            # D3：ContentService 已注入 UoW，事务由 Service 内部管理，无需 _commit
             self._refresh_content_list_for_current_mode()
             self.statusBar().showMessage(
                 ui.BATCH_MARK_CONTENT_UNIT_OK.format(count=success_count), 3000
@@ -1246,20 +1237,8 @@ class MainWindow(QMainWindow):
             if self._organize_workarea_path is not None:
                 self._refresh_staging_content_list(self._organize_workarea_path)
             self.statusBar().showMessage(ui.ASSEMBLY_ADD_FILE_OK.format(name=src_path.name), 3000)
-        except ConflictError:
-            self._rollback()
-            QMessageBox.warning(
-                self,
-                ui.ASSEMBLY_ADD_FILE_FAILED,
-                f"目标已存在同名文件：{src_path.name}",
-            )
-        except FileOperationError as e:
-            self._rollback()
-            QMessageBox.warning(self, ui.ASSEMBLY_ADD_FILE_FAILED, f"文件操作失败：\n{e}")
-        except Exception:  # noqa: BLE001
-            self._rollback()
-            logger.exception("装配面板加入文件失败")
-            QMessageBox.critical(self, ui.ASSEMBLY_ADD_FILE_FAILED, "加入文件失败，请查看日志。")
+        except Exception as e:  # noqa: BLE001
+            self._handle_service_error(e, ui.ASSEMBLY_ADD_FILE_FAILED)
 
     def _on_assembly_remove_file(self, filename: str) -> None:
         """装配面板移除文件：移回暂存区根目录 + 刷新双方 + 提交。
@@ -1281,20 +1260,8 @@ class MainWindow(QMainWindow):
             self._assembly_panel.refresh_current()
             self._refresh_staging_content_list(self._organize_workarea_path)
             self.statusBar().showMessage(ui.ASSEMBLY_REMOVE_FILE_OK.format(name=filename), 3000)
-        except ConflictError:
-            self._rollback()
-            QMessageBox.warning(
-                self,
-                ui.ASSEMBLY_REMOVE_FILE_FAILED,
-                f"暂存区已存在同名文件：{filename}",
-            )
-        except FileOperationError as e:
-            self._rollback()
-            QMessageBox.warning(self, ui.ASSEMBLY_REMOVE_FILE_FAILED, f"文件操作失败：\n{e}")
-        except Exception:  # noqa: BLE001
-            self._rollback()
-            logger.exception("装配面板移除文件失败")
-            QMessageBox.critical(self, ui.ASSEMBLY_REMOVE_FILE_FAILED, "移除文件失败，请查看日志。")
+        except Exception as e:  # noqa: BLE001
+            self._handle_service_error(e, ui.ASSEMBLY_REMOVE_FILE_FAILED)
 
     def _on_assembly_rename_cover(self, image_path: Path) -> None:
         """装配面板右键重命名预览图：rename_as_cover + 刷新 + 提交。
@@ -1314,23 +1281,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 ui.ASSEMBLY_RENAME_COVER_OK.format(name=new_path.name), 3000
             )
-        except ConflictError:
-            self._rollback()
-            QMessageBox.warning(
-                self,
-                ui.ASSEMBLY_RENAME_COVER_FAILED,
-                f"目标名称已存在：{image_path.name}",
-            )
-        except InvalidContentUnitPathError as e:
-            self._rollback()
-            QMessageBox.warning(self, ui.ASSEMBLY_RENAME_COVER_FAILED, f"无法重命名：\n{e}")
-        except FileOperationError as e:
-            self._rollback()
-            QMessageBox.warning(self, ui.ASSEMBLY_RENAME_COVER_FAILED, f"文件操作失败：\n{e}")
-        except Exception:  # noqa: BLE001
-            self._rollback()
-            logger.exception("装配面板重命名失败")
-            QMessageBox.critical(self, ui.ASSEMBLY_RENAME_COVER_FAILED, "重命名失败，请查看日志。")
+        except Exception as e:  # noqa: BLE001
+            self._handle_service_error(e, ui.ASSEMBLY_RENAME_COVER_FAILED)
 
     def _on_assembly_closed(self) -> None:
         """关闭装配面板：隐藏（不解绑，便于用户再次打开时恢复）。"""
@@ -1436,27 +1388,19 @@ class MainWindow(QMainWindow):
         # 调用 QuickInsertService
         try:
             updated_unit = self._quick_insert_service.quick_insert(unit.id, target_dir)
-            self._commit()
+            # D3：QuickInsertService 已注入 UoW，事务由 Service 内部管理，无需 _commit
         except ConflictError:
-            self._rollback()
+            # D3：Service 内部已 rollback，无需 _rollback
             QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_CONFLICT_HINT)
             return
         except CrossDriveError:
-            self._rollback()
             QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_CROSS_DRIVE_HINT)
             return
         except SelfSubdirectoryError:
-            self._rollback()
             QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_SELF_SUBDIR_HINT)
             return
-        except FileOperationError as e:
-            self._rollback()
-            QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, f"文件操作失败：\n{e}")
-            return
-        except Exception:  # noqa: BLE001
-            self._rollback()
-            logger.exception("快速插入失败")
-            QMessageBox.critical(self, ui.QUICK_INSERT_FAILED, "快速插入失败，请查看日志。")
+        except Exception as e:  # noqa: BLE001
+            self._handle_service_error(e, ui.QUICK_INSERT_FAILED, rollback=False)
             return
 
         # 成功后 UI 刷新：
@@ -1540,18 +1484,28 @@ class MainWindow(QMainWindow):
 
         事务边界：MetadataPanel 不自提交，由 MainWindow 在信号回调中提交。
 
-        Stage 4 Task 4：封面字段变更时失效缩略图缓存。
-        简化策略：每次保存都失效该 unit 的缓存（下次列表刷新时重新生成或重新查询缓存）。
+        Stage 4.5 M4 修复：缩略图缓存失效由 ContentService.update_metadata 在
+        事务内条件性处理（仅 cover_path 变化时调 invalidate，且在 commit 前执行，
+        随事务一起提交）。此处不再无条件 invalidate，避免：
+        1. 双重 invalidate（Service 层已处理 + UI 层再处理）
+        2. UI 层 invalidate 的 DELETE 操作未在事务内提交，阻塞后台 worker 写入
+           （导致 database is locked + 缩略图无法重新生成 + 关闭时 worker 等待延迟）
         """
         self._commit()
-        # Stage 4 Task 4：失效该 unit 的缩略图缓存（封面可能已变更/清除）
-        if self._thumbnail_coordinator is not None:
-            self._thumbnail_coordinator.invalidate(updated_unit.id)
         # 刷新中栏文件列表（标题可能在列表项中显示，封面图标也可能变化）
         self._refresh_content_list_for_current_mode()
         # 同步元数据面板状态（updated_unit 包含最新字段）
         self._update_metadata(updated_unit)
         self.statusBar().showMessage(ui.METADATA_PANEL_SAVE_OK, 3000)
+
+    def _on_metadata_save_failed(self, error_message: str) -> None:
+        """MetadataPanel 保存失败 → 回滚事务（M18 修复）。
+
+        标签 attach/detach 失败时，update_metadata 已写入但未提交，
+        需回滚事务避免"部分成功"状态被意外提交。
+        错误提示已由 MetadataPanel 内部显示，此处仅做 rollback。
+        """
+        self._rollback()
 
     def _on_pick_cover_requested(self, unit_id: str) -> None:
         """MetadataPanel 请求设置封面 → 弹出 CoverPickerDialog。
@@ -1717,15 +1671,8 @@ class MainWindow(QMainWindow):
         try:
             self._service.add_root(Path(chosen))
             self._commit()
-        except DuplicateManagedRootError:
-            QMessageBox.warning(self, ui.ERR_ADD_ROOT_FAILED, ui.ERR_DUPLICATE_ROOT)
-            return
-        except InvalidRootPathError as e:
-            QMessageBox.warning(self, ui.ERR_ADD_ROOT_FAILED, f"{ui.ERR_INVALID_ROOT}\n{e}")
-            return
         except Exception as e:  # noqa: BLE001 - UI 边界需捕获所有异常
-            logger.exception("添加根目录失败")
-            QMessageBox.critical(self, ui.ERR_ADD_ROOT_FAILED, f"{ui.ERR_ADD_ROOT_FAILED}：{e}")
+            self._handle_service_error(e, ui.ERR_ADD_ROOT_FAILED)
             return
         self._refresh_root_list()
         self._refresh_tree()
@@ -1769,10 +1716,7 @@ class MainWindow(QMainWindow):
             self._refresh_root_list()
             return
         except Exception as e:  # noqa: BLE001 - UI 边界需捕获所有异常
-            logger.exception("移除根目录配置失败")
-            QMessageBox.critical(
-                self, ui.ERR_REMOVE_ROOT_FAILED, f"{ui.ERR_REMOVE_ROOT_FAILED}：{e}"
-            )
+            self._handle_service_error(e, ui.ERR_REMOVE_ROOT_FAILED)
             return
 
         self._refresh_root_list()

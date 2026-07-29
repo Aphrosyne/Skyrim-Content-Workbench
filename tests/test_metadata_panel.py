@@ -577,3 +577,83 @@ def test_add_chinese_tag_chip(qapp, unit_with_tags):
 
     panel.add_tag_via_input(tag2.name)  # "已测试"
     assert tag2.name in panel.tag_chips()
+
+
+# === Stage 4.5 M18：标签 attach 失败路径测试 ===
+
+
+def test_save_tag_attach_failure_emits_on_save_failed(qapp, unit_with_tags, monkeypatch):
+    """标签 attach 抛 TagNotFoundError → 发射 on_save_failed，不发射 on_saved。
+
+    M18 修复：标签关联失败时，metadata 已写入但标签关联失败，应通知
+    MainWindow rollback 事务（避免"部分成功"状态被意外提交）。
+    """
+    from application.errors import TagNotFoundError
+
+    content_service, tag_service, conn, _, unit, _, _, _, tag2 = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+    # 添加 tag2 chip（让 to_add 非空，触发 attach_tag_to_unit 调用）
+    panel.add_tag_via_input(tag2.name)
+    assert tag2.name in panel.tag_chips()
+
+    # 模拟 attach_tag_to_unit 抛 TagNotFoundError
+    def _raise_tag_not_found(*args, **kwargs):
+        raise TagNotFoundError("标签不存在（模拟）")
+
+    monkeypatch.setattr(tag_service, "attach_tag_to_unit", _raise_tag_not_found)
+    # 抑制 QMessageBox 模态对话框
+    warning_calls = []
+    monkeypatch.setattr(
+        "app.metadata_panel.QMessageBox.warning", lambda *a, **kw: warning_calls.append(a)
+    )
+
+    saved: list[ContentUnit] = []
+    failed: list[str] = []
+    panel.on_saved.connect(lambda u: saved.append(u))
+    panel.on_save_failed.connect(lambda msg: failed.append(msg))
+
+    panel.click_save_button()
+
+    # on_saved 不应发射
+    assert saved == []
+    # on_save_failed 应发射，包含错误消息
+    assert len(failed) == 1
+    assert "标签不存在" in failed[0]
+    # 用户应看到错误提示
+    assert len(warning_calls) == 1
+
+
+def test_save_tag_attach_failure_does_not_persist(qapp, unit_with_tags, monkeypatch):
+    """标签 attach 失败 → on_save_failed 通知 MainWindow rollback → metadata 未持久化。
+
+    验证事务一致性：MainWindow 收到 on_save_failed 后调用 rollback，
+    update_metadata 的写入应被回滚（title 未变更）。
+    """
+    from application.errors import TagNotFoundError
+
+    content_service, tag_service, conn, content_repo, unit, _, _, _, tag2 = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+    panel.add_tag_via_input(tag2.name)
+    # 修改 title（触发 update_metadata 写入）
+    panel._title_edit.setText("新标题-应被回滚")  # noqa: SLF001
+
+    # 模拟 attach_tag_to_unit 抛 TagNotFoundError
+    def _raise_tag_not_found(*args, **kwargs):
+        raise TagNotFoundError("标签不存在（模拟）")
+
+    monkeypatch.setattr(tag_service, "attach_tag_to_unit", _raise_tag_not_found)
+    monkeypatch.setattr("app.metadata_panel.QMessageBox.warning", lambda *a, **kw: None)
+
+    # 模拟 MainWindow 的 on_save_failed 回调：调用 conn.rollback()
+    panel.on_save_failed.connect(lambda msg: conn.rollback())
+
+    panel.click_save_button()
+
+    # 验证 metadata 未持久化（被 rollback）
+    # 重新从数据库读取 unit
+    persisted_unit = content_repo.get_by_id(unit.id)
+    assert persisted_unit is not None
+    # title 应保持原值（未被修改为"新标题-应被回滚"）
+    assert persisted_unit.title != "新标题-应被回滚"

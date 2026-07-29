@@ -74,6 +74,21 @@ class InvalidContentUnitPathError(ApplicationError):
     """ContentUnit 路径非法：不存在或不可访问。"""
 
 
+class ContentUnitCascadeError(ApplicationError):
+    """子项 ContentUnit 级联取消失败（spec §5.4 不变量：父子不可同时标记）。
+
+    Stage 4.5 H2 修复：原实现静默吞异常导致父标记继续创建，破坏不变量。
+    现在任一子项删除失败时抛出本异常，中止父标记创建。
+
+    Attributes:
+        failures: 失败子项的 (unit_id, error_message) 列表。
+    """
+
+    def __init__(self, message: str, failures: list[tuple[str, str]] | None = None) -> None:
+        super().__init__(message)
+        self.failures = failures or []
+
+
 # === 标签系统（Stage 4 Task 1） ===
 
 

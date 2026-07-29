@@ -34,6 +34,7 @@ from infrastructure.repositories.content_unit import ContentUnitRepository
 from infrastructure.repositories.errors import RepositoryError
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
+from infrastructure.unit_of_work import UnitOfWork
 
 logger = logging.getLogger(__name__)
 
@@ -84,13 +85,31 @@ class ScanService:
         scanner: FileScanner | None = None,
         now_provider: Callable[[], str] | None = None,
         uuid_provider: Callable[[], str] | None = None,
+        uow: UnitOfWork | None = None,
     ) -> None:
+        """初始化 ScanService。
+
+        Args:
+            managed_root_repo: 受管理根目录仓储。
+            folder_cache_repo: 目录树缓存仓储。
+            content_unit_repo: 内容单元仓储。
+            scanner: 文件扫描器（可注入用于测试）。
+            now_provider: 时间戳提供者（用于测试注入）。
+            uuid_provider: UUID 提供者（用于测试注入）。
+            uow: 事务边界管理器（可选）。Stage 4.5 TD-H2 修复：
+                注入后 _persist_scan_result 的多步写操作（folder_cache 的
+                upsert/create/delete + content_unit 的批量 create）在事务内
+                执行，保证原子性。None 时保持原行为（调用方控制事务边界，
+                如 ScanWorker.run 末尾的 conn.commit()）。单个 content_unit
+                创建失败的预期异常仍在事务内捕获，不触发回滚。
+        """
         self._managed_root_repo = managed_root_repo
         self._folder_cache_repo = folder_cache_repo
         self._content_unit_repo = content_unit_repo
         self._scanner = scanner or FileScanner()
         self._now = now_provider or _default_now_utc
         self._new_uuid = uuid_provider or _default_uuid_provider
+        self._uow = uow
 
     def scan_root(self, root_id: str, incremental: bool = True) -> ScanSummary:
         """扫描指定受管理根目录。
@@ -141,7 +160,10 @@ class ScanService:
         self._persist_scan_result(result, summary)
 
         summary.skipped_unchanged = result.skipped_unchanged
-        summary.errors = [f"{e.path}: {e.message}" for e in result.errors]
+        # 合并扫描阶段错误与持久化阶段错误（_persist_scan_result 已追加）。
+        # Stage 4.5 TD-H2：原实现用赋值覆盖持久化错误，导致 content_unit 创建
+        # 失败等信息被静默丢弃。改为 extend 合并两类错误。
+        summary.errors.extend(f"{e.path}: {e.message}" for e in result.errors)
         return summary
 
     def _build_folder_mtime_map(self) -> dict[str, float]:
@@ -164,6 +186,24 @@ class ScanService:
         - content_unit：仅插入新候选（已存在 path 跳过）
 
         路径字典键/集合元素统一使用 make_path_key() 归一化，避免大小写/分隔符差异。
+
+        Stage 4.5 TD-H2 修复：若注入了 uow，多步写操作在事务内执行，保证原子性。
+        任一未预期异常触发回滚（已写操作不持久化）。单个 content_unit 创建失败
+        的预期异常在事务内捕获，不触发回滚（记错误到 summary.errors）。
+        """
+        # DB 操作在事务内执行（Stage 4.5 TD-H2：保证多步写原子性）
+        if self._uow is not None:
+            with self._uow.transaction():
+                self._persist_scan_result_core(result, summary)
+            return
+        self._persist_scan_result_core(result, summary)
+
+    def _persist_scan_result_core(self, result: ScanResult, summary: ScanSummary) -> None:
+        """_persist_scan_result 的核心 DB 逻辑。
+
+        包含 folder_cache 的 upsert/create/delete + content_unit 的批量 create。
+        由 _persist_scan_result 在事务内调用（当 uow 注入时），
+        或直接调用（当 uow 为 None 时，调用方控制事务边界）。
         """
         now = self._now()
 

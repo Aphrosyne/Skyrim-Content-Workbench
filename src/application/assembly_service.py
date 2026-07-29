@@ -13,14 +13,16 @@
 - 不覆盖已有文件/目录（FileOperationService 已保证）。
 - 文件操作通过 FileOperationService，本服务不直接调用 shutil / Path.rename。
 - 不自提交，由调用方控制事务边界。
-- folder_cache 同步：移动文件后更新 Mod 组文件夹的 last_scanned_mtime，
-  避免下次增量扫描重复处理（与 ModGroupService 模式一致）。
+
+Stage 4.5 H4（TD-L18 策略统一）：folder_cache mtime 同步由
+FileOperationService.move 内部的 FolderCacheSyncHelper.update_folder_mtime
+自动完成（文件移动后更新源/目标父目录 mtime，best-effort 策略）。
+本服务移除了 _sync_folder_mtime 重复逻辑和 folder_cache_repo 参数。
 """
 
 from __future__ import annotations
 
 import logging
-import sqlite3
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -35,8 +37,6 @@ from domain.models import ContentUnit, FileEntry
 from infrastructure.file_operation_service import FileOperationService
 from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.content_unit import ContentUnitRepository
-from infrastructure.repositories.errors import RepositoryError
-from infrastructure.repositories.folder_cache import FolderCacheRepository
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +73,11 @@ def is_image_file(path: Path) -> bool:
 class AssemblyService:
     """装配服务：Mod 组文件夹的文件增删 + 预览图手动重命名。
 
+    Stage 4.5 H4（TD-L18）：folder_cache mtime 同步由 FileOperationService.move
+    内部自动完成，本服务不再手动同步。
+
     使用方式：
-        service = AssemblyService(
-            file_op_service, content_unit_repo, folder_cache_repo
-        )
+        service = AssemblyService(file_op_service, content_unit_repo)
         files = service.list_mod_group_files(unit_id)
         service.add_file(unit_id, Path("D:/Stash/汉化.zip"))
         service.remove_file(unit_id, "汉化.zip", Path("D:/Stash"))
@@ -87,13 +88,11 @@ class AssemblyService:
         self,
         file_op_service: FileOperationService,
         content_unit_repo: ContentUnitRepository,
-        folder_cache_repo: FolderCacheRepository | None = None,
         now_provider: Callable[[], str] | None = None,
         uuid_provider: Callable[[], str] | None = None,
     ) -> None:
         self._file_op = file_op_service
         self._content_repo = content_unit_repo
-        self._folder_cache_repo = folder_cache_repo
         self._now = now_provider or _default_now_utc
         self._new_uuid = uuid_provider or _default_uuid_provider
 
@@ -142,7 +141,7 @@ class AssemblyService:
 
         - 源文件必须存在。
         - 目标路径 = Mod 组文件夹 / src_path.name，不能已存在（AGENTS 规则 2）。
-        - 移动后同步更新 folder_cache.last_scanned_mtime。
+        - Stage 4.5 H4：move 内部自动更新 Mod 组文件夹的 folder_cache mtime。
         - 不自动重命名（spec §7.4：自动整理阶段不修改任何文件名）。
 
         Args:
@@ -161,8 +160,8 @@ class AssemblyService:
         folder_path = Path(unit.path)
         dst_path = folder_path / src_path.name
 
+        # H4：move 内部自动更新 dst.parent（= folder_path）的 folder_cache mtime
         self._file_op.move(src_path, dst_path)
-        self._sync_folder_mtime(folder_path)
 
         # 返回新位置的 FileEntry（不关联 content_unit，装配面板不需要）
         return self._build_entry(dst_path) or FileEntry(
@@ -179,7 +178,7 @@ class AssemblyService:
 
         - 不保留原子目录结构（统一移到 staging_path 根目录）。
         - 目标路径 = staging_path / filename，不能已存在。
-        - 移动后同步更新 Mod 组 folder_cache.last_scanned_mtime。
+        - Stage 4.5 H4：move 内部自动更新源/目标父目录的 folder_cache mtime。
 
         Args:
             unit_id: Mod 组 ContentUnit ID。
@@ -199,8 +198,8 @@ class AssemblyService:
         src_path = folder_path / filename
         dst_path = staging_path / filename
 
+        # H4：move 内部自动更新 src.parent（= folder_path）和 dst.parent（= staging_path）的 mtime
         self._file_op.move(src_path, dst_path)
-        self._sync_folder_mtime(folder_path)
         return dst_path
 
     # --- 手动重命名预览图 ---
@@ -263,9 +262,8 @@ class AssemblyService:
 
         target_path = folder_path / target_name
         # 走 FileOperationService.move（含冲突检测 + operation_history）
-        # 由于上面已预检查目标不存在，move 内部 ConflictError 一般不会触发
+        # H4：move 内部自动更新 folder_path 的 folder_cache mtime
         self._file_op.move(image_path, target_path)
-        self._sync_folder_mtime(folder_path)
         return target_path
 
     # --- 内部 ---
@@ -298,23 +296,6 @@ class AssemblyService:
             size=size,
             content_unit=None,
         )
-
-    def _sync_folder_mtime(self, folder_path: Path) -> None:
-        """同步更新 folder_cache.last_scanned_mtime（避免下次扫描重复处理）。
-
-        与 ModGroupService 模式一致：folder_cache 写入失败不阻塞主流程。
-        """
-        if self._folder_cache_repo is None:
-            return
-        try:
-            target_key = make_path_key(str(folder_path))
-            mtime = folder_path.stat().st_mtime
-            for fc in self._folder_cache_repo.list_all():
-                if make_path_key(fc.path) == target_key:
-                    self._folder_cache_repo.upsert_mtime(fc.path, mtime, fc.id)
-                    return
-        except (RepositoryError, sqlite3.Error, OSError):  # folder_cache 更新失败不阻塞主流程
-            logger.exception("更新 folder_cache mtime 失败：path=%s", folder_path)
 
 
 def _is_in_directory(file_path: Path, dir_path: Path) -> bool:

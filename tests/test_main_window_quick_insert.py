@@ -35,6 +35,7 @@ from application.staging_service import StagingService  # noqa: E402
 from domain.models import AppMode  # noqa: E402
 from infrastructure.db import get_connection, init_db  # noqa: E402
 from infrastructure.file_operation_service import FileOperationService  # noqa: E402
+from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper  # noqa: E402
 from infrastructure.repositories.content_unit import ContentUnitRepository  # noqa: E402
 from infrastructure.repositories.folder_cache import FolderCacheRepository  # noqa: E402
 from infrastructure.repositories.managed_root import ManagedRootRepository  # noqa: E402
@@ -95,15 +96,15 @@ def main_window_env(qapp, tmp_path: Path):
         now_provider=lambda: "2026-07-14T00:00:00Z",
         uuid_provider=fake_uuid,
     )
-    file_op_service = FileOperationService(OperationHistoryRepository(conn))
-    folder_cache_repo = FolderCacheRepository(conn)
-    mod_group_service = ModGroupService(file_op_service, content_service, folder_cache_repo)
-    assembly_service = AssemblyService(
-        file_op_service, ContentUnitRepository(conn), folder_cache_repo
+    file_op_service = FileOperationService(
+        OperationHistoryRepository(conn),
+        folder_cache_helper=FolderCacheSyncHelper(FolderCacheRepository(conn)),
+        content_unit_repo=ContentUnitRepository(conn),
     )
-    quick_insert_service = QuickInsertService(
-        file_op_service, ContentUnitRepository(conn), folder_cache_repo
-    )
+    # Stage 4.5 H4：各 Service 不再需要 folder_cache_repo
+    mod_group_service = ModGroupService(file_op_service, content_service)
+    assembly_service = AssemblyService(file_op_service, ContentUnitRepository(conn))
+    quick_insert_service = QuickInsertService(file_op_service, ContentUnitRepository(conn))
 
     root_dir = _make_mod_tree(tmp_path)
     root = managed_service.add_root(root_dir)

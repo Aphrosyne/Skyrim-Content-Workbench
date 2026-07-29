@@ -21,13 +21,20 @@ logger = logging.getLogger(__name__)
 CURRENT_SCHEMA_VERSION = 6
 
 
-def get_connection(db_path: Path) -> sqlite3.Connection:
+def get_connection(db_path: Path, timeout: float = 5.0) -> sqlite3.Connection:
     """打开 SQLite 连接，启用外键与 WAL，设置 Row 工厂。
 
     Row 工厂使查询结果可通过列名访问（row["column"]），
     与所有 Repository 的 _row_to_model 实现一致。
+
+    Args:
+        db_path: 数据库文件路径。
+        timeout: SQLite busy timeout（秒）。当另一个连接持有写锁时，
+            本连接的写操作会等待该时长再抛 SQLITE_BUSY。默认 5.0 秒
+            （sqlite3 默认值）。后台 worker 建议传更大值（如 30.0）
+            以容忍主线程偶发的长事务。
     """
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=timeout)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")

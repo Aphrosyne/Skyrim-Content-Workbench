@@ -178,8 +178,15 @@ def test_close_event_calls_coordinator_shutdown(qapp, env_with_coordinator, monk
     assert called["flag"]
 
 
-def test_metadata_saved_calls_coordinator_invalidate(qapp, env_with_coordinator, monkeypatch):
-    """metadata_saved → 调用 coordinator.invalidate。"""
+def test_metadata_saved_does_not_call_coordinator_invalidate(
+    qapp, env_with_coordinator, monkeypatch
+):
+    """metadata_saved → 不再调用 coordinator.invalidate。
+
+    Stage 4.5 M4 修复：缩略图缓存失效由 ContentService.update_metadata 在
+    事务内条件性处理（仅 cover_path 变化时）。UI 层不再无条件 invalidate，
+    避免未提交的 DELETE 事务阻塞后台 worker 写入。
+    """
     window, coordinator, _, _ = env_with_coordinator
     called_unit_ids: list[str] = []
 
@@ -202,4 +209,5 @@ def test_metadata_saved_calls_coordinator_invalidate(qapp, env_with_coordinator,
         )
         window._metadata_panel.on_saved.emit(unit)  # noqa: SLF001
         qapp.processEvents()
-    assert "test-unit-id" in called_unit_ids
+    # UI 层不应调用 invalidate（由 Service 层条件性处理）
+    assert called_unit_ids == []

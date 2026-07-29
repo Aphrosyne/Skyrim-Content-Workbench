@@ -32,8 +32,10 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from application.errors import (
+    ContentUnitCascadeError,
     ContentUnitNotFoundError,
     CoverImageNotFoundError,
     InvalidContentUnitPathError,
@@ -46,6 +48,10 @@ from infrastructure.repositories.errors import (
     ConstraintViolationError,  # noqa: F401
     RepositoryError,
 )
+from infrastructure.unit_of_work import UnitOfWork
+
+if TYPE_CHECKING:
+    from application.thumbnail_service import ThumbnailService
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +83,30 @@ class ContentService:
         content_unit_repo: ContentUnitRepository,
         now_provider: Callable[[], str] | None = None,
         uuid_provider: Callable[[], str] | None = None,
+        thumbnail_service: ThumbnailService | None = None,
+        uow: UnitOfWork | None = None,
     ) -> None:
+        """初始化 ContentService。
+
+        Args:
+            content_unit_repo: ContentUnit 仓储。
+            now_provider: 时间戳提供者（用于测试注入）。
+            uuid_provider: UUID 提供者（用于测试注入）。
+            thumbnail_service: 缩略图服务（可选）。Stage 4.5 M4 修复：
+                注入后 update_metadata 修改 cover_path 时主动 invalidate
+                缩略图缓存，避免依赖 UI 层兜底。None 时不主动失效
+                （向后兼容旧调用方）。
+            uow: 事务边界管理器（可选）。Stage 4.5 H6 修复：
+                注入后 mark_as_content_unit 的多步写操作（删除子项 + 创建/恢复
+                父标记）在事务内执行，保证原子性。None 时保持原行为（调用方
+                控制事务边界）。单步写方法（create_content_unit /
+                unmark_content_unit / update_metadata）不使用 UoW，保持原行为。
+        """
         self._repo = content_unit_repo
         self._now = now_provider or _default_now_utc
         self._new_uuid = uuid_provider or _default_uuid_provider
+        self._thumbnail_service = thumbnail_service
+        self._uow = uow
 
     def list_by_directory(self, dir_path: str) -> list[ContentUnit]:
         """返回 dir_path 及其所有子目录下的内容单元。
@@ -169,6 +195,11 @@ class ContentService:
           不应被覆盖）；然后创建或恢复 ContentUnit。
         - 若 path 是文件：直接创建（不查子项）。
 
+        Stage 4.5 H6 修复：若注入了 uow，多步写操作（删除子项 + 创建/恢复父标记）
+        在事务内执行，保证原子性。任一子项删除失败抛 ContentUnitCascadeError 时，
+        整个事务回滚（已删除的子项不会丢失——事务未提交）。文件系统校验保留在
+        事务外（只读操作不需要事务保护）。
+
         Args:
             path: 待标记的文件或文件夹路径。
 
@@ -177,14 +208,34 @@ class ContentService:
 
         Raises:
             InvalidContentUnitPathError: 路径不存在或不可访问。
+            ContentUnitCascadeError: 子项 ContentUnit 删除失败（spec §5.4
+                不变量：父子不可同时标记。任一子项失败即中止父标记创建）。
         """
-        # 路径合法性校验（只读检查）
+        # 路径合法性校验（只读文件系统检查，不需要事务）
         try:
             if not path.exists():
                 raise InvalidContentUnitPathError(f"路径不存在：{path}")
         except OSError as e:
             raise InvalidContentUnitPathError(f"无法访问路径：{e}") from e
 
+        try:
+            is_dir = path.is_dir()
+        except OSError as e:
+            raise InvalidContentUnitPathError(f"无法访问路径：{e}") from e
+
+        # DB 操作在事务内执行（Stage 4.5 H6：保证多步写原子性）
+        if self._uow is not None:
+            with self._uow.transaction():
+                return self._mark_as_content_unit_core(path, is_dir)
+        return self._mark_as_content_unit_core(path, is_dir)
+
+    def _mark_as_content_unit_core(self, path: Path, is_dir: bool) -> ContentUnit:
+        """mark_as_content_unit 的核心 DB 逻辑。
+
+        包含：查询现有记录 → 取消子项标记（文件夹） → 创建/恢复父标记。
+        由 mark_as_content_unit 在事务内调用（当 uow 注入时），
+        或直接调用（当 uow 为 None 时，调用方控制事务边界）。
+        """
         # 查询现有记录
         existing = self._repo.get_by_path(str(path))
 
@@ -193,22 +244,27 @@ class ContentService:
             return existing
 
         # 文件夹：取消子项标记（保留 "unmarked" 子项）
-        try:
-            is_dir = path.is_dir()
-        except OSError as e:
-            raise InvalidContentUnitPathError(f"无法访问路径：{e}") from e
-
         if is_dir:
             children = self._repo.list_by_path_prefix_normalized(str(path))
             # 排除 path 自身（list_by_path_prefix_normalized 含 prefix 自身）
+            failures: list[tuple[str, str]] = []
             for child in children:
                 if make_path_key(child.path) != make_path_key(str(path)):
                     if child.status == "unmarked":
                         continue  # 保留用户显式取消标记的偏好
                     try:
                         self._repo.delete(child.id)
-                    except (RepositoryError, sqlite3.Error):  # noqa: BLE001
+                    except (RepositoryError, sqlite3.Error) as e:  # noqa: BLE001
+                        # Stage 4.5 H2 修复：不再静默吞异常。
+                        # spec §5.4 不变量：父子不可同时标记。
+                        # 任一子项删除失败即中止父标记创建。
                         logger.exception("取消子项标记失败：unit_id=%s", child.id)
+                        failures.append((child.id, str(e)))
+            if failures:
+                raise ContentUnitCascadeError(
+                    f"取消子项标记失败（{len(failures)} 项），已中止父标记创建",
+                    failures=failures,
+                )
 
         # 创建新记录或恢复 unmarked 记录
         if existing is not None:
@@ -360,6 +416,10 @@ class ContentService:
         仅修改显式传入的字段；None 参数表示「不改」。空字符串表示「清空」。
         每次更新自动更新 updated_at。
 
+        Stage 4.5 M4 修复：若注入了 thumbnail_service 且 cover_path 发生变化
+        （设置、替换或清空），在数据库写入后主动调 invalidate 缩略图缓存，
+        避免 UI 层兜底。
+
         Args:
             unit_id: 内容单元 ID。
             title: 新标题。None 不改；"" 清空；strip 后为空视为清空。
@@ -379,6 +439,10 @@ class ContentService:
         unit = self._repo.get_by_id(unit_id)
         if unit is None:
             raise ContentUnitNotFoundError(f"内容单元不存在：{unit_id}")
+
+        # 记录 cover_path 是否变化（用于写入后 invalidate 缩略图缓存）
+        cover_changed = False
+        original_cover_path = unit.cover_path
 
         # 校验并应用各字段
         if title is not None:
@@ -406,9 +470,22 @@ class ContentService:
                 unit.cover_path = cover_path
             else:
                 unit.cover_path = None  # 清空
+            # 检测 cover_path 是否实际变化（归一化比较）
+            if unit.cover_path != original_cover_path:
+                cover_changed = True
 
         unit.updated_at = self._now()
-        return self._repo.update(unit)
+        updated_unit = self._repo.update(unit)
+
+        # Stage 4.5 M4 修复：cover_path 变化后主动 invalidate 缩略图缓存
+        if cover_changed and self._thumbnail_service is not None:
+            try:
+                self._thumbnail_service.invalidate(unit_id)
+            except Exception:  # noqa: BLE001
+                # invalidate 失败不应影响元数据保存（已成功写入）
+                logger.exception("invalidate 缩略图缓存失败：unit_id=%s", unit_id)
+
+        return updated_unit
 
     def _validate_cover_path(self, unit_path: str, cover_path: str) -> None:
         """校验 cover_path 是 unit_path 下的图片文件且存在。

@@ -28,6 +28,7 @@ from application.errors import (
 from application.quick_insert_service import QuickInsertService
 from infrastructure.db import get_connection, init_db
 from infrastructure.file_operation_service import FileOperationService
+from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper
 from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.content_unit import ContentUnitRepository
 from infrastructure.repositories.folder_cache import FolderCacheRepository
@@ -38,7 +39,12 @@ from infrastructure.repositories.operation_history import (
 
 @pytest.fixture
 def db_env(tmp_path: Path):
-    """构造测试环境：内存数据库 + ContentService + QuickInsertService。"""
+    """构造测试环境：内存数据库 + ContentService + QuickInsertService。
+
+    Stage 4.5 H4：FileOperationService 注入 FolderCacheSyncHelper + ContentUnitRepository，
+    move 时自动同步 folder_cache + ContentUnit.path。
+    QuickInsertService 不再需要 folder_cache_repo（TD-M22 收敛）。
+    """
     db_path = tmp_path / "test.db"
     init_db(db_path)
     conn = get_connection(db_path)
@@ -47,10 +53,17 @@ def db_env(tmp_path: Path):
     content_repo = ContentUnitRepository(conn)
     folder_cache_repo = FolderCacheRepository(conn)
     history_repo = OperationHistoryRepository(conn)
-    file_op = FileOperationService(history_repo)
+    # Stage 4.5 H4：注入 helper + content_unit_repo，move 自动同步
+    helper = FolderCacheSyncHelper(folder_cache_repo)
+    file_op = FileOperationService(
+        history_repo,
+        folder_cache_helper=helper,
+        content_unit_repo=content_repo,
+    )
     content_service = ContentService(content_repo)
 
-    service = QuickInsertService(file_op, content_repo, folder_cache_repo)
+    # Stage 4.5 H4：QuickInsertService 不再需要 folder_cache_repo
+    service = QuickInsertService(file_op, content_repo)
     yield service, content_service, conn, folder_cache_repo, history_repo
     conn.close()
 
@@ -587,15 +600,16 @@ def test_quick_insert_sync_folder_cache_failure_rolls_back_transaction(
 ) -> None:
     """H2 修复验证：folder_cache 同步失败时整个事务应被回滚。
 
+    Stage 4.5 H4 调整：folder_cache 同步由 FileOperationService.move 内部的
+    FolderCacheSyncHelper 完成。失败仍应抛出 FileOperationError → 上层 rollback。
+
     场景：
-    1. quick_insert 成功执行 cleanup → move → update（文件已移动 + ContentUnit.path 已更新）。
-    2. _sync_folder_cache 步骤 2（插入新 folder_cache 记录）失败。
-    3. 旧实现：吞异常 → quick_insert 返回成功 → 上层 _commit 提交
-       → folder_cache 中"旧记录已删除、新记录未插入"的部分提交态被持久化
-       → 目录树静默缺节点。
-    4. 新实现（H2 修复）：抛出 FileOperationError → 上层 rollback
-       → cleanup（ContentUnit.delete）被回滚、ContentUnit.path 更新被回滚
-       → 数据库回到操作前状态（虽然文件已移动，但 DB 一致）。
+    1. quick_insert 执行 cleanup → move。
+    2. move 内部调用 FolderCacheSyncHelper.on_folder_moved，步骤 2
+       （插入新 folder_cache 记录）失败。
+    3. move 抛出 FileOperationError → 上层 rollback
+       → cleanup（ContentUnit.delete）被回滚 → 数据库回到操作前状态
+       （虽然文件已移动，但 DB 一致）。
 
     本测试验证：
     - 抛出 FileOperationError（而非静默成功）。
@@ -604,13 +618,14 @@ def test_quick_insert_sync_folder_cache_failure_rolls_back_transaction(
     """
     service, content_service, conn, _, _ = db_env
 
-    # 用 FlakyFolderCacheRepository 包装真实 repo，注入失败
+    # 用 FlakyFolderCacheRepository 包装真实 repo，注入到 FileOperationService 的 helper
     from infrastructure.repositories.folder_cache import FolderCacheRepository
 
     real_fc_repo = FolderCacheRepository(conn)
     flaky_fc_repo = _FlakyFolderCacheRepository(real_fc_repo, fail_on_create=True)
-    # 替换 service 的 folder_cache_repo
-    service._folder_cache_repo = flaky_fc_repo  # noqa: SLF001
+    # Stage 4.5 H4：替换 FileOperationService 内部 helper 的 folder_cache_repo
+    # （helper 持有 repo 引用，替换 helper._repo 即可）
+    service._file_op._folder_cache_helper._repo = flaky_fc_repo  # noqa: SLF001
 
     staging = tmp_path / "Stash"
     staging.mkdir()
@@ -637,7 +652,8 @@ def test_quick_insert_sync_folder_cache_failure_rolls_back_transaction(
     real_fc_repo.create(source_fc)
     conn.commit()
 
-    # 执行 quick_insert：应抛出 FileOperationError（H2 修复）
+    # 执行 quick_insert：应抛出 FileOperationError（H2 修复，move 内部同步失败）
+    # on_folder_moved 将 RepositoryError 包装为 FileOperationError("同步 folder_cache 失败")
     with pytest.raises(FileOperationError, match="同步 folder_cache 失败"):
         service.quick_insert(unit.id, target_dir)
 
@@ -663,20 +679,28 @@ def test_quick_insert_sync_folder_cache_failure_rolls_back_transaction(
 def test_mod_group_create_folder_cache_failure_rolls_back(db_env, tmp_path: Path) -> None:
     """H2 修复验证：ModGroupService.create_mod_group 的 folder_cache 写入失败时回滚。
 
-    场景：create_mod_group 步骤 1（new_folder）成功后，步骤 1b（folder_cache.create）
-    失败。新实现（H2 修复）应：清理已创建的空文件夹 + 抛出 FileOperationError，
+    Stage 4.5 H4 调整：folder_cache 同步由 FileOperationService.new_folder 内部的
+    FolderCacheSyncHelper 完成。失败仍应清理空文件夹 + 抛出 FileOperationError。
+
+    场景：create_mod_group 步骤 1（new_folder）内部调用
+    FolderCacheSyncHelper.on_folder_created，folder_cache.create 失败。
+    新实现（H2 修复）应：清理已创建的空文件夹 + 抛出 FileOperationError，
     让上层 rollback。旧实现会吞异常继续 move，最终把部分提交态 commit 进数据库。
     """
     from application.mod_group_service import ModGroupService
 
     service, content_service, conn, _, _ = db_env
 
-    # 构造 ModGroupService，注入 Flaky folder_cache_repo
+    # Stage 4.5 H4：替换 FileOperationService 内部 helper 的 folder_cache_repo
+    # （ModGroupService 不再持有 folder_cache_repo，同步由 FileOperationService 内部完成）
     from infrastructure.repositories.folder_cache import FolderCacheRepository
 
     real_fc_repo = FolderCacheRepository(conn)
     flaky_fc_repo = _FlakyFolderCacheRepository(real_fc_repo, fail_on_create=True)
-    mod_group_svc = ModGroupService(service._file_op, content_service, flaky_fc_repo)  # noqa: SLF001
+    service._file_op._folder_cache_helper._repo = flaky_fc_repo  # noqa: SLF001
+
+    # ModGroupService 新签名：(file_op, content_service, uow=uow)
+    mod_group_svc = ModGroupService(service._file_op, content_service)
 
     staging = tmp_path / "Stash"
     staging.mkdir()

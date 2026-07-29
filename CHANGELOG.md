@@ -8,7 +8,140 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
-### 2026-07-27 阶段 4 Task 4：封面预览
+---
+
+## [0.27.0] - 2026-07-29
+
+开发环境清理脚本
+
+新增 `scripts/clean.py`，清理开发过程中产生的临时文件和缓存，保持工作目录整洁。schema_version 维持 6，无数据库迁移。
+
+**新增文件**
+
+- `scripts/clean.py` — 清理脚本主体
+- `scripts/README.md` — 清理脚本文档
+- `tests/test_clean.py` — 33 个单元测试
+
+**清理范围**
+
+- 安全清理（默认）：`__pycache__/`、`.pytest_cache/`、`.ruff_cache/`、`.cache/`、`build/`、`dist/`、`*.egg-info/`、`*.pyc`、`*.pyo`
+- 深度清理（`--all`）：额外清理 `%TEMP%\pytest-of-<用户名>\`（pytest tmp_path 机制产生的临时文件）
+
+**命令行参数**
+
+- `python scripts/clean.py` — 安全清理
+- `python scripts/clean.py --all` — 深度清理
+- `python scripts/clean.py --dry-run` — 仅查看待清理内容，不实际删除
+- `python scripts/clean.py --verbose` — 显示详细清理信息
+
+**受保护内容（永不被删除）**
+
+- 源码与文档：`src/`、`tests/`、`docs/`、`archive/`、`scripts/`
+- 应用数据：`app.db`、`thumbnails/`、`exports/`、`logs/`、`local_appdata/`
+- 版本控制：`.git/`
+- 虚拟环境：`.venv/`、`venv/`
+- 项目外数据：用户 Mod 文件不受影响
+
+**测试**
+
+- 新增 33 个测试覆盖 find_safe_targets / is_protected / clean_safe / find_pytest_tmp_dirs / main --dry-run
+- 全量回归：982 passed, 3 skipped, ruff check + format 全通过
+- 更新 `.gitignore` 显式添加 `*.pyo`
+
+---
+
+## [0.26.1] - 2026-07-29
+
+Stage 4.5 验收回归修复
+
+修复 Stage 4.5 手动验收发现的 3 个回归问题。schema_version 维持 6，无数据库迁移。
+
+**问题 1：缩略图刷新异常（1A + 1B）**
+
+- **根因**: `MainWindow._on_metadata_saved` 无条件调用 `thumbnail_coordinator.invalidate()`，与 Stage 4.5 M4 修复（Service 层条件性 invalidate）叠加，产生未提交的 DELETE 事务，阻塞后台 worker 写入
+- **修复**: 删除 UI 层的无条件 invalidate 调用，由 `ContentService.update_metadata` 在事务内条件性处理（仅 cover_path 变化时）
+- **影响文件**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
+
+**问题 2：取消标记不持久化**
+
+- **根因**: `_on_unmark_content_unit` 误以为 `unmark_content_unit` 使用 UoW 自动提交，实际它是单步写方法未走 UoW，handler 必须显式提交
+- **修复**: 在 `_on_unmark_content_unit` 中添加 `self._commit()`，修正注释
+- **影响文件**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
+
+**问题 3：外部删除文件后扫描异常（database is locked）**
+
+- **根因**: 问题 1B 的未提交事务 + Stage 4.5 TD-H2 的 ScanWorker 长事务叠加，写锁冲突导致 5 秒超时
+- **修复**: `get_connection` 添加 `timeout` 参数（默认 5.0s），ScanWorker/ThumbnailWorker 传 `timeout=30.0`，容忍主线程偶发长事务
+- **影响文件**: [db.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/db.py)、[scan_worker.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/scan_worker.py)、[thumbnail_worker.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/thumbnail_worker.py)
+
+**测试调整**
+
+- `test_main_window_thumbnail.py`：原测试 `test_metadata_saved_calls_coordinator_invalidate` 验证旧行为（UI 层调用 invalidate），改为 `test_metadata_saved_does_not_call_coordinator_invalidate` 验证新行为（UI 层不调用）
+- 全量回归：949 passed, 3 skipped, ruff check + format 全通过
+
+---
+
+## [0.26.0] - 2026-07-28
+
+阶段 4.5：技术债清理（Stage 5 前置修复）
+
+Stage 4 Code Review 后的技术债清理，处理影响 Stage 5 稳定性的高优先级问题，为 undo/redo、文件操作等功能建立基础。schema_version 维持 6，无数据库迁移。
+
+**用户确认的设计决策（D1-D7）**
+
+- D1: A — 子项删除失败抛 `ContentUnitCascadeError`，中止父 ContentUnit 创建
+- D2: A — `ContentService` 注入 `ThumbnailService`，业务层负责 thumbnail invalidate
+- D3: B — Service 内部使用 `UnitOfWork` 管理多步写事务，调用方不负责业务事务控制
+- D4: A — TD-H2（ScanService 事务边界）纳入本次修复
+- D5: B — `FileOperationService` 分层归属暂不调整，H5 延后到 Stage 5（登记为 TD-H10）
+- D6: A — Task 0.3 纳入 Stage 4.5，处理 H4 + TD-M22 + TD-L18
+- D7: C — M14「最近常用置顶」登记为技术债（TD-M30），暂不实现
+
+**Task 0.1：缩略图生命周期一致性修复（H1 + H2 + H3 + M4 + M19）**
+
+- H1：`ContentUnitRepository.delete` 级联清理 `thumbnail_cache`，避免 FK 违约
+- H2：`mark_as_content_unit` 子项删除失败抛 `ContentUnitCascadeError`，不再静默吞异常
+- H3：`ThumbnailCoordinator` pending 集合精确清理（`_on_worker_ready` / `_on_worker_failed` 移除 unit_id），允许同一 unit 重新入队
+- M4：`ContentService` 注入 `ThumbnailService`，`update_metadata` 修改 `cover_path` 时主动 invalidate 缩略图缓存
+- M19：修正假测试 `test_get_cache_hit_returns_path`（补 assert + 动态 mtime），新增 mtime 失效路径测试
+
+**Task 0.2：事务边界整理（H6 + H7 + M18 + TD-H2）**
+
+- 新建 [UnitOfWork](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/unit_of_work.py)：封装 SQLite 连接的 commit/rollback，支持嵌套事务（仅最外层实际提交/回滚，内层仅调整深度计数）
+- H6：Service 多步写方法（`TagService.delete_category` / `batch_attach_tags` / `import_from_json` / `ContentService.mark_as_content_unit` / `ModGroupService.create_mod_group` / `QuickInsertService.quick_insert`）改用 UoW 管理事务
+- H7：MainWindow handler 统一 rollback 模板（`_handle_service_error`）
+- M18：补 MetadataPanel 标签 attach 失败路径测试
+- TD-H2：ScanService `_persist_scan_result` 在 UoW 事务内执行多步写，任一失败整体回滚
+
+**Task 0.3：文件移动同步（H4 + TD-M22 + TD-L18）**
+
+- 新建 [FolderCacheSyncHelper](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/folder_cache_sync_helper.py)：集中 folder_cache 同步逻辑，提供 `on_folder_created` / `on_folder_moved` / `on_folder_deleted` / `update_folder_mtime` 语义化方法
+- H4：`FileOperationService.move` / `new_folder` 注入 helper + ContentUnitRepository，自动同步 folder_cache + ContentUnit.path，消除调用方手动同步的隐式契约
+- TD-M22：`ModGroupService` / `QuickInsertService` / `AssemblyService` 移除重复的 folder_cache 同步逻辑（`_resolve_parent_id_by_path` / `_delete_folder_cache_by_path` / `_create_folder_cache_for_new_path` / `_update_parent_mtime` / `_sync_folder_mtime`），统一由 `FileOperationService` 内部 helper 自动同步
+- TD-L18：`FolderCacheSyncHelper` 明确区分两类契约——单字段 mtime 更新为 best-effort（失败仅记日志），多步同步失败抛 `FileOperationError`
+- 修复 `FolderCacheSyncHelper.on_folder_moved` 异常包装问题：多步同步失败时抛出 `FileOperationError`，由上层 UoW 回滚
+
+**测试覆盖**
+
+- 新增 `test_unit_of_work.py`：UnitOfWork 嵌套事务 commit/rollback 行为
+- 新增 `test_folder_cache_sync_helper.py`：helper 核心功能 + 错误处理
+- 扩展 `test_file_operation_service.py`：H4 自动同步 folder_cache + ContentUnit.path 回归测试
+- 扩展 `test_content_service.py`：H2 ContentUnitCascadeError + M4 缩略图失效
+- 扩展 `test_thumbnail_coordinator.py`：H3 pending 精确清理 + 重新入队
+- 扩展 `test_scan_service.py`：TD-H2 事务边界回滚
+- 修正 3 个 MainWindow 集成测试 fixture（`test_main_window_quick_insert.py` / `test_main_window_assembly.py` / `test_main_window_context_menu_task3.py`）：注入 FolderCacheSyncHelper + ContentUnitRepository 到 FileOperationService
+- 修正假测试 `test_get_cache_hit_returns_path`（M19）
+- 全量回归：949 passed, 3 skipped, ruff check + format 全通过
+
+**技术债登记**
+
+- 新登记：TD-H9（path UNIQUE 绕过 make_path_key）、TD-H10（FileOperationService 分层）、TD-M28（N+1 查询）、TD-M29（测试组织）、TD-L21（UI 硬编码颜色）、TD-M30（M14 最近常用置顶）
+- 已修复：TD-H2（ScanService 事务边界）、TD-M22（folder_cache 同步 helper）、TD-L18（mtime 策略统一）
+- 详见 [technical-debt.md](docs/technical-debt.md)
+
+## [0.25.0] - 2026-07-27
+
+阶段 4 Task 4：封面预览
 
 为内容单元在文件列表中显示封面缩略图，新增缩略图缓存系统与后台生成调度。schema_version 维持 6，无数据库迁移（`thumbnail_cache` 表已在 schema v3/v4 中创建）。
 
@@ -66,7 +199,9 @@
 
 - 浏览模式下大图卡片展示封面（roadmap Task 4 验收项之一）：本轮仅实现列表小图标，大图卡片延后到下一阶段
 
-### 2026-07-27 阶段 4 Task 3：标签筛选
+## [0.24.0] - 2026-07-27
+
+阶段 4 Task 3：标签筛选
 
 浏览模式下中栏顶部新增标签筛选栏，支持多分类多选标签实时筛选内容单元。schema_version 维持 6，无数据库迁移。
 
@@ -108,7 +243,9 @@
 - `test_tag_filter.py` 新建，覆盖 16 项：初始状态、分类展开/折叠、互斥、标签多选 toggle、信号发射、清除按钮、折叠保留已选、徽标、refresh_categories 保留/剔除、空分类提示
 - `test_main_window_tag_filter.py` 新建，覆盖 11 项：创建条件、模式显隐、筛选激活行为、空结果提示、目录切换保留、MetadataPanel 保留加载（Q6: A）
 
-### 2026-07-25 阶段 4 Task 2：验收修正（单击加载 + 预选标签 + 回车不关闭窗口 + 整理模式右栏方案 B）
+## [0.23.1] - 2026-07-25
+
+阶段 4 Task 2：验收修正（单击加载 + 预选标签 + 回车不关闭窗口 + 整理模式右栏方案 B）
 
 Stage 4 Task 2 手动验收发现的 4 项问题修正。schema_version 维持 6，无数据库迁移。所有修正均围绕交互体验与设计一致性，不涉及数据结构变化。
 
@@ -158,7 +295,9 @@ Stage 4 Task 2 手动验收发现的 4 项问题修正。schema_version 维持 6
 - [docs/architecture.md](docs/architecture.md)：§3.1 调整整理模式右栏描述；§4.3 元数据保存流程更新为「单击加载」。
 - [docs/roadmap.md](docs/roadmap.md)：Task 2 验收项 + 决策修正记录。
 
-### 2026-07-19 阶段 4 Task 2：元数据编辑
+## [0.23.0] - 2026-07-19
+
+阶段 4 Task 2：元数据编辑
 
 Stage 4 第二项功能开发。实现 spec §4.1 / §5.1 / §7.2 / §9 / §10 定义的元数据编辑 + 打标签 + 批量打标签 + 封面选择能力。schema_version 维持 6，无数据库迁移。合并原 roadmap 中 Task 2「元数据编辑」和「打标签」为单个 Task 一次性做完（设计决策：同一个右栏面板操作）。
 
@@ -266,7 +405,9 @@ Stage 4 第二项功能开发。实现 spec §4.1 / §5.1 / §7.2 / §9 / §10 �
 - [docs/architecture.md](docs/architecture.md)：§3.1 / §3.2 / §4.1 / §4.3 更新（MetadataPanel / BatchTagDialog / CoverPickerDialog 组件职责、TagService/ContentService 新方法、元数据保存/封面选择/批量打标签数据流）。
 - [docs/roadmap.md](docs/roadmap.md)：Stage 4 Task 2 验收项打勾。
 
-### 2026-07-18 阶段 4 Task 1：标签分类管理 + JSON 导入导出
+## [0.22.0] - 2026-07-18
+
+阶段 4 Task 1：标签分类管理 + JSON 导入导出
 
 Stage 4 第一项功能开发。实现 spec §10 / §4.2-4.4 定义的标签系统：TagCategory + Tag + ContentUnitTag 三表结构 + TagService 应用层 + TagManagerDialog UI 对话框 + 预置标签库自动加载 + JSON 导入导出。
 
@@ -366,7 +507,9 @@ Stage 4 第一项功能开发。实现 spec §10 / §4.2-4.4 定义的标签系�
 - [src/app/main.py](src/app/main.py)：启动序列新增加载预置标签库 + 注入 TagService。
 - [docs/architecture.md](docs/architecture.md)：§4.1 / §4.2 / §6.1 / §6.4 / §10 / §11.1 / §12 更新。
 
-### 2026-07-18 阶段 4 Task 0：技术债清理（TD-M25 + TD-L20）
+## [0.21.0] - 2026-07-18
+
+阶段 4 Task 0：技术债清理（TD-M25 + TD-L20）
 
 Stage 4 功能开发前的前置清理，不新增功能，不修改业务行为。完成 Technical Debt 第四批修复。
 
@@ -409,7 +552,9 @@ Stage 4 功能开发前的前置清理，不新增功能，不修改业务行为
 - [tests/test_quick_insert_service.py](tests/test_quick_insert_service.py)：`_FlakyFolderCacheRepository.create` 异常类型改为 `RepositoryError`。
 - [docs/technical-debt.md](docs/technical-debt.md)：标记 TD-M25 / TD-L20 为已修复，新增第四批已修复批次说明，更新处理优先级建议。
 
-### 2026-07-17 阶段 3 收尾：Code Review High 级修复 + UI 状态保持修复 (v0.20.1)
+## [0.20.1] - 2026-07-17
+
+阶段 3 收尾：Code Review High 级修复 + UI 状态保持修复
 
 Stage 3 正式 Code Review 后的收尾修复，不新增功能。修复两个阻塞 Stage 4 启动的 High 级技术债（TD-H7 / TD-H8），以及用户验收发现的浏览模式 UI 状态保持 bug。完成 Technical Debt 第三批整理。
 
@@ -465,7 +610,9 @@ Stage 3 正式 Code Review 后的收尾修复，不新增功能。修复两个�
 
 - [docs/technical-debt.md](docs/technical-debt.md)：标记 TD-H7 / TD-H8 为已修复（v0.20.1）；新增第三批 TD（TD-M21 ~ TD-M27、TD-L18 ~ TD-L20）；重写"处理优先级建议"章节为 6 档优先级清单。
 
-### 2026-07-17 阶段 3 Task 5：快速插入 (v0.20.0)
+## [0.20.0] - 2026-07-17
+
+阶段 3 Task 5：快速插入
 
 实现整理模式下的「快速插入」功能：将当前装配面板绑定的 Mod 组文件夹整体移动到目录树中选中的目标分类目录。完成阶段 3 全部 Task。
 
@@ -520,7 +667,9 @@ Stage 3 正式 Code Review 后的收尾修复，不新增功能。修复两个�
 - [docs/spec.md](docs/spec.md) §6.1 移动安全规则更新（冲突/跨盘当前阶段策略）；§7.3 整理模式新增「快速插入」按钮详细说明（可用条件 / 交互 / 底层 / UI 刷新 / 取消拖拽方案）。
 - [docs/roadmap.md](docs/roadmap.md) Task 5 标记为 ✅，验收项全部勾选，新增设计决策记录。
 
-### 2026-07-17 阶段 3 Task 4：装配面板交互调整
+## [0.19.1] - 2026-07-17
+
+阶段 3 Task 4：装配面板交互调整
 
 用户手动验收后提出两项设计调整：取消拖拽加入装配方案、Mod 组切换改为双击触发。仅修改交互方式，底层业务逻辑（AssemblyService）不变。
 
@@ -552,7 +701,9 @@ Stage 3 正式 Code Review 后的收尾修复，不新增功能。修复两个�
 - [docs/spec.md](docs/spec.md) §5.2 整理模式流程图：拖入 → 右键「加入装配」；§7.3 整理模式新增交互方式（单击不切换 / 双击绑定）；§7.4 装配面板：拖入 → 右键菜单；§7.5 右键菜单表：暂存区文件新增「加入装配」。
 - [docs/roadmap.md](docs/roadmap.md) Task 4 验收项更新：拖拽项替换为右键菜单项 + 新增双击/单击切换验收项。
 
-### 2026-07-16 阶段 3 Task 4：装配面板
+## [0.19.0] - 2026-07-16
+
+阶段 3 Task 4：装配面板
 
 新增装配面板（AssemblyPanel）+ 装配服务（AssemblyService），实现整理模式下从暂存区拖入附加文件到 Mod 组、移除已加入文件回暂存区根目录、右键图片手动重命名为 Mod 组同名（不破坏用户已有命名）。schema_version 维持 5。
 
@@ -603,7 +754,9 @@ Stage 3 正式 Code Review 后的收尾修复，不新增功能。修复两个�
 - [docs/spec.md](docs/spec.md) §7.4：装配面板描述与实现一致——明确「不自动重命名图片」原则；手动重命名冲突处理改为「弹窗提示冲突，不覆盖」（原描述「覆盖/跳过/重命名」与 AGENTS 规则 2 冲突，覆盖/跳过/重命名选项留待阶段 5 通用冲突处理统一实现）。
 - [docs/roadmap.md](docs/roadmap.md) Task 4 验收项全部 ✅。
 
-### 2026-07-16 修复（阶段 3 Task 3 验收修复）
+## [0.18.2] - 2026-07-16
+
+修复（阶段 3 Task 3 验收修复）
 
 - **目录树刷新逻辑修复**：
   - **创建 Mod 组后新文件夹不可见**：`ModGroupService._resolve_parent_id_by_path` 改用 `make_path_key` 归一化路径比较（与 `ScanService._resolve_parent_id` 一致），避免 `staging_path` 字符串与 `folder_cache.path` 存储字符串的大小写/分隔符差异导致 `parent_id=None`（孤儿节点），新文件夹无法在目录树显示。
@@ -612,7 +765,9 @@ Stage 3 正式 Code Review 后的收尾修复，不新增功能。修复两个�
 - **双击内容单元文件夹进入目录**：`MainWindow._on_entry_activated` 判断顺序调整——浏览模式下双击文件夹优先进入该目录（无论是否内容单元），先于 `content_unit` 判断。文件夹的元数据通过单击选中查看（`_on_content_selection_changed`）。文件类型内容单元（压缩包）双击仍显示元数据。
 - **扫描后保持目录树展开/选中状态**：`FolderTreeModel` 新增 `save_expanded_paths` / `save_selected_path` / `restore_expanded_paths` 方法；`MainWindow._refresh_tree` 刷新前保存展开节点 `real_path` 集合与选中节点路径，刷新后递归 `fetchMore` + `setExpanded` + `setCurrentIndex` 恢复。避免每次扫描/创建 Mod 组后目录树全部折叠。
 
-### 2026-07-15 修复（阶段 3 Task 3 验收修复）
+## [0.18.1] - 2026-07-15
+
+修复（阶段 3 Task 3 验收修复）
 
 - **Nexus 命名规则适配**：`extract_mod_name` 新增 Nexus Mods 下载文件名识别（`Mod名称-数字ID-版本号-时间戳`），如 `Alt-Tab Fix-148466-1-0-0-1745430887.zip` → `Alt-Tab Fix`。非 Nexus 命名回退到通用版本号剔除。
 - **目录树刷新**：`ModGroupService` 新增可选依赖 `FolderCacheRepository`，创建 Mod 组文件夹后同步写入 `folder_cache` 表，目录树立即可见新文件夹。

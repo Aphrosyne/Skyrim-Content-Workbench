@@ -67,7 +67,8 @@ class ThumbnailWorker(QObject):
         """执行生成。捕获所有异常并转为信号。"""
         conn: sqlite3.Connection | None = None
         try:
-            conn = get_connection(self._db_path)
+            # timeout=30.0：容忍主线程偶发的长事务（Stage 4.5 回归加固）
+            conn = get_connection(self._db_path, timeout=30.0)
             conn.row_factory = sqlite3.Row
             service = ThumbnailService(
                 cache_repo=ThumbnailCacheRepository(conn),

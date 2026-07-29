@@ -370,7 +370,7 @@ repositories/
 
 ### 6.4 SQLite 数据库结构
 
-**数据库位置：** `%LOCALAPPDATA%\SkyrimContentWorkbench\app.db`
+**数据库位置：** `{project_root}/data/app.db`
 
 **Schema v6 表清单（v5→v6 变更：移除 content_unit.rating；tag_category.name 加 UNIQUE；tag (name, category_id) 加 UNIQUE）：**
 
@@ -537,7 +537,7 @@ ScanService.scan(managed_root)
 
 - 关联键：`content_unit_id`
 - 源路径：`ContentUnit.path` + `cover_path`（仅 `cover_path` 非空时生成）
-- 缩略图缓存目录：`%LOCALAPPDATA%\SkyrimContentWorkbench\thumbnails\`
+- 缩略图缓存目录：`{project_root}/data\thumbnails\`
 - 缓存文件命名：`{content_unit_id}.png`
 - 缓存有效性基于 `content_unit_id + source_size + source_modified_at + 文件存在`
 - 后台线程生成（QThread + 独立 SQLite 连接），不冻结 UI
@@ -550,7 +550,7 @@ ScanService.scan(managed_root)
 ## 10. 应用数据目录
 
 ```text
-%LOCALAPPDATA%\SkyrimContentWorkbench\
+{project_root}/data\
   ├── app.db              # SQLite 数据库（schema v6）
   ├── thumbnails\         # 缩略图缓存
   ├── exports\            # AI JSON 导出

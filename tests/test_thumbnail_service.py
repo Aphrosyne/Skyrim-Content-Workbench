@@ -105,12 +105,21 @@ def test_get_cache_miss_when_no_record(service, jpg_source):
 
 
 def test_get_cache_hit_returns_path(service, jpg_source, cache_repo):
-    """缓存命中 → 返回 PNG 路径。"""
+    """缓存命中 → 返回 PNG 路径。
+
+    Stage 4.5 M19 修正：原测试无 assert 且 mtime 硬编码与实际文件不匹配，
+    导致永远"通过"但未验证任何东西。现使用动态 mtime + 明确 assert。
+    """
+    from datetime import UTC, datetime
+
+    # 用实际文件 mtime 构造缓存记录（避免硬编码 mtime 不匹配）
+    actual_mtime = jpg_source.stat().st_mtime
+    source_modified_at = datetime.fromtimestamp(actual_mtime, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     cache_repo.upsert(
         ThumbnailCache(
             content_unit_id="u1",
             source_size_bytes=jpg_source.stat().st_size,
-            source_modified_at="2026-07-01T00:00:00Z",
+            source_modified_at=source_modified_at,
             cache_filename="u1.png",
             status="ok",
             generated_at="2026-07-01T00:00:01Z",
@@ -119,10 +128,44 @@ def test_get_cache_hit_returns_path(service, jpg_source, cache_repo):
     # 同时创建缓存文件
     cache_png = service.get_thumbnails_dir() / "u1.png"
     Image.new("RGBA", (64, 64)).save(cache_png)
-    # mtime 与缓存记录一致
-    service.get_cache("u1", jpg_source)
-    # 注：mtime 转换可能不精确，但只要 status=ok + 文件存在即视为有效
-    # 修改缓存记录使 mtime 与实际一致
+
+    result = service.get_cache("u1", jpg_source)
+    assert result is not None
+    assert result == cache_png
+
+
+def test_get_cache_invalid_mtime_treats_as_miss(service, jpg_source, cache_repo):
+    """源图 mtime 变化 → 缓存失效（spec §9 核心条款）。
+
+    Stage 4.5 M19 新增：原测试套件无 mtime 失效路径覆盖，导致
+    若未来误删 mtime 检查无法被测试发现。
+    """
+    import os
+
+    # 先构造一个"有效"的缓存记录
+    actual_mtime = jpg_source.stat().st_mtime
+    from datetime import UTC, datetime
+
+    source_modified_at = datetime.fromtimestamp(actual_mtime, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cache_repo.upsert(
+        ThumbnailCache(
+            content_unit_id="u1",
+            source_size_bytes=jpg_source.stat().st_size,
+            source_modified_at=source_modified_at,
+            cache_filename="u1.png",
+            status="ok",
+            generated_at="2026-07-01T00:00:01Z",
+        )
+    )
+    cache_png = service.get_thumbnails_dir() / "u1.png"
+    Image.new("RGBA", (64, 64)).save(cache_png)
+
+    # 修改源文件 mtime（模拟外部工具覆盖）
+    new_mtime = actual_mtime + 3600  # +1 小时
+    os.utime(jpg_source, (new_mtime, new_mtime))
+
+    result = service.get_cache("u1", jpg_source)
+    assert result is None  # mtime 不匹配 → 缓存失效
 
 
 def test_get_cache_invalid_size_treats_as_miss(service, jpg_source, cache_repo):
