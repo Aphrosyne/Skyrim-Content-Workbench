@@ -936,6 +936,7 @@ class MainWindow(QMainWindow):
         - 加入装配：仅整理模式 + 单选文件（非目录）+ 装配面板已绑定 Mod 组时显示。
         - 标记为内容单元 / 把每个文件标记为内容单元：未标记条目。
         - 取消标记：已标记 ContentUnit。
+        - 快速设置封面：已标记文件夹内容单元（压缩包内容单元灰显）。
         - 复制路径：始终显示。
         """
         # 取所有选中行（ExtendedSelection 支持多选）
@@ -954,8 +955,33 @@ class MainWindow(QMainWindow):
         if not entries:
             return
 
+        actions = self._build_content_menu_actions(entries)
+        if not actions:
+            return
+
         menu = QMenu(self)
-        actions: list[tuple[str, Callable[[], None]]] = []
+        for label, _, enabled in actions:
+            act = menu.addAction(label)
+            act.setEnabled(enabled)
+
+        chosen = menu.exec(self._content_view.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        for label, handler, _ in actions:
+            if chosen.text() == label:
+                handler()
+                break
+
+    def _build_content_menu_actions(
+        self, entries: list[FileEntry]
+    ) -> list[tuple[str, Callable[[], None], bool]]:
+        """构造文件列表右键菜单 actions（Stage 5 Task 1 抽取便于测试）。
+
+        返回 (label, handler, enabled) 三元组列表。
+        enabled=False 时菜单项灰显。
+        """
+        # actions 元素：(label, handler, enabled)
+        actions: list[tuple[str, Callable[[], None], bool]] = []
 
         # 创建 Mod 组：仅整理模式 + 单选 + 文件（非目录）+ 注入了 ModGroupService
         if (
@@ -965,7 +991,7 @@ class MainWindow(QMainWindow):
             and not entries[0].is_dir
         ):
             actions.append(
-                (ui.MENU_CREATE_MOD_GROUP, lambda: self._on_create_mod_group(entries[0]))
+                (ui.MENU_CREATE_MOD_GROUP, lambda: self._on_create_mod_group(entries[0]), True)
             )
 
         # 加入装配：仅整理模式 + 单选 + 文件（非目录）+ 装配面板已绑定 Mod 组
@@ -979,7 +1005,11 @@ class MainWindow(QMainWindow):
             and not entries[0].is_dir
         ):
             actions.append(
-                (ui.MENU_ADD_TO_ASSEMBLY, lambda: self._on_assembly_add_file(Path(entries[0].path)))
+                (
+                    ui.MENU_ADD_TO_ASSEMBLY,
+                    lambda: self._on_assembly_add_file(Path(entries[0].path)),
+                    True,
+                )
             )
 
         # 标记/取消标记
@@ -987,11 +1017,15 @@ class MainWindow(QMainWindow):
             entry = entries[0]
             if entry.content_unit is None:
                 actions.append(
-                    (ui.MENU_MARK_CONTENT_UNIT, lambda: self._on_mark_content_unit(entry))
+                    (ui.MENU_MARK_CONTENT_UNIT, lambda: self._on_mark_content_unit(entry), True)
                 )
             else:
                 actions.append(
-                    (ui.MENU_UNMARK_CONTENT_UNIT, lambda: self._on_unmark_content_unit(entry))
+                    (
+                        ui.MENU_UNMARK_CONTENT_UNIT,
+                        lambda: self._on_unmark_content_unit(entry),
+                        True,
+                    )
                 )
         else:
             # 多选：始终显示批量标记（已标记项在 handler 内跳过）
@@ -999,6 +1033,7 @@ class MainWindow(QMainWindow):
                 (
                     ui.MENU_BATCH_MARK_CONTENT_UNIT,
                     lambda: self._on_batch_mark_content_unit(entries),
+                    True,
                 )
             )
 
@@ -1006,23 +1041,27 @@ class MainWindow(QMainWindow):
         if self._tag_service is not None and len(entries) > 1:
             has_any_unit = any(e.content_unit is not None for e in entries)
             if has_any_unit:
-                actions.append((ui.MENU_BATCH_TAG, lambda: self._on_batch_tag(entries)))
+                actions.append((ui.MENU_BATCH_TAG, lambda: self._on_batch_tag(entries), True))
+
+        # 快速设置封面（Stage 5 Task 1）：单选已标记文件夹内容单元
+        if len(entries) == 1 and entries[0].content_unit is not None:
+            entry = entries[0]
+            # 仅文件夹内容单元可用；压缩包内容单元灰显
+            enabled = entry.is_dir
+            actions.append(
+                (
+                    ui.MENU_QUICK_SET_COVER,
+                    lambda: self._on_quick_set_cover(entry.content_unit.id),
+                    enabled,
+                )
+            )
 
         # 复制路径（始终）
         actions.append(
-            (ui.CONTEXT_MENU_COPY_PATH, lambda: self._copy_path_to_clipboard(entries[0].path))
+            (ui.CONTEXT_MENU_COPY_PATH, lambda: self._copy_path_to_clipboard(entries[0].path), True)
         )
 
-        for label, _ in actions:
-            menu.addAction(label)
-
-        chosen = menu.exec(self._content_view.viewport().mapToGlobal(pos))
-        if chosen is None:
-            return
-        for label, handler in actions:
-            if chosen.text() == label:
-                handler()
-                break
+        return actions
 
     def _copy_path_to_clipboard(self, path: str) -> None:
         """复制路径到剪贴板。"""
@@ -1030,6 +1069,36 @@ class MainWindow(QMainWindow):
         if clipboard is not None:
             clipboard.setText(path)
         self.statusBar().showMessage(ui.CONTEXT_MENU_COPY_PATH_OK, 3000)
+
+    def _on_quick_set_cover(self, unit_id: str) -> None:
+        """快速设置封面（Stage 5 Task 1）。
+
+        调用 ContentService.quick_set_cover 取目录内第一张图设为封面。
+        根据返回值在状态栏反馈结果，无图片或已有封面均不报错。
+        """
+        if self._content_service is None:
+            return
+        try:
+            ok = self._content_service.quick_set_cover(unit_id)
+        except Exception as e:  # noqa: BLE001
+            self._handle_service_error(e, "快速设置封面失败")
+            return
+
+        if ok:
+            self._commit()
+            self.statusBar().showMessage(ui.MENU_QUICK_SET_COVER_OK, 3000)
+        else:
+            # quick_set_cover 返回 False 的语义：无图片或已有封面
+            # 需要区分两种情况给用户更精准的反馈
+            unit = self._content_service.get_by_id(unit_id)
+            if unit is None:
+                return
+            if unit.cover_path:
+                # 已有封面，未覆盖
+                self.statusBar().showMessage(ui.MENU_QUICK_SET_COVER_ALREADY_SET, 3000)
+            else:
+                # 无图片
+                self.statusBar().showMessage(ui.MENU_QUICK_SET_COVER_NO_IMAGE, 3000)
 
     def _on_create_mod_group(self, entry: FileEntry) -> None:
         """创建 Mod 组：弹出对话框选择/编辑名称，调用 ModGroupService。"""

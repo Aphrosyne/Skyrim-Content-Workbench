@@ -647,6 +647,9 @@ class _FakeMenuAction:
     def text(self) -> str:  # noqa: D401 (Qt 命名)
         return self._text
 
+    def setEnabled(self, enabled: bool) -> None:  # noqa: ANN001 (Qt 签名)
+        """no-op：生产代码调用 act.setEnabled(enabled)，测试中忽略。"""
+
 
 class _FakeMenu:
     """模拟 QMenu：捕获 addAction 调用，exec 返回匹配目标标签的 action。

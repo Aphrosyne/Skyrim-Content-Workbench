@@ -10,6 +10,34 @@
 
 ---
 
+## [0.30.2] - 2026-07-29
+
+Stage 5 Task 0 扩展：手动触发的快速设置封面功能
+
+为 Stage 5 Task 1（大图卡片视图）做铺垫，实现标记文件夹内容单元时自动录入封面，以及右键快速设置封面入口。放弃原方案 D（扫描时自动录入封面，依赖同名匹配，语义复杂），改用纯手动触发方案：仅在用户显式标记文件夹或主动右键「快速设置封面」时触发，不扫描、不匹配、不覆盖已有手动封面。schema_version 维持 6，无数据库迁移。
+
+**新增功能**
+
+- [content_service.py](src/application/content_service.py) `mark_as_content_unit` 标记文件夹后自动调用 `_auto_set_cover_for_folder_unit`：扫描目录顶层图片（jpg/png/webp/gif/bmp），取文件名升序第一张设为 `cover_path`，触发缩略图后台生成。无图静默跳过，已有封面不覆盖。
+- [content_service.py](src/application/content_service.py) 新增 `quick_set_cover(unit_id)` 方法：右键入口复用同一逻辑，仅对文件夹内容单元生效，压缩包单元返回 False。
+- [main_window.py](src/app/main_window.py) 文件列表右键菜单新增「快速设置封面」项，单选已标记内容单元时显示；压缩包内容单元灰显（`enabled=False`）。抽取 `_build_content_menu_actions` 方法便于测试。
+- [ui_constants.py](src/app/ui_constants.py) 新增 `MENU_QUICK_SET_COVER` 等 4 个常量。
+
+**测试**
+
+- 新增 2 个测试文件：`tests/test_content_service_quick_set_cover.py`（8 个用例）+ `tests/test_main_window_quick_set_cover_menu.py`（5 个用例）
+- 修复 6 个回归测试：
+  - `test_main_window_assembly.py`：`_FakeMenuAction` 补 `setEnabled` no-op（生产代码新增 `act.setEnabled(enabled)` 调用）
+  - `test_main_window_metadata.py`：两个内嵌 `FakeMenu.addAction` 返回带 `setEnabled` 的 `_FakeAction`
+  - `test_metadata_panel.py`：`unit_with_tags` fixture 创建单元时触发自动录入封面，调整 `cover_path_text()` 断言为 `"cover.jpg"`
+- 全量回归：1007 passed, 3 skipped, ruff check + format 全通过
+
+**文档**
+
+- 更新 [docs/roadmap.md](docs/roadmap.md) Task 1 章节：补充「依赖本 Task 0 扩展的自动录入封面已就绪」的备注
+
+---
+
 ## [0.30.1] - 2026-07-29
 
 Stage 5 Task 0：前置技术债修复

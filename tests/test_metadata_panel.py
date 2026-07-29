@@ -148,8 +148,8 @@ def test_panel_load_unit_loads_cover_preview(qapp, unit_with_tags):
     panel = MetadataPanel(content_service, tag_service)
 
     panel.load_unit(unit)
-    # unit 刚创建无 cover_path
-    assert panel.cover_path_text() == ""
+    # mark_as_content_unit 自动录入目录下第一张图作为封面
+    assert panel.cover_path_text() == "cover.jpg"
 
 
 def test_panel_load_none_clears(qapp, unit_with_tags):
@@ -495,10 +495,10 @@ def test_set_cover_path_updates_preview(qapp, unit_with_tags):
     content_service, tag_service, _, _, unit, *_ = unit_with_tags
     panel = MetadataPanel(content_service, tag_service)
     panel.load_unit(unit)
-    assert panel.cover_path_text() == ""
+    assert panel.cover_path_text() == "cover.jpg"  # mark 时自动录入
 
-    panel.set_cover_path("cover.jpg")
-    assert panel.cover_path_text() == "cover.jpg"
+    panel.set_cover_path("preview.png")
+    assert panel.cover_path_text() == "preview.png"
 
 
 def test_clear_cover_button_resets_preview(qapp, unit_with_tags):

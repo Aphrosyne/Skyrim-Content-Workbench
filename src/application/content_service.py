@@ -270,10 +270,59 @@ class ContentService:
         if existing is not None:
             # existing.status == "unmarked" → 恢复为 unorganized
             updated = replace(existing, status="unorganized", updated_at=self._now())
-            return self._repo.update(updated)
+            result = self._repo.update(updated)
+        else:
+            # 默认 title=path.name（文件名或文件夹名），避免元数据面板显示"（无标题）"
+            result = self.create_content_unit(path, title=path.name)
 
-        # 默认 title=path.name（文件名或文件夹名），避免元数据面板显示"（无标题）"
-        return self.create_content_unit(path, title=path.name)
+        # Stage 5 Task 1：标记文件夹为内容单元时自动录入封面
+        # 仅文件夹内容单元 + cover_path 为空时尝试，无图片不报错
+        if is_dir:
+            return self._auto_set_cover_for_folder_unit(result)
+        return result
+
+    def _auto_set_cover_for_folder_unit(self, unit: ContentUnit) -> ContentUnit:
+        """文件夹内容单元自动录入封面（Stage 5 Task 1）。
+
+        触发场景：mark_as_content_unit 标记文件夹后。
+        规则：
+        - 仅当 unit.path 是目录且 cover_path 为空时尝试
+        - 取 list_cover_candidates 第一张图片（已按文件名升序排序）
+        - 写入 cover_path（相对路径），触发缩略图后台生成
+        - 无图片 / 路径不可访问 → 静默跳过，不报错，返回原 unit
+        - 已有手动封面 → 不覆盖（cover_path 非空时不进入此分支），返回原 unit
+
+        在 mark_as_content_unit 的事务内调用，写操作原子性由 UoW 保证。
+        返回更新后的 unit（无更新时返回原 unit）。
+        """
+        if unit.cover_path:
+            return unit  # 已有封面，不覆盖
+        try:
+            if not Path(unit.path).is_dir():
+                return unit
+        except OSError:
+            return unit  # 路径不可访问，静默跳过
+
+        candidates = self.list_cover_candidates(unit.path)
+        if not candidates:
+            return unit  # 无图片，静默跳过
+
+        first = candidates[0]
+        rel_path = first.name  # list_cover_candidates 扫描 unit.path 顶层，name 即相对路径
+        try:
+            updated = replace(unit, cover_path=rel_path, updated_at=self._now())
+            result = self._repo.update(updated)
+        except (RepositoryError, sqlite3.Error):  # noqa: BLE001
+            logger.exception("自动录入封面失败：unit_id=%s", unit.id)
+            return unit  # 失败不阻断 mark 流程，返回原 unit
+
+        # 触发缩略图后台生成（与 update_metadata 行为一致）
+        if self._thumbnail_service is not None:
+            try:
+                self._thumbnail_service.invalidate(unit.id)
+            except Exception:  # noqa: BLE001
+                logger.exception("invalidate 缩略图缓存失败：unit_id=%s", unit.id)
+        return result
 
     def unmark_content_unit(self, unit_id: str) -> None:
         """取消内容单元标记。
@@ -553,6 +602,46 @@ class ContentService:
         # 按文件名升序（不区分大小写）
         candidates.sort(key=lambda p: (p.name.lower(), p.name))
         return candidates
+
+    def quick_set_cover(self, unit_id: str) -> bool:
+        """快速设置封面（Stage 5 Task 1）。
+
+        取内容单元目录下第一张图片（list_cover_candidates 已排序）设为封面。
+        若已有手动封面则不覆盖。仅文件夹内容单元可用。
+
+        Args:
+            unit_id: 内容单元 ID。
+
+        Returns:
+            True 表示设置成功；False 表示无可用图片或非文件夹内容单元（不报错）。
+
+        Raises:
+            ContentUnitNotFoundError: unit_id 不存在。
+        """
+        unit = self._repo.get_by_id(unit_id)
+        if unit is None:
+            raise ContentUnitNotFoundError(f"内容单元不存在：{unit_id}")
+
+        # 仅文件夹内容单元可用；压缩包内容单元直接跳过
+        try:
+            if not Path(unit.path).is_dir():
+                return False
+        except OSError:
+            return False
+
+        # 已有手动封面不覆盖
+        if unit.cover_path:
+            return False
+
+        candidates = self.list_cover_candidates(unit.path)
+        if not candidates:
+            return False  # 无图片，不报错
+
+        first = candidates[0]
+        rel_path = first.name
+        # 走 update_metadata 以复用 cover_path 校验 + 缩略图 invalidate 链路
+        self.update_metadata(unit_id, cover_path=rel_path)
+        return True
 
     def _build_entry(self, child: Path) -> FileEntry | None:
         """从单个 Path 构建 FileEntry（单次精确查询 content_unit）。跳过符号链接。"""

@@ -53,6 +53,13 @@ from infrastructure.repositories.tag_category import (  # noqa: E402
 )
 
 
+class _FakeAction:
+    """模拟 QAction：仅提供 setEnabled no-op，供 FakeMenu.addAction 返回。"""
+
+    def setEnabled(self, enabled: bool) -> None:  # noqa: ANN001 (Qt 签名)
+        pass
+
+
 def _make_mod_tree_with_units(tmp_path: Path) -> Path:
     """构造含多个内容单元文件的测试目录树。
 
@@ -452,6 +459,7 @@ def test_batch_tag_menu_appears_for_multi_selection(qapp, main_window_with_tags)
 
         def addAction(self, label):
             self._actions.append(label)
+            return _FakeAction()
 
         def exec(self, *args, **kwargs):
             menu_items.extend(self._actions)
@@ -489,6 +497,7 @@ def test_batch_tag_menu_not_appears_for_single_selection(qapp, main_window_with_
 
         def addAction(self, label):
             self._actions.append(label)
+            return _FakeAction()
 
         def exec(self, *args, **kwargs):
             menu_items.extend(self._actions)
