@@ -44,8 +44,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCompleter,
@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -72,6 +73,82 @@ from application.tag_service import TagService
 from domain.models import ContentUnit, Tag
 
 logger = logging.getLogger(__name__)
+
+
+class _ResizableImageLabel(QWidget):
+    """按父容器宽度等比缩放、高度自适应、无反馈循环的图片控件（Task 1b 修正）。
+
+    根本原理（社区验证 + Qt 文档确认）：
+    - **绝不在 resizeEvent 里调用 setFixedHeight/setMinimumHeight/setMaximumHeight**
+      （那会触发"改尺寸约束→布局重算→resize→再改约束"的正反馈循环，横向图尤其严重）
+    - 通过 hasHeightForWidth/heightForWidth 协议让布局系统按宽度计算高度
+    - paintEvent 里按当前 size 用 KeepAspectRatio 居中绘制，不改任何约束
+
+    布局交互：
+    - 水平 Expanding 撑满右栏宽度
+    - 高度由 heightForWidth(width) 决定，不会反向影响宽度，回路断开
+    - setMinimumSize(1,1) 允许布局缩小控件，否则 sizeHint 会撑住布局不让缩
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._pixmap: QPixmap | None = None
+        # 允许收缩到 1x1，否则 sizeHint（pixmap 原尺寸）会撑住布局不让缩小
+        self.setMinimumSize(1, 1)
+        # 水平 Expanding 撑满右栏宽度，垂直 Preferred（高度按 heightForWidth 计算）
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 (Qt 命名)
+        """声明高度依赖宽度，让布局调用 heightForWidth 计算高度。"""
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 (Qt 命名)
+        """按给定宽度计算图片显示高度（限制最大 512）。
+
+        无图时返回占位高度（避免完全塌陷看不到边框）。
+        """
+        if self._pixmap is None or self._pixmap.isNull() or width <= 0:
+            return ui.COVER_PREVIEW_PLACEHOLDER_HEIGHT
+        ow = self._pixmap.width()
+        oh = self._pixmap.height()
+        if ow <= 0:
+            return ui.COVER_PREVIEW_PLACEHOLDER_HEIGHT
+        h = int(oh * width / ow)
+        # 限制最大高度
+        if h > ui.COVER_PREVIEW_MAX_HEIGHT:
+            h = ui.COVER_PREVIEW_MAX_HEIGHT
+        return h
+
+    def sizeHint(self) -> QSize:  # noqa: N802 (Qt 命名)
+        """提供合理的首选尺寸（真正的高度由 heightForWidth 决定）。"""
+        if self._pixmap is None or self._pixmap.isNull():
+            return QSize(ui.COVER_PREVIEW_DEFAULT_WIDTH, ui.COVER_PREVIEW_PLACEHOLDER_HEIGHT)
+        return self._pixmap.size()
+
+    def set_original_pixmap(self, pixmap: QPixmap | None) -> None:
+        """设置原始 pixmap，触发布局重算高度。"""
+        self._pixmap = pixmap
+        # pixmap 变化 → sizeHint/heightForWidth 变化 → 通知布局重算
+        self.updateGeometry()
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        """按当前控件尺寸等比缩放并居中绘制 pixmap。"""
+        super().paintEvent(event)
+        if self._pixmap is None or self._pixmap.isNull():
+            return
+        # 按当前控件尺寸缩放，保持宽高比
+        scaled = self._pixmap.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        painter = QPainter(self)
+        # 居中绘制
+        x = (self.width() - scaled.width()) // 2
+        y = (self.height() - scaled.height()) // 2
+        painter.drawPixmap(x, y, scaled)
+
 
 # chip 列表 item 中存储 Tag 实体的角色
 _ROLE_TAG = Qt.UserRole
@@ -225,14 +302,11 @@ class MetadataPanel(QWidget):
         layout.addLayout(cover_row)
 
         cover_preview_row = QHBoxLayout()
-        self._cover_preview = QLabel(ui.METADATA_PANEL_COVER_PREVIEW_PLACEHOLDER)
-        # Task 1b：右栏大封面预览，从 120×120 改为 256×256
-        # 利用 512 档缓存缩小显示（若可用），质量优于直接用 256 档
-        self._cover_preview.setFixedSize(256, 256)
-        self._cover_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._cover_preview.setStyleSheet("border: 1px solid #ccc; color: #999;")
+        self._cover_preview = _ResizableImageLabel()
+        # Task 1b 修正：统一加载原图，宽度跟随右栏自适应（Expanding 撑满右栏）
+        # 无图时显示边框占位，有图时 paintEvent 绘制
+        self._cover_preview.setStyleSheet("border: 1px solid #ccc; background: #fafafa;")
         cover_preview_row.addWidget(self._cover_preview)
-        cover_preview_row.addStretch(1)
         layout.addLayout(cover_preview_row)
 
         cover_button_row = QHBoxLayout()
@@ -315,8 +389,7 @@ class MetadataPanel(QWidget):
         self._preset_list.clear()
         self._preset_empty_hint.setVisible(False)
         self._cover_value.setText(ui.METADATA_PANEL_COVER_NONE)
-        self._cover_preview.setText(ui.METADATA_PANEL_COVER_PREVIEW_PLACEHOLDER)
-        self._cover_preview.setPixmap(QPixmap())  # 清空图片
+        self._cover_preview.set_original_pixmap(None)  # 清空图片
 
         self._set_form_enabled(False)
 
@@ -475,37 +548,23 @@ class MetadataPanel(QWidget):
     def _refresh_cover_preview(self, cover_path: str | None) -> None:
         """刷新封面预览（基于 current_unit.path + cover_path）。
 
-        Task 1b：右栏大封面预览，从 120×120 改为 256×256。
-        优先加载原图（若有），缩放到 256×256 显示。
+        Task 1b 修正：统一加载原图，宽度跟随右栏自适应（_ResizableImageLabel）。
+        无图/加载失败 → set_original_pixmap(None)，控件显示占位边框。
         """
-        if self._current_unit is None:
+        if self._current_unit is None or not cover_path:
             self._cover_value.setText(ui.METADATA_PANEL_COVER_NONE)
-            self._cover_preview.setText(ui.METADATA_PANEL_COVER_PREVIEW_PLACEHOLDER)
-            self._cover_preview.setPixmap(QPixmap())
-            return
-
-        if not cover_path:
-            self._cover_value.setText(ui.METADATA_PANEL_COVER_NONE)
-            self._cover_preview.setText(ui.METADATA_PANEL_COVER_PREVIEW_PLACEHOLDER)
-            self._cover_preview.setPixmap(QPixmap())
+            self._cover_preview.set_original_pixmap(None)
             return
 
         # 显示相对路径
         self._cover_value.setText(cover_path)
-        # 加载预览图（按 256x256 缩放保持比例，Task 1b）
+        # 加载原图（_ResizableImageLabel 负责按宽度缩放绘制）
         full_path = Path(self._current_unit.path) / cover_path
         pixmap = QPixmap(str(full_path))
-        if not pixmap.isNull():
-            scaled = pixmap.scaled(
-                256,
-                256,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self._cover_preview.setPixmap(scaled)
-            self._cover_preview.setText("")
-        else:
-            self._cover_preview.setText(ui.METADATA_PANEL_COVER_PREVIEW_PLACEHOLDER)
+        if pixmap.isNull():
+            self._cover_preview.set_original_pixmap(None)
+            return
+        self._cover_preview.set_original_pixmap(pixmap)
 
     # --- 事件处理 ---
 

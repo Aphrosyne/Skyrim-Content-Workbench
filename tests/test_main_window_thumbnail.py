@@ -154,12 +154,12 @@ def test_coordinator_not_injected_degrades_to_standard_icons(qapp, tmp_path):
     assert window._thumbnail_coordinator is None  # noqa: SLF001
 
 
-def test_coordinator_injected_initializes_provider(env_with_coordinator):
-    """Task 1b：coordinator 注入 → 启动 + provider 注入到 CardListModel（不再是 FileListModel）。"""
+def test_coordinator_injected_starts_without_error(env_with_coordinator):
+    """Task 1b 修正：coordinator 注入 → 正常启动（UI 统一加载原图，不注入 provider）。"""
     window, coordinator, _, _ = env_with_coordinator
     assert window._thumbnail_coordinator is not None  # noqa: SLF001
-    # Task 1b：CardListModel 应已注入 provider（列表视图不再用封面缩略图）
-    assert window._card_list_model._thumbnail_provider is not None  # noqa: SLF001
+    # Task 1b 修正：CardListModel 不再持有 provider（直接加载原图）
+    assert not hasattr(window._card_list_model, "_thumbnail_provider")  # noqa: SLF001
 
 
 def test_close_event_calls_coordinator_shutdown(qapp, env_with_coordinator, monkeypatch):

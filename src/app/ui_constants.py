@@ -348,16 +348,15 @@ VIEW_SWITCH_CARD = "卡片"
 VIEW_SWITCH_LIST_TOOLTIP = "切换到详细列表视图（4 列：名称/类型/大小/修改日期）"
 VIEW_SWITCH_CARD_TOOLTIP = "切换到大图卡片视图（仅显示封面 + 名称）"
 ZOOM_SLIDER_LABEL = "缩放"
-ZOOM_SLIDER_TOOLTIP = "调整卡片图标尺寸（仅卡片视图生效，双击输入具体数值）"
-ZOOM_SLIDER_MIN = 128
-ZOOM_SLIDER_MAX = 512
-ZOOM_SLIDER_DEFAULT = 256
-ZOOM_SLIDER_SINGLE_STEP = 16
-ZOOM_SLIDER_PAGE_STEP = 64
+ZOOM_SLIDER_TOOLTIP = "选择卡片图标尺寸（仅卡片视图生效）"
+# Task 1b 修正：滑块改为下拉框预选尺寸，避免拖动时频繁重绘原图
+ZOOM_PRESET_SIZES = [96, 128, 160, 192, 224, 256]
+ZOOM_SLIDER_DEFAULT = 160
 
-# 滑块双击输入对话框（Task 1b）
-ZOOM_INPUT_DIALOG_TITLE = "缩放"
-ZOOM_INPUT_DIALOG_LABEL = "输入尺寸 (128-512):"
+# 右栏封面预览（Task 1b 修正：统一加载原图，宽度跟随右栏自适应）
+COVER_PREVIEW_DEFAULT_WIDTH = 256  # 初始宽度（resize 后跟随右栏）
+COVER_PREVIEW_MAX_HEIGHT = 512  # 最大高度（避免超长图占据整个右栏）
+COVER_PREVIEW_PLACEHOLDER_HEIGHT = 64  # 无图时占位高度（显示边框）
 
 # CardListModel 卡片名称 ToolTip 中内容单元状态文本（Stage 5 Task 1，Q6:B）
 CARD_TOOLTIP_CONTENT_UNIT_STATUS = "内容单元状态：{status}"

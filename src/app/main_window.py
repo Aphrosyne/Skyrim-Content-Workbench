@@ -43,7 +43,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QPoint, QSettings, QSize, Qt, QThread
-from PySide6.QtGui import QFontMetrics, QPixmap
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -55,7 +55,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QListView,
     QListWidget,
@@ -64,7 +63,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QSlider,
     QSplitter,
     QStackedWidget,
     QTableView,
@@ -122,28 +120,6 @@ VIEW_INDEX_CARD = 1
 
 # 详情区路径 / 元数据路径字段在 Elide 时保留的左右字符比例参考
 # 详情区第 2 行为路径，元数据面板第 2 行为路径（详见 _apply_elide）
-
-
-class ZoomSlider(QSlider):
-    """缩放滑块（Task 1b：支持双击输入具体数值）。
-
-    双击滑块弹出输入对话框，允许用户输入 128~512 范围内的具体数值。
-    """
-
-    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
-        if event.button() == Qt.LeftButton:
-            value, ok = QInputDialog.getInt(
-                self,
-                ui.ZOOM_INPUT_DIALOG_TITLE,
-                ui.ZOOM_INPUT_DIALOG_LABEL,
-                self.value(),
-                ui.ZOOM_SLIDER_MIN,
-                ui.ZOOM_SLIDER_MAX,
-                1,
-            )
-            if ok:
-                self.setValue(value)
-        super().mouseDoubleClickEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -216,40 +192,20 @@ class MainWindow(QMainWindow):
     def _init_thumbnail_coordinator(self) -> None:
         """初始化缩略图调度器并连接信号。
 
-        Task 1b：列表视图不再使用缩略图（改用 Qt 标准 icon），
-        仅 CardListModel 注入 provider（支持 size 参数）。
+        Task 1b 修正：UI 层统一加载原图，不再查询缓存。
+        Coordinator 保留启动（ContentService 标记内容单元时仍会生成缓存，供未来使用）。
         """
         if self._thumbnail_coordinator is None:
-            return  # 未注入 → 卡片视图退化为标准图标
+            return
         self._thumbnail_coordinator.start()
         self._thumbnail_coordinator.thumbnail_ready.connect(
             self._on_thumbnail_ready,
             Qt.QueuedConnection,  # noqa: UP037
         )
-        # Task 1b：注入 provider 到 CardListModel（支持 size 参数）
-        self._card_list_model.set_thumbnail_provider(self._card_thumbnail_provider)
-
-    def _card_thumbnail_provider(
-        self,
-        content_unit_id: str,
-        source_path: str,
-        size: int,
-    ) -> QPixmap | None:
-        """卡片视图缩略图查询回调（Task 1b：支持 size 参数）。
-
-        缓存命中同步返回 QPixmap，未命中投递后台生成。
-        """
-        if self._thumbnail_coordinator is None:
-            return None
-        return self._thumbnail_coordinator.request_thumbnail(
-            content_unit_id, Path(source_path), size=size
-        )
 
     def _on_thumbnail_ready(self, content_unit_id: str, size: int) -> None:
-        """后台缩略图生成完成：刷新对应行 DecorationRole。
-
-        Task 1b：通知 CardListModel 按指定档位刷新。
-        """
+        """后台缩略图生成完成回调（Task 1b 修正：UI 不走缓存，空实现保留兼容）。"""
+        # Task 1b 修正：CardListModel 直接加载原图，不再需要刷新缓存
         self._card_list_model.notify_thumbnail_ready(content_unit_id, size)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
@@ -499,22 +455,19 @@ class MainWindow(QMainWindow):
 
         view_switch_layout.addStretch(1)
 
-        # 缩放滑块（Stage 5 Task 1，Q3=A：纳入卡片缩放）
+        # 缩放下拉框（Task 1b 修正：滑块改为预选尺寸下拉框，避免拖动频繁重绘原图）
         zoom_label = QLabel(ui.ZOOM_SLIDER_LABEL)
         view_switch_layout.addWidget(zoom_label)
-        self._zoom_slider = ZoomSlider(Qt.Orientation.Horizontal)
-        self._zoom_slider.setMinimum(ui.ZOOM_SLIDER_MIN)
-        self._zoom_slider.setMaximum(ui.ZOOM_SLIDER_MAX)
-        self._zoom_slider.setValue(ui.ZOOM_SLIDER_DEFAULT)
-        self._zoom_slider.setSingleStep(ui.ZOOM_SLIDER_SINGLE_STEP)
-        self._zoom_slider.setPageStep(ui.ZOOM_SLIDER_PAGE_STEP)
-        self._zoom_slider.setToolTip(ui.ZOOM_SLIDER_TOOLTIP)
-        self._zoom_slider.setFixedWidth(120)
-        self._zoom_slider.valueChanged.connect(self._on_zoom_changed)
-        view_switch_layout.addWidget(self._zoom_slider)
-        self._zoom_value_label = QLabel(str(ui.ZOOM_SLIDER_DEFAULT))
-        self._zoom_value_label.setFixedWidth(32)
-        view_switch_layout.addWidget(self._zoom_value_label)
+        self._zoom_combo = QComboBox()
+        for size in ui.ZOOM_PRESET_SIZES:
+            self._zoom_combo.addItem(f"{size}", size)
+        # 设置默认值
+        default_index = ui.ZOOM_PRESET_SIZES.index(ui.ZOOM_SLIDER_DEFAULT)
+        self._zoom_combo.setCurrentIndex(default_index)
+        self._zoom_combo.setToolTip(ui.ZOOM_SLIDER_TOOLTIP)
+        self._zoom_combo.setFixedWidth(80)
+        self._zoom_combo.currentIndexChanged.connect(self._on_zoom_combo_changed)
+        view_switch_layout.addWidget(self._zoom_combo)
 
         content_layout.addWidget(self._view_switch_bar)
 
@@ -1030,12 +983,20 @@ class MainWindow(QMainWindow):
         """
         if view_index == self._current_view_index:
             return
-        # 记录当前选中条目的 path 集合
+        # 记录当前选中条目的 path 集合（从当前活动视图读取）
         selected_paths: set[str] = set()
-        sm = self._content_view.selectionModel()
+        current_view = (
+            self._card_view if self._current_view_index == VIEW_INDEX_CARD else self._content_view
+        )
+        current_model = (
+            self._card_list_model
+            if self._current_view_index == VIEW_INDEX_CARD
+            else self._content_list_model
+        )
+        sm = current_view.selectionModel()
         if sm is not None:
             for idx in sm.selectedRows():
-                entry = self._content_list_model.entry_at(idx.row())
+                entry = current_model.entry_at(idx.row())
                 if entry is not None:
                     selected_paths.add(entry.path)
         # 切换视图
@@ -1050,45 +1011,46 @@ class MainWindow(QMainWindow):
         if target_sm is not None and selected_paths:
             # 清除现有选中
             target_sm.clearSelection()
-            # 按 path 重新选中对应行
+            # 按 path 重新选中对应行（select 会自动触发 selectionChanged 信号）
+            # 注意：QTableView 多列场景必须用 Select | Rows 才能选中整行，
+            # 仅 Select 只选中 (row, 0) 单元格，selectedRows() 返回空。
             for row in range(target_model.rowCount()):
                 entry = target_model.entry_at(row) if hasattr(target_model, "entry_at") else None
                 if entry is not None and entry.path in selected_paths:
                     idx = target_model.index(row, 0)
-                    target_sm.select(idx, QItemSelectionModel.SelectionFlag.Select)
+                    target_sm.select(
+                        idx,
+                        QItemSelectionModel.SelectionFlag.Select
+                        | QItemSelectionModel.SelectionFlag.Rows,
+                    )
         # 持久化视图模式（Q1=A）
         view_mode = "card" if view_index == VIEW_INDEX_CARD else "list"
         self._qsettings.setValue(QSETTINGS_KEY_VIEW_MODE, view_mode)
 
-    def _on_zoom_changed(self, value: int) -> None:
-        """缩放滑块值变化：调整卡片图标尺寸并持久化。
+    def _on_zoom_combo_changed(self, index: int) -> None:
+        """缩放下拉框变化：应用缩放并持久化。"""
+        size = self._zoom_combo.itemData(index)
+        if not isinstance(size, int):
+            return
+        self._apply_zoom(size)
 
-        Q3=A：缩放纳入 Task 1。
-        1. setIconSize 让 QListView 调整图标显示区域
-        2. CardListModel.set_icon_size 强制按新尺寸重新渲染 pixmap
-           （解决 QIcon(small_pixmap) 不随 iconSize 放大的问题）
-        3. doItemsLayout 让卡片整体重排
-        """
+    def _apply_zoom(self, value: int) -> None:
+        """应用缩放值：调整卡片图标尺寸并持久化。"""
         self._card_icon_size = value
         self._card_view.setIconSize(QSize(value, value))
-        # 通知 CardListModel 按新 icon_size 重新渲染 pixmap（触发 dataChanged）
         self._card_list_model.set_icon_size(value)
-        # 强制重新布局，让卡片立即响应尺寸变化
         self._card_view.doItemsLayout()
-        self._zoom_value_label.setText(str(value))
-        # 持久化（Q1=A）
         self._qsettings.setValue(QSETTINGS_KEY_ZOOM, value)
 
     def _restore_view_state(self) -> None:
         """从 QSettings 恢复缩放值与视图模式（Q1=A）。"""
-        # 恢复缩放值
         zoom = self._qsettings.value(QSETTINGS_KEY_ZOOM, ui.ZOOM_SLIDER_DEFAULT, type=int)
-        if ui.ZOOM_SLIDER_MIN <= zoom <= ui.ZOOM_SLIDER_MAX:
-            self._zoom_slider.setValue(zoom)
+        if zoom in ui.ZOOM_PRESET_SIZES:
+            index = ui.ZOOM_PRESET_SIZES.index(zoom)
+            self._zoom_combo.setCurrentIndex(index)
             self._card_view.setIconSize(QSize(zoom, zoom))
-            self._card_list_model.set_icon_size(zoom)  # 同步 CardListModel 的 icon_size
-            self._card_view.doItemsLayout()  # 强制重排，确保恢复尺寸生效
-            self._zoom_value_label.setText(str(zoom))
+            self._card_list_model.set_icon_size(zoom)
+            self._card_view.doItemsLayout()
             self._card_icon_size = zoom
         # 恢复视图模式
         view_mode = self._qsettings.value(QSETTINGS_KEY_VIEW_MODE, "list", type=str)
@@ -2267,13 +2229,16 @@ class MainWindow(QMainWindow):
         """返回当前卡片图标尺寸（供测试）。"""
         return self._card_icon_size
 
-    def zoom_slider_value(self) -> int:
-        """返回缩放滑块当前值（供测试）。"""
-        return self._zoom_slider.value()
+    def zoom_combo_value(self) -> int:
+        """返回缩放下拉框当前值（供测试）。"""
+        return self._zoom_combo.currentData()
 
     def set_card_icon_size_for_test(self, size: int) -> None:
-        """测试辅助：直接设置卡片图标尺寸（绕过滑块，供测试）。"""
-        self._zoom_slider.setValue(size)  # 触发 valueChanged → _on_zoom_changed
+        """测试辅助：通过下拉框设置卡片图标尺寸。"""
+        if size not in ui.ZOOM_PRESET_SIZES:
+            return
+        index = ui.ZOOM_PRESET_SIZES.index(size)
+        self._zoom_combo.setCurrentIndex(index)  # 触发 currentIndexChanged → _on_zoom_combo_changed
 
     def switch_view_for_test(self, view_index: int) -> None:
         """测试辅助：切换视图（供测试）。"""

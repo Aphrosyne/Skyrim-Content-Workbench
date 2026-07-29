@@ -501,6 +501,22 @@ def test_set_cover_path_updates_preview(qapp, unit_with_tags):
     assert panel.cover_path_text() == "preview.png"
 
 
+def test_cover_preview_uses_resizable_label(qapp, unit_with_tags):
+    """Task 1b 修正：封面预览使用 _ResizableImageLabel，统一加载原图。
+
+    验证：_cover_preview 为 _ResizableImageLabel 实例（支持宽度自适应缩放）。
+    注意：fixture 中 cover.jpg 是假图片数据，pixmap 为 null，仅验证控件类型。
+    """
+    content_service, tag_service, _, _, unit, *_ = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+
+    # _cover_preview 应为 _ResizableImageLabel 实例
+    from app.metadata_panel import _ResizableImageLabel
+
+    assert isinstance(panel._cover_preview, _ResizableImageLabel)  # noqa: SLF001
+
+
 def test_clear_cover_button_resets_preview(qapp, unit_with_tags):
     """点击「清除封面」→ cover_path_text 返回空字符串。"""
     content_service, tag_service, _, _, unit, *_ = unit_with_tags

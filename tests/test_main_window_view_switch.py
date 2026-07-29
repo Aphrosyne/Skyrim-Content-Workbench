@@ -198,28 +198,32 @@ def test_card_tooltip_includes_status(qapp, main_window_env) -> None:
     assert "内容单元状态" in tooltip  # Q6:B
 
 
-def test_zoom_slider_changes_card_icon_size(main_window_env) -> None:
-    """缩放滑块改变卡片图标尺寸（Task 1b：范围 128~512，默认 256）。"""
+def test_zoom_combo_changes_card_icon_size(main_window_env) -> None:
+    """缩放下拉框改变卡片图标尺寸（Task 1b 修正：预选尺寸，默认 160）。"""
     window, _, _ = main_window_env
-    # 默认 256
+    # 默认 160
+    assert window.card_icon_size() == 160
+    assert window.zoom_combo_value() == 160
+    # 改为 96
+    window.set_card_icon_size_for_test(96)
+    assert window.card_icon_size() == 96
+    assert window.zoom_combo_value() == 96
+    # 改为 256
+    window.set_card_icon_size_for_test(256)
     assert window.card_icon_size() == 256
-    # 改为 128
-    window.set_card_icon_size_for_test(128)
-    assert window.card_icon_size() == 128
-    assert window.zoom_slider_value() == 128
-    # 改为 512
-    window.set_card_icon_size_for_test(512)
-    assert window.card_icon_size() == 512
 
 
-def test_zoom_slider_clamped_to_range(main_window_env) -> None:
-    """缩放值在有效范围内（Task 1b：128~512）。"""
+def test_zoom_combo_only_accepts_preset_sizes(main_window_env) -> None:
+    """Task 1b 修正：下拉框仅接受预选尺寸，非预选值无效。"""
     window, _, _ = main_window_env
-    # 测试边界值
-    window.set_card_icon_size_for_test(128)
-    assert window.card_icon_size() == 128
-    window.set_card_icon_size_for_test(512)
-    assert window.card_icon_size() == 512
+    # 非预选值（如 100）→ 无效，不改变
+    window.set_card_icon_size_for_test(100)
+    assert window.card_icon_size() == 160  # 保持默认
+    # 边界值
+    window.set_card_icon_size_for_test(96)
+    assert window.card_icon_size() == 96
+    window.set_card_icon_size_for_test(256)
+    assert window.card_icon_size() == 256
 
 
 def test_view_switch_bar_visible_in_browse_mode(main_window_env) -> None:
@@ -255,7 +259,7 @@ def test_view_switch_bar_restored_in_browse_mode(qapp, main_window_env) -> None:
 
 
 def test_selection_preserved_across_view_switch(qapp, main_window_env) -> None:
-    """选中状态跨视图保持（用 entry.path 匹配，Q4=A）。"""
+    """选中状态跨视图保持：列表 → 卡片（用 entry.path 匹配，Q4=A）。"""
 
     window, _, _ = main_window_env
     _select_root(qapp, window)
@@ -281,6 +285,44 @@ def test_selection_preserved_across_view_switch(qapp, main_window_env) -> None:
     card_entry = window.card_list_model().entry_at(selected[0].row())
     assert card_entry is not None
     assert card_entry.name == "readme.txt"
+
+
+def test_selection_preserved_card_to_list(qapp, main_window_env) -> None:
+    """选中状态跨视图保持：卡片 → 列表（Q4=A 回归）。
+
+    回归场景：原实现从固定列表视图读取选中条目，导致卡片视图选中切回列表时
+    选中丢失。修复后从当前活动视图读取选中 path，再在新视图按 path 重新选中。
+    """
+    window, _, _ = main_window_env
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    # 先切到卡片视图
+    window.switch_view_for_test(VIEW_INDEX_CARD)
+    qapp.processEvents()
+
+    # 在卡片视图中选中 readme.txt
+    idx_row = _find_entry_index(window, "readme.txt")
+    card_model = window.card_list_model()
+    model_idx = card_model.index(idx_row, 0)
+    window._card_view.setCurrentIndex(model_idx)  # noqa: SLF001
+    qapp.processEvents()
+    # 验证卡片视图确实选中了
+    card_sm = window._card_view.selectionModel()  # noqa: SLF001
+    card_selected = card_sm.selectedRows()
+    assert len(card_selected) == 1, f"卡片视图选中失败：{len(card_selected)}"
+
+    # 切回列表视图
+    window.switch_view_for_test(VIEW_INDEX_LIST)
+    qapp.processEvents()
+
+    # 列表视图中对应条目应被选中
+    list_sm = window._content_view.selectionModel()  # noqa: SLF001
+    list_selected = list_sm.selectedRows()
+    assert len(list_selected) >= 1, "列表视图选中为空，卡片→列表选中状态未保持"
+    list_entry = window._content_list_model.entry_at(list_selected[0].row())  # noqa: SLF001
+    assert list_entry is not None
+    assert list_entry.name == "readme.txt"
 
 
 def test_card_list_model_shares_data_with_file_list_model(qapp, main_window_env) -> None:

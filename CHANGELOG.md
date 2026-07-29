@@ -8,6 +8,16 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### 修复：卡片→列表视图切换选中状态丢失（Task 1b 回归修复）
+
+**问题**：v0.33.0 Task 1b 验收时漏测卡片→列表方向。原实现 `_switch_view` 中 `target_sm.select(idx, SelectionFlag.Select)` 仅选中 `(row, 0)` 单元格，QTableView 多列场景下 `selectedRows()` 返回空（需要整行被选中才算），导致从卡片视图选中切回列表视图时选中丢失。列表→卡片方向因 QListView 单列而侥幸通过。
+
+**根因**：`QItemSelectionModel.select()` 在 `SelectRows` 行为下，程序化选中需要显式附加 `Rows` flag 才能选中整行；仅 `Select` 只选中单元格。
+
+**修复**：[main_window.py](src/app/main_window.py) `_switch_view` 中 `target_sm.select()` 改用 `SelectionFlag.Select | SelectionFlag.Rows`，确保 QTableView / QListView 均整行选中。
+
+**测试**：新增 `test_selection_preserved_card_to_list`（tests/test_main_window_view_switch.py），覆盖卡片→列表方向选中保持。全量回归：1055 passed, 3 skipped, ruff 全通过。
+
 ---
 
 ## [0.33.0] - 2026-07-29
