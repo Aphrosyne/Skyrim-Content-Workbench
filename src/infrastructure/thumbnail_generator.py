@@ -3,8 +3,8 @@
 使用 Pillow 只读加载源图，缩放并应用圆角，写入应用缓存目录。
 不修改、不压缩、不覆盖原始图片。
 
-输出格式：PNG（支持透明，与圆角兼容）。
-输出尺寸：调用方指定（默认 64x64，spec §9「列表模式下小图标」）。
+输出格式：WebP（Task 1a：相比 PNG 节省约 65% 磁盘占用，Qt6/Pillow 均原生支持）。
+输出尺寸：调用方指定（默认 256x256，Task 1a 卡片视图基础档位）。
 保持宽高比缩放，不足部分透明填充。
 
 异常分类（供 ThumbnailService 转换为 status）：
@@ -18,7 +18,7 @@ JPG / JPEG / PNG / WEBP / GIF / BMP / TIF / TIFF / ICO
 约束：
 - 仅使用 PIL.Image 打开源图（只读）。
 - 不读取压缩包内部内容。
-- 输出文件命名：{content_unit_id}.png（spec §9 / architecture.md §9）。
+- 输出文件命名：{content_unit_id}_{size}.webp（Task 1a：多档缓存）。
 """
 
 from __future__ import annotations
@@ -37,6 +37,9 @@ SUPPORTED_EXTENSIONS = frozenset(
 
 # 圆角半径占尺寸的比例
 _CORNER_RADIUS_RATIO = 0.18
+
+# WebP 编码质量（Task 1a：质量=90，体积/质量平衡）
+_WEBP_QUALITY = 90
 
 
 class ThumbnailSourceNotFoundError(FileNotFoundError):
@@ -81,7 +84,7 @@ def _apply_rounded_corners(img: Image.Image, size: int) -> Image.Image:
 def generate_thumbnail(
     source_path: Path,
     cache_path: Path,
-    size: int = 64,
+    size: int = 256,
 ) -> None:
     """从源图生成缩略图并写入 cache_path。
 
@@ -90,8 +93,8 @@ def generate_thumbnail(
     - Pillow 无法解码 → 抛 ThumbnailSourceCorruptError
     - 其他异常向上传播
 
-    输出 PNG 格式，应用圆角遮罩（Q2: C），保持宽高比缩放并居中。
-    不修改源图（仅只读打开 + stat）。
+    输出 WebP 格式（quality=90），应用圆角遮罩（Q2: C），
+    保持宽高比缩放并居中。不修改源图（仅只读打开 + stat）。
 
     若 cache_path 已存在则覆盖。
     """
@@ -123,8 +126,8 @@ def generate_thumbnail(
 
     # 确保输出目录存在
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    # 保存为 PNG（保留透明通道）
-    thumb.save(cache_path, format="PNG")
+    # 保存为 WebP（保留透明通道，quality=90）
+    thumb.save(cache_path, format="WEBP", quality=_WEBP_QUALITY)
 
 
 def get_source_signature(source_path: Path) -> tuple[int, float]:

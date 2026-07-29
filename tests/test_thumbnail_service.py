@@ -1,4 +1,4 @@
-"""ThumbnailService 单元测试（spec §9 / Q8: B GC）。"""
+"""ThumbnailService 单元测试（spec §9 / Q8: B GC / Task 1a 多档缓存）。"""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def service(cache_repo, content_unit_repo, thumbnails_dir, unit_u1) -> Thumbnail
         cache_repo=cache_repo,
         content_unit_repo=content_unit_repo,
         thumbnails_dir=thumbnails_dir,
-        size=64,
+        size=256,
     )
 
 
@@ -69,10 +69,7 @@ def jpg_source(tmp_path: Path) -> Path:
 def unit_with_cover(
     unit_u1, content_unit_repo, db_connection, tmp_path
 ) -> tuple[ContentUnit, Path]:
-    """基于 unit_u1 添加封面：创建封面文件并更新 cover_path。
-
-    使用 unit_u1 作为基础以避免主键冲突（unit_u1 已创建 id='u1'）。
-    """
+    """基于 unit_u1 添加封面：创建封面文件并更新 cover_path。"""
     unit_dir = Path(unit_u1.path)
     unit_dir.mkdir(parents=True, exist_ok=True)
     cover_path = unit_dir / "cover.jpg"
@@ -100,89 +97,73 @@ def unit_with_cover(
 
 def test_get_cache_miss_when_no_record(service, jpg_source):
     """无缓存记录 → 返回 None。"""
-    result = service.get_cache("u1", jpg_source)
+    result = service.get_cache("u1", jpg_source, size=256)
     assert result is None
 
 
-def test_get_cache_hit_returns_path(service, jpg_source, cache_repo):
-    """缓存命中 → 返回 PNG 路径。
-
-    Stage 4.5 M19 修正：原测试无 assert 且 mtime 硬编码与实际文件不匹配，
-    导致永远"通过"但未验证任何东西。现使用动态 mtime + 明确 assert。
-    """
+def _make_valid_cache_record(cache_repo, unit_id: str, source_path: Path, size: int = 256) -> None:
+    """构造一个"有效"的缓存记录（size/mtime 匹配实际文件）。"""
     from datetime import UTC, datetime
 
-    # 用实际文件 mtime 构造缓存记录（避免硬编码 mtime 不匹配）
-    actual_mtime = jpg_source.stat().st_mtime
+    actual_mtime = source_path.stat().st_mtime
     source_modified_at = datetime.fromtimestamp(actual_mtime, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     cache_repo.upsert(
         ThumbnailCache(
-            content_unit_id="u1",
-            source_size_bytes=jpg_source.stat().st_size,
+            content_unit_id=unit_id,
+            size=size,
+            source_size_bytes=source_path.stat().st_size,
             source_modified_at=source_modified_at,
-            cache_filename="u1.png",
+            cache_filename=f"{unit_id}_{size}.webp",
             status="ok",
             generated_at="2026-07-01T00:00:01Z",
         )
     )
-    # 同时创建缓存文件
-    cache_png = service.get_thumbnails_dir() / "u1.png"
-    Image.new("RGBA", (64, 64)).save(cache_png)
 
-    result = service.get_cache("u1", jpg_source)
+
+def test_get_cache_hit_returns_path(service, jpg_source, cache_repo, thumbnails_dir):
+    """缓存命中 → 返回 WebP 路径。"""
+    _make_valid_cache_record(cache_repo, "u1", jpg_source, size=256)
+    # 创建缓存文件
+    cache_file = thumbnails_dir / "u1_256.webp"
+    Image.new("RGBA", (256, 256)).save(cache_file, format="WEBP")
+
+    result = service.get_cache("u1", jpg_source, size=256)
     assert result is not None
-    assert result == cache_png
+    assert result == cache_file
 
 
-def test_get_cache_invalid_mtime_treats_as_miss(service, jpg_source, cache_repo):
-    """源图 mtime 变化 → 缓存失效（spec §9 核心条款）。
-
-    Stage 4.5 M19 新增：原测试套件无 mtime 失效路径覆盖，导致
-    若未来误删 mtime 检查无法被测试发现。
-    """
+def test_get_cache_invalid_mtime_treats_as_miss(service, jpg_source, cache_repo, thumbnails_dir):
+    """源图 mtime 变化 → 缓存失效。"""
     import os
 
-    # 先构造一个"有效"的缓存记录
-    actual_mtime = jpg_source.stat().st_mtime
-    from datetime import UTC, datetime
+    _make_valid_cache_record(cache_repo, "u1", jpg_source, size=256)
+    cache_file = thumbnails_dir / "u1_256.webp"
+    Image.new("RGBA", (256, 256)).save(cache_file, format="WEBP")
 
-    source_modified_at = datetime.fromtimestamp(actual_mtime, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    cache_repo.upsert(
-        ThumbnailCache(
-            content_unit_id="u1",
-            source_size_bytes=jpg_source.stat().st_size,
-            source_modified_at=source_modified_at,
-            cache_filename="u1.png",
-            status="ok",
-            generated_at="2026-07-01T00:00:01Z",
-        )
-    )
-    cache_png = service.get_thumbnails_dir() / "u1.png"
-    Image.new("RGBA", (64, 64)).save(cache_png)
-
-    # 修改源文件 mtime（模拟外部工具覆盖）
-    new_mtime = actual_mtime + 3600  # +1 小时
+    # 修改源文件 mtime
+    new_mtime = jpg_source.stat().st_mtime + 3600
     os.utime(jpg_source, (new_mtime, new_mtime))
 
-    result = service.get_cache("u1", jpg_source)
-    assert result is None  # mtime 不匹配 → 缓存失效
+    result = service.get_cache("u1", jpg_source, size=256)
+    assert result is None
 
 
-def test_get_cache_invalid_size_treats_as_miss(service, jpg_source, cache_repo):
+def test_get_cache_invalid_size_treats_as_miss(service, jpg_source, cache_repo, thumbnails_dir):
     """源图 size 变化 → 缓存失效。"""
     cache_repo.upsert(
         ThumbnailCache(
             content_unit_id="u1",
-            source_size_bytes=99999,  # 与实际不符
+            size=256,
+            source_size_bytes=99999,
             source_modified_at="2026-07-01T00:00:00Z",
-            cache_filename="u1.png",
+            cache_filename="u1_256.webp",
             status="ok",
             generated_at="2026-07-01T00:00:01Z",
         )
     )
-    cache_png = service.get_thumbnails_dir() / "u1.png"
-    Image.new("RGBA", (64, 64)).save(cache_png)
-    result = service.get_cache("u1", jpg_source)
+    cache_file = thumbnails_dir / "u1_256.webp"
+    Image.new("RGBA", (256, 256)).save(cache_file, format="WEBP")
+    result = service.get_cache("u1", jpg_source, size=256)
     assert result is None
 
 
@@ -191,15 +172,16 @@ def test_get_cache_status_not_ok_returns_none(service, jpg_source, cache_repo):
     cache_repo.upsert(
         ThumbnailCache(
             content_unit_id="u1",
+            size=256,
             source_size_bytes=jpg_source.stat().st_size,
             source_modified_at="2026-07-01T00:00:00Z",
-            cache_filename="u1.png",
+            cache_filename="u1_256.webp",
             status="corrupt",
             generated_at="2026-07-01T00:00:01Z",
             error_message="bad",
         )
     )
-    result = service.get_cache("u1", jpg_source)
+    result = service.get_cache("u1", jpg_source, size=256)
     assert result is None
 
 
@@ -208,15 +190,16 @@ def test_get_cache_missing_file_treats_as_miss(service, jpg_source, cache_repo):
     cache_repo.upsert(
         ThumbnailCache(
             content_unit_id="u1",
+            size=256,
             source_size_bytes=jpg_source.stat().st_size,
             source_modified_at="2026-07-01T00:00:00Z",
-            cache_filename="u1.png",
+            cache_filename="u1_256.webp",
             status="ok",
             generated_at="2026-07-01T00:00:01Z",
         )
     )
     # 不创建缓存文件
-    result = service.get_cache("u1", jpg_source)
+    result = service.get_cache("u1", jpg_source, size=256)
     assert result is None
 
 
@@ -224,25 +207,39 @@ def test_get_cache_missing_file_treats_as_miss(service, jpg_source, cache_repo):
 
 
 def test_generate_success_writes_cache_and_file(service, jpg_source, cache_repo, thumbnails_dir):
-    """生成成功 → 写入 PNG + upsert status='ok' 记录。"""
-    status = service.generate("u1", jpg_source)
+    """生成成功 → 写入 WebP + upsert status='ok' 记录。"""
+    status = service.generate("u1", jpg_source, size=256)
     assert status == "ok"
-    # 缓存文件存在
-    cache_png = thumbnails_dir / "u1.png"
-    assert cache_png.exists()
-    # 数据库记录
-    cache = cache_repo.get_by_id("u1")
+    cache_file = thumbnails_dir / "u1_256.webp"
+    assert cache_file.exists()
+    cache = cache_repo.get_by_id_and_size("u1", 256)
     assert cache is not None
     assert cache.status == "ok"
+    assert cache.size == 256
     assert cache.source_size_bytes == jpg_source.stat().st_size
+
+
+def test_generate_512_writes_separate_cache(service, jpg_source, cache_repo, thumbnails_dir):
+    """Task 1a：512 档生成独立缓存，与 256 档共存。"""
+    # 先生成 256 档
+    service.generate("u1", jpg_source, size=256)
+    # 再生成 512 档
+    status = service.generate("u1", jpg_source, size=512)
+    assert status == "ok"
+    assert (thumbnails_dir / "u1_512.webp").exists()
+    # 256 档仍在
+    assert (thumbnails_dir / "u1_256.webp").exists()
+    # DB 两条记录
+    caches = cache_repo.list_by_unit("u1")
+    assert {c.size for c in caches} == {256, 512}
 
 
 def test_generate_missing_source_records_missing_status(service, tmp_path, cache_repo):
     """源图不存在 → status='missing'。"""
     source = tmp_path / "nonexistent.jpg"
-    status = service.generate("u1", source)
+    status = service.generate("u1", source, size=256)
     assert status == "missing"
-    cache = cache_repo.get_by_id("u1")
+    cache = cache_repo.get_by_id_and_size("u1", 256)
     assert cache is not None
     assert cache.status == "missing"
 
@@ -251,9 +248,9 @@ def test_generate_corrupt_records_corrupt_status(service, tmp_path, cache_repo):
     """源图损坏 → status='corrupt'。"""
     source = tmp_path / "corrupt.jpg"
     source.write_bytes(b"not an image")
-    status = service.generate("u1", source)
+    status = service.generate("u1", source, size=256)
     assert status == "corrupt"
-    cache = cache_repo.get_by_id("u1")
+    cache = cache_repo.get_by_id_and_size("u1", 256)
     assert cache is not None
     assert cache.status == "corrupt"
 
@@ -262,29 +259,47 @@ def test_generate_unsupported_records_unsupported_status(service, tmp_path, cach
     """不支持的格式 → status='unsupported'。"""
     source = tmp_path / "file.txt"
     source.write_text("hello")
-    status = service.generate("u1", source)
+    status = service.generate("u1", source, size=256)
     assert status == "unsupported"
-    cache = cache_repo.get_by_id("u1")
+    cache = cache_repo.get_by_id_and_size("u1", 256)
     assert cache is not None
     assert cache.status == "unsupported"
 
 
-# --- invalidate ---
+# --- invalidate（Task 1a：清理所有档位）---
 
 
-def test_invalidate_deletes_cache_and_file(service, jpg_source, cache_repo, thumbnails_dir):
-    """失效：删除记录 + 文件。"""
-    service.generate("u1", jpg_source)
-    assert cache_repo.get_by_id("u1") is not None
-    assert (thumbnails_dir / "u1.png").exists()
+def test_invalidate_deletes_all_sizes(service, jpg_source, cache_repo, thumbnails_dir):
+    """Task 1a：invalidate 删除所有档位的记录和文件。"""
+    service.generate("u1", jpg_source, size=256)
+    service.generate("u1", jpg_source, size=512)
+    assert cache_repo.get_by_id_and_size("u1", 256) is not None
+    assert cache_repo.get_by_id_and_size("u1", 512) is not None
+    assert (thumbnails_dir / "u1_256.webp").exists()
+    assert (thumbnails_dir / "u1_512.webp").exists()
+
     service.invalidate("u1")
-    assert cache_repo.get_by_id("u1") is None
-    assert not (thumbnails_dir / "u1.png").exists()
+
+    assert cache_repo.get_by_id_and_size("u1", 256) is None
+    assert cache_repo.get_by_id_and_size("u1", 512) is None
+    assert not (thumbnails_dir / "u1_256.webp").exists()
+    assert not (thumbnails_dir / "u1_512.webp").exists()
 
 
 def test_invalidate_nonexistent_is_noop(service):
     """失效不存在的 unit → 不报错。"""
     service.invalidate("nonexistent")
+
+
+def test_invalidate_cleans_legacy_png(service, jpg_source, cache_repo, thumbnails_dir):
+    """Task 1a：invalidate 同时清理旧 v6 命名 {unit_id}.png。"""
+    # 模拟旧 v6 缓存文件
+    legacy_path = thumbnails_dir / "u1.png"
+    Image.new("RGBA", (64, 64)).save(legacy_path, format="PNG")
+    assert legacy_path.exists()
+
+    service.invalidate("u1")
+    assert not legacy_path.exists()
 
 
 # --- GC（Q8: B） ---
@@ -294,28 +309,27 @@ def test_cleanup_orphans_removes_orphaned_records(
     service, cache_repo, content_unit_repo, db_connection, thumbnails_dir
 ):
     """GC 清理无对应 content_unit 的缓存记录。"""
-    # 临时关闭 FK 约束以插入孤儿记录（无对应 content_unit）
     db_connection.commit()
     db_connection.execute("PRAGMA foreign_keys = OFF;")
     cache_repo.upsert(
         ThumbnailCache(
             content_unit_id="orphan",
+            size=256,
             source_size_bytes=100,
             source_modified_at="2026-07-01T00:00:00Z",
-            cache_filename="orphan.png",
+            cache_filename="orphan_256.webp",
             status="ok",
             generated_at="2026-07-01T00:00:01Z",
         )
     )
     db_connection.commit()
     db_connection.execute("PRAGMA foreign_keys = ON;")
-    # 创建对应的缓存文件
-    (thumbnails_dir / "orphan.png").write_bytes(b"fake png")
+    (thumbnails_dir / "orphan_256.webp").write_bytes(b"fake webp")
 
     cleaned = service.cleanup_orphans()
     assert cleaned >= 1
-    assert cache_repo.get_by_id("orphan") is None
-    assert not (thumbnails_dir / "orphan.png").exists()
+    assert cache_repo.get_by_id_and_size("orphan", 256) is None
+    assert not (thumbnails_dir / "orphan_256.webp").exists()
 
 
 def test_cleanup_orphans_preserves_valid_caches(
@@ -329,22 +343,21 @@ def test_cleanup_orphans_preserves_valid_caches(
 ):
     """GC 不清理有对应 content_unit 的缓存。"""
     unit, cover_path = unit_with_cover
-    service.generate(unit.id, cover_path)
+    service.generate(unit.id, cover_path, size=256)
     db_connection.commit()
 
     cleaned = service.cleanup_orphans()
     assert cleaned == 0
-    assert cache_repo.get_by_id(unit.id) is not None
-    assert (thumbnails_dir / f"{unit.id}.png").exists()
+    assert cache_repo.get_by_id_and_size(unit.id, 256) is not None
+    assert (thumbnails_dir / f"{unit.id}_256.webp").exists()
 
 
 def test_cleanup_orphans_removes_orphaned_files(
     service, cache_repo, content_unit_repo, db_connection, thumbnails_dir
 ):
-    """GC 清理目录中无对应记录的 PNG 文件。"""
-    # 创建一个无 DB 记录的 PNG 文件
-    (thumbnails_dir / "orphan_file.png").write_bytes(b"fake png")
+    """GC 清理目录中无对应记录的 WebP 文件。"""
+    (thumbnails_dir / "orphan_file_256.webp").write_bytes(b"fake webp")
 
     cleaned = service.cleanup_orphans()
     assert cleaned >= 1
-    assert not (thumbnails_dir / "orphan_file.png").exists()
+    assert not (thumbnails_dir / "orphan_file_256.webp").exists()

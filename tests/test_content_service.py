@@ -1405,15 +1405,16 @@ class TestUpdateMetadataCoverPath:
         cache_repo.upsert(
             ThumbnailCache(
                 content_unit_id="u-m4",
+                size=256,
                 source_size_bytes=1,
                 source_modified_at="2026-07-01T00:00:00Z",
-                cache_filename="u-m4.png",
+                cache_filename="u-m4_256.webp",
                 status="ok",
                 generated_at="2026-07-01T00:00:01Z",
             )
         )
-        (thumbnails_dir / "u-m4.png").write_bytes(b"fake png")
-        assert cache_repo.get_by_id("u-m4") is not None
+        (thumbnails_dir / "u-m4_256.webp").write_bytes(b"fake webp")
+        assert cache_repo.get_by_id_and_size("u-m4", 256) is not None
 
         # 构造注入 thumbnail_service 的 ContentService
         svc = ContentService(repo, thumbnail_service=thumb_service)
@@ -1422,8 +1423,8 @@ class TestUpdateMetadataCoverPath:
         svc.update_metadata("u-m4", cover_path="cover_new.jpg")
 
         # 缩略图缓存应被 invalidate
-        assert cache_repo.get_by_id("u-m4") is None
-        assert not (thumbnails_dir / "u-m4.png").exists()
+        assert cache_repo.get_by_id_and_size("u-m4", 256) is None
+        assert not (thumbnails_dir / "u-m4_256.webp").exists()
 
     def test_update_cover_path_no_invalidate_when_thumbnail_service_none(
         self,
@@ -1457,9 +1458,10 @@ class TestUpdateMetadataCoverPath:
         cache_repo.upsert(
             ThumbnailCache(
                 content_unit_id="u-m4-none",
+                size=256,
                 source_size_bytes=1,
                 source_modified_at="2026-07-01T00:00:00Z",
-                cache_filename="u-m4-none.png",
+                cache_filename="u-m4-none_256.webp",
                 status="ok",
                 generated_at="2026-07-01T00:00:01Z",
             )
@@ -1470,7 +1472,7 @@ class TestUpdateMetadataCoverPath:
         svc.update_metadata("u-m4-none", cover_path="cover_new.jpg")
 
         # 缓存仍存在（未触发 invalidate）
-        assert cache_repo.get_by_id("u-m4-none") is not None
+        assert cache_repo.get_by_id_and_size("u-m4-none", 256) is not None
 
     def test_update_metadata_no_cover_change_no_invalidate(
         self,
@@ -1512,9 +1514,10 @@ class TestUpdateMetadataCoverPath:
         cache_repo.upsert(
             ThumbnailCache(
                 content_unit_id="u-m4-nochange",
+                size=256,
                 source_size_bytes=1,
                 source_modified_at="2026-07-01T00:00:00Z",
-                cache_filename="u-m4-nochange.png",
+                cache_filename="u-m4-nochange_256.webp",
                 status="ok",
                 generated_at="2026-07-01T00:00:01Z",
             )
@@ -1525,7 +1528,7 @@ class TestUpdateMetadataCoverPath:
         svc.update_metadata("u-m4-nochange", title="新标题")
 
         # 缓存应仍存在（未触发 invalidate）
-        assert cache_repo.get_by_id("u-m4-nochange") is not None
+        assert cache_repo.get_by_id_and_size("u-m4-nochange", 256) is not None
 
     def test_update_cover_path_nonexistent_raises(
         self,

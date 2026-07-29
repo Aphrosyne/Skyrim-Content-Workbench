@@ -38,10 +38,11 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QThread
+from PySide6.QtCore import QItemSelectionModel, QPoint, QSettings, QSize, Qt, QThread
 from PySide6.QtGui import QFontMetrics, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -55,13 +56,16 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
     QPushButton,
+    QSlider,
     QSplitter,
+    QStackedWidget,
     QTableView,
     QTreeView,
     QVBoxLayout,
@@ -71,6 +75,7 @@ from PySide6.QtWidgets import (
 from app import ui_constants as ui
 from app.assembly_panel import AssemblyPanel
 from app.batch_tag_dialog import BatchTagDialog
+from app.card_list_model import CardListModel
 from app.cover_picker_dialog import CoverPickerDialog
 from app.file_list_model import FileListModel
 from app.folder_tree_model import FolderTreeModel
@@ -103,6 +108,16 @@ logger = logging.getLogger(__name__)
 
 # 错误摘要最多展示条数
 MAX_ERROR_SUMMARY_LINES = 5
+
+# QSettings 配置（Stage 5 Task 1：缩放值持久化，Q1=A）
+QSETTINGS_ORGANIZATION = "SkyrimContentWorkbench"
+QSETTINGS_APPLICATION = "SkyrimContentWorkbench"
+QSETTINGS_KEY_ZOOM = "view/card_icon_size"
+QSETTINGS_KEY_VIEW_MODE = "view/current_mode"  # "list" | "card"
+
+# 视图索引（QStackedWidget）
+VIEW_INDEX_LIST = 0
+VIEW_INDEX_CARD = 1
 
 # 详情区路径 / 元数据路径字段在 Elide 时保留的左右字符比例参考
 # 详情区第 2 行为路径，元数据面板第 2 行为路径（详见 _apply_elide）
@@ -156,6 +171,11 @@ class MainWindow(QMainWindow):
         # 整理模式下目录树选中的目标路径（用于显示"目标：xxx"提示）
         self._organize_target_path: str | None = None
 
+        # Stage 5 Task 1：QSettings 持久化缩放值与视图模式（Q1=A）
+        self._qsettings = QSettings(QSETTINGS_ORGANIZATION, QSETTINGS_APPLICATION)
+        self._current_view_index: int = VIEW_INDEX_LIST  # 默认列表视图
+        self._card_icon_size: int = ui.ZOOM_SLIDER_DEFAULT
+
         self.setWindowTitle(ui.APP_TITLE)
         self.resize(ui.WINDOW_DEFAULT_WIDTH, ui.WINDOW_DEFAULT_HEIGHT)
 
@@ -166,6 +186,9 @@ class MainWindow(QMainWindow):
 
         # Stage 4 Task 4：初始化缩略图调度器
         self._init_thumbnail_coordinator()
+
+        # Stage 5 Task 1：从 QSettings 恢复缩放值与视图模式
+        self._restore_view_state()
 
     def _init_thumbnail_coordinator(self) -> None:
         """初始化缩略图调度器并连接信号。
@@ -193,8 +216,12 @@ class MainWindow(QMainWindow):
             return None
         return self._thumbnail_coordinator.request_thumbnail(content_unit_id, Path(source_path))
 
-    def _on_thumbnail_ready(self, content_unit_id: str) -> None:
-        """后台缩略图生成完成：刷新对应行 DecorationRole。"""
+    def _on_thumbnail_ready(self, content_unit_id: str, size: int) -> None:
+        """后台缩略图生成完成：刷新对应行 DecorationRole。
+
+        Task 1a：信号新增 size 参数。当前 UI 仅显示 256 档（列表视图无封面、
+        卡片视图未接入），size 参数暂未使用，待 Task 1b 卡片视图接入。
+        """
         self._content_list_model.notify_thumbnail_ready(content_unit_id)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
@@ -415,6 +442,54 @@ class MainWindow(QMainWindow):
         self._content_group = QGroupBox(ui.CONTENT_LIST_GROUP_TITLE)
         content_layout = QVBoxLayout(self._content_group)
 
+        # 视图切换栏（Stage 5 Task 1，Q1=A：独立一行，在 TagFilterBar 之上）
+        self._view_switch_bar = QWidget()
+        view_switch_layout = QHBoxLayout(self._view_switch_bar)
+        view_switch_layout.setContentsMargins(0, 0, 0, 0)
+
+        view_label = QLabel(ui.VIEW_SWITCH_GROUP_LABEL)
+        view_switch_layout.addWidget(view_label)
+
+        self._view_list_button = QPushButton(ui.VIEW_SWITCH_LIST)
+        self._view_list_button.setCheckable(True)
+        self._view_list_button.setChecked(True)  # 默认列表视图
+        self._view_list_button.setToolTip(ui.VIEW_SWITCH_LIST_TOOLTIP)
+        self._view_list_button.clicked.connect(lambda: self._switch_view(VIEW_INDEX_LIST))
+        view_switch_layout.addWidget(self._view_list_button)
+
+        self._view_card_button = QPushButton(ui.VIEW_SWITCH_CARD)
+        self._view_card_button.setCheckable(True)
+        self._view_card_button.setToolTip(ui.VIEW_SWITCH_CARD_TOOLTIP)
+        self._view_card_button.clicked.connect(lambda: self._switch_view(VIEW_INDEX_CARD))
+        view_switch_layout.addWidget(self._view_card_button)
+
+        # 互斥分组
+        self._view_button_group = QButtonGroup(self)
+        self._view_button_group.setExclusive(True)
+        self._view_button_group.addButton(self._view_list_button)
+        self._view_button_group.addButton(self._view_card_button)
+
+        view_switch_layout.addStretch(1)
+
+        # 缩放滑块（Stage 5 Task 1，Q3=A：纳入卡片缩放）
+        zoom_label = QLabel(ui.ZOOM_SLIDER_LABEL)
+        view_switch_layout.addWidget(zoom_label)
+        self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self._zoom_slider.setMinimum(ui.ZOOM_SLIDER_MIN)
+        self._zoom_slider.setMaximum(ui.ZOOM_SLIDER_MAX)
+        self._zoom_slider.setValue(ui.ZOOM_SLIDER_DEFAULT)
+        self._zoom_slider.setSingleStep(ui.ZOOM_SLIDER_SINGLE_STEP)
+        self._zoom_slider.setPageStep(ui.ZOOM_SLIDER_PAGE_STEP)
+        self._zoom_slider.setToolTip(ui.ZOOM_SLIDER_TOOLTIP)
+        self._zoom_slider.setFixedWidth(120)
+        self._zoom_slider.valueChanged.connect(self._on_zoom_changed)
+        view_switch_layout.addWidget(self._zoom_slider)
+        self._zoom_value_label = QLabel(str(ui.ZOOM_SLIDER_DEFAULT))
+        self._zoom_value_label.setFixedWidth(32)
+        view_switch_layout.addWidget(self._zoom_value_label)
+
+        content_layout.addWidget(self._view_switch_bar)
+
         # 标签筛选栏（Stage 4 Task 3）：仅浏览模式 + 注入 TagService 时可见
         if self._tag_service is not None:
             self._tag_filter_bar = TagFilterBar(self._tag_service)
@@ -424,7 +499,16 @@ class MainWindow(QMainWindow):
         else:
             self._tag_filter_bar = None  # type: ignore[assignment]
 
-        # 文件列表（整理模式下右键菜单「加入装配」替代原拖拽方案）
+        # 文件列表 Model（两个视图共享，Q6:B 复用 FileListModel）
+        self._content_list_model = FileListModel()
+        # 卡片视图 Model（轻量代理，委托给 FileListModel）
+        self._card_list_model = CardListModel()
+        self._card_list_model.set_source(self._content_list_model)
+
+        # QStackedWidget 切换两种视图（Stage 5 Task 1）
+        self._content_stack = QStackedWidget()
+
+        # 列表视图（QTableView，原 _content_view）
         self._content_view = QTableView()
         self._content_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._content_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -438,19 +522,42 @@ class MainWindow(QMainWindow):
             0, QHeaderView.ResizeMode.Stretch
         )
         self._content_view.horizontalHeader().setSectionsClickable(True)
-        self._content_list_model = FileListModel()
         self._content_view.setModel(self._content_list_model)
         self._content_view.doubleClicked.connect(self._on_entry_activated)
         self._content_view.customContextMenuRequested.connect(self._on_content_context_menu)
         self._content_view.horizontalHeader().sectionClicked.connect(
             self._on_content_header_clicked
         )
-        # 单击选中内容单元 → 显示元数据（selectionChanged 在选中变化时触发）
-        # 延迟连接，确保 selectionModel 已创建
         self._content_view.selectionModel().selectionChanged.connect(
             self._on_content_selection_changed
         )
-        content_layout.addWidget(self._content_view)
+        self._content_stack.addWidget(self._content_view)  # index 0
+
+        # 卡片视图（QListView，IconMode，大图）
+        self._card_view = QListView()
+        self._card_view.setViewMode(QListView.ViewMode.IconMode)
+        self._card_view.setIconSize(QSize(ui.ZOOM_SLIDER_DEFAULT, ui.ZOOM_SLIDER_DEFAULT))
+        self._card_view.setResizeMode(QListView.ResizeMode.Adjust)
+        self._card_view.setMovement(QListView.Movement.Static)
+        self._card_view.setWordWrap(True)
+        # 注意：setUniformItemSizes(True) 会缓存 item 尺寸，导致动态调整 iconSize
+        # 时卡片不重排。缩放滑块需要动态尺寸，故设为 False。
+        self._card_view.setUniformItemSizes(False)
+        self._card_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._card_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._card_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._card_view.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+        self._card_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._card_view.setModel(self._card_list_model)
+        self._card_view.doubleClicked.connect(self._on_entry_activated)
+        self._card_view.customContextMenuRequested.connect(self._on_content_context_menu)
+        self._card_view.selectionModel().selectionChanged.connect(
+            self._on_content_selection_changed
+        )
+        self._content_stack.addWidget(self._card_view)  # index 1
+
+        self._content_stack.setCurrentIndex(VIEW_INDEX_LIST)  # 默认列表视图
+        content_layout.addWidget(self._content_stack)
 
         self._content_empty_hint = QLabel(ui.CONTENT_LIST_NO_SELECTION)
         self._content_empty_hint.setWordWrap(True)
@@ -758,8 +865,17 @@ class MainWindow(QMainWindow):
         - 整理模式下双击 Mod 组文件夹（ContentUnit + is_dir）→ 绑定装配面板。
           （单击仅选中显示元数据，不切换装配面板，避免误触）
         - 整理模式下双击普通文件 / 普通文件夹 → 不响应。
+
+        Stage 5 Task 1：支持列表视图和卡片视图，两个视图共享同一份 FileEntry 数据
+        （行号一致），因此用任一 model 取 entry 均可。这里用当前活动视图对应的 model。
         """
-        entry = self._content_list_model.entry_at(index.row())
+        # 两个视图共享同一份数据（行号一致），用任一 model 取 entry 均可
+        active_model = (
+            self._card_list_model
+            if self._current_view_index == VIEW_INDEX_CARD
+            else self._content_list_model
+        )
+        entry = active_model.entry_at(index.row())
         if entry is None:
             return
 
@@ -815,8 +931,19 @@ class MainWindow(QMainWindow):
 
         Stage 4 Task 3（Q6: A 修正）：标签筛选激活时仍保留元数据面板交互，
         让用户能查看选中条目的元数据。
+
+        Stage 5 Task 1：支持列表视图和卡片视图，根据当前活动视图获取选中。
         """
-        sm = self._content_view.selectionModel()
+        # 取当前活动视图（列表 or 卡片）
+        active_view = (
+            self._card_view if self._current_view_index == VIEW_INDEX_CARD else self._content_view
+        )
+        active_model = (
+            self._card_list_model
+            if self._current_view_index == VIEW_INDEX_CARD
+            else self._content_list_model
+        )
+        sm = active_view.selectionModel()
         if sm is None:
             return
         indexes = sm.selectedRows()
@@ -826,7 +953,7 @@ class MainWindow(QMainWindow):
         if len(indexes) > 1:
             self._set_metadata_text(ui.METADATA_NOT_SELECTED)
             return
-        entry = self._content_list_model.entry_at(indexes[0].row())
+        entry = active_model.entry_at(indexes[0].row())
         if entry is None:
             return
         if entry.content_unit is not None:
@@ -865,14 +992,105 @@ class MainWindow(QMainWindow):
             # 不同列：切换排序键，默认升序
             self._content_list_model.set_sort_key(new_key, True)
 
-    def _on_tree_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
-        """目录树右键菜单：标记/取消暂存区（阶段 3 Task 1）。
+    # --- Stage 5 Task 1：视图切换 + 缩放 ---
 
-        仅当注入了 StagingService 时显示菜单。根据节点当前 is_staging 状态
-        显示"标记为暂存区"或"取消暂存区标记"。
+    def _switch_view(self, view_index: int) -> None:
+        """切换文件列表视图（列表 ↔ 卡片）。
+
+        Q1=A：视图切换按钮组独立一行。
+        Q4=A：选中状态跨视图保持（用 entry.path 匹配，行号可能因排序不同而变化）。
         """
-        if self._staging_service is None:
+        if view_index == self._current_view_index:
             return
+        # 记录当前选中条目的 path 集合
+        selected_paths: set[str] = set()
+        sm = self._content_view.selectionModel()
+        if sm is not None:
+            for idx in sm.selectedRows():
+                entry = self._content_list_model.entry_at(idx.row())
+                if entry is not None:
+                    selected_paths.add(entry.path)
+        # 切换视图
+        self._content_stack.setCurrentIndex(view_index)
+        self._current_view_index = view_index
+        # 在新视图中恢复选中
+        target_view = self._card_view if view_index == VIEW_INDEX_CARD else self._content_view
+        target_model = (
+            self._card_list_model if view_index == VIEW_INDEX_CARD else self._content_list_model
+        )
+        target_sm = target_view.selectionModel()
+        if target_sm is not None and selected_paths:
+            # 清除现有选中
+            target_sm.clearSelection()
+            # 按 path 重新选中对应行
+            for row in range(target_model.rowCount()):
+                entry = target_model.entry_at(row) if hasattr(target_model, "entry_at") else None
+                if entry is not None and entry.path in selected_paths:
+                    idx = target_model.index(row, 0)
+                    target_sm.select(idx, QItemSelectionModel.SelectionFlag.Select)
+        # 持久化视图模式（Q1=A）
+        view_mode = "card" if view_index == VIEW_INDEX_CARD else "list"
+        self._qsettings.setValue(QSETTINGS_KEY_VIEW_MODE, view_mode)
+
+    def _on_zoom_changed(self, value: int) -> None:
+        """缩放滑块值变化：调整卡片图标尺寸并持久化。
+
+        Q3=A：缩放纳入 Task 1。
+        1. setIconSize 让 QListView 调整图标显示区域
+        2. CardListModel.set_icon_size 强制按新尺寸重新渲染 pixmap
+           （解决 QIcon(small_pixmap) 不随 iconSize 放大的问题）
+        3. doItemsLayout 让卡片整体重排
+        """
+        self._card_icon_size = value
+        self._card_view.setIconSize(QSize(value, value))
+        # 通知 CardListModel 按新 icon_size 重新渲染 pixmap（触发 dataChanged）
+        self._card_list_model.set_icon_size(value)
+        # 强制重新布局，让卡片立即响应尺寸变化
+        self._card_view.doItemsLayout()
+        self._zoom_value_label.setText(str(value))
+        # 持久化（Q1=A）
+        self._qsettings.setValue(QSETTINGS_KEY_ZOOM, value)
+
+    def _restore_view_state(self) -> None:
+        """从 QSettings 恢复缩放值与视图模式（Q1=A）。"""
+        # 恢复缩放值
+        zoom = self._qsettings.value(QSETTINGS_KEY_ZOOM, ui.ZOOM_SLIDER_DEFAULT, type=int)
+        if ui.ZOOM_SLIDER_MIN <= zoom <= ui.ZOOM_SLIDER_MAX:
+            self._zoom_slider.setValue(zoom)
+            self._card_view.setIconSize(QSize(zoom, zoom))
+            self._card_list_model.set_icon_size(zoom)  # 同步 CardListModel 的 icon_size
+            self._card_view.doItemsLayout()  # 强制重排，确保恢复尺寸生效
+            self._zoom_value_label.setText(str(zoom))
+            self._card_icon_size = zoom
+        # 恢复视图模式
+        view_mode = self._qsettings.value(QSETTINGS_KEY_VIEW_MODE, "list", type=str)
+        if view_mode == "card":
+            self._view_card_button.setChecked(True)
+            self._switch_view(VIEW_INDEX_CARD)
+        else:
+            self._view_list_button.setChecked(True)
+            self._switch_view(VIEW_INDEX_LIST)
+
+    def _on_open_in_explorer(self, path: str) -> None:
+        """在 Windows 资源管理器中打开并选中指定路径（Stage 5 Task 1）。
+
+        使用 explorer /select, 命令定位到文件并选中。中文路径通过 list 形式传参自动处理。
+        """
+        try:
+            subprocess.run(
+                ["explorer", "/select,", path],
+                check=False,
+                shell=False,
+            )
+        except (OSError, subprocess.SubprocessError):  # noqa: BLE001
+            logger.exception("打开资源管理器失败：path=%s", path)
+            QMessageBox.warning(self, ui.MENU_OPEN_IN_EXPLORER, ui.MENU_OPEN_IN_EXPLORER_FAILED)
+
+    def _on_tree_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
+        """目录树右键菜单：标记/取消暂存区 + 在资源管理器中打开。
+
+        Stage 5 Task 1：新增「在资源管理器中打开」项，无论是否注入 StagingService 都可用。
+        """
         index = self._tree_view.indexAt(pos)
         if not index.isValid():
             return
@@ -881,16 +1099,26 @@ class MainWindow(QMainWindow):
             return
 
         menu = QMenu(self)
-        if node.is_staging:
-            action = menu.addAction(ui.MENU_UNMARK_STAGING)
-            chosen = menu.exec(self._tree_view.viewport().mapToGlobal(pos))
-            if chosen is action:
+        # 暂存区标记/取消（仅注入了 StagingService 时显示）
+        staging_action = None
+        if self._staging_service is not None:
+            if node.is_staging:
+                staging_action = menu.addAction(ui.MENU_UNMARK_STAGING)
+            else:
+                staging_action = menu.addAction(ui.MENU_MARK_STAGING)
+        # 在资源管理器中打开（Stage 5 Task 1，始终显示）
+        explorer_action = menu.addAction(ui.MENU_OPEN_IN_EXPLORER)
+
+        chosen = menu.exec(self._tree_view.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        if staging_action is not None and chosen is staging_action:
+            if node.is_staging:
                 self._unmark_staging_from_node(node)
-        else:
-            action = menu.addAction(ui.MENU_MARK_STAGING)
-            chosen = menu.exec(self._tree_view.viewport().mapToGlobal(pos))
-            if chosen is action:
+            else:
                 self._mark_staging_from_node(node)
+        elif chosen is explorer_action:
+            self._on_open_in_explorer(node.real_path)
 
     def _mark_staging_from_node(self, node) -> None:
         """通过目录树节点标记暂存区。"""
@@ -931,16 +1159,27 @@ class MainWindow(QMainWindow):
     def _on_content_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
         """文件列表右键菜单：根据选中条目与模式动态构造。
 
+        Stage 5 Task 1：支持列表视图和卡片视图，根据当前活动视图获取选中条目。
+
         菜单项：
         - 创建 Mod 组：仅整理模式 + 单选文件 + 注入了 ModGroupService 时显示。
         - 加入装配：仅整理模式 + 单选文件（非目录）+ 装配面板已绑定 Mod 组时显示。
         - 标记为内容单元 / 把每个文件标记为内容单元：未标记条目。
         - 取消标记：已标记 ContentUnit。
         - 快速设置封面：已标记文件夹内容单元（压缩包内容单元灰显）。
+        - 在资源管理器中打开：始终显示（Stage 5 Task 1）。
         - 复制路径：始终显示。
         """
-        # 取所有选中行（ExtendedSelection 支持多选）
-        sm = self._content_view.selectionModel()
+        # 取当前活动视图（列表 or 卡片）
+        active_view = (
+            self._card_view if self._current_view_index == VIEW_INDEX_CARD else self._content_view
+        )
+        active_model = (
+            self._card_list_model
+            if self._current_view_index == VIEW_INDEX_CARD
+            else self._content_list_model
+        )
+        sm = active_view.selectionModel()
         if sm is None:
             return
         selected_rows = sm.selectedRows()
@@ -949,7 +1188,7 @@ class MainWindow(QMainWindow):
 
         entries: list[FileEntry] = []
         for idx in selected_rows:
-            entry = self._content_list_model.entry_at(idx.row())
+            entry = active_model.entry_at(idx.row())
             if entry is not None:
                 entries.append(entry)
         if not entries:
@@ -964,7 +1203,7 @@ class MainWindow(QMainWindow):
             act = menu.addAction(label)
             act.setEnabled(enabled)
 
-        chosen = menu.exec(self._content_view.viewport().mapToGlobal(pos))
+        chosen = menu.exec(active_view.viewport().mapToGlobal(pos))
         if chosen is None:
             return
         for label, handler, _ in actions:
@@ -1053,6 +1292,16 @@ class MainWindow(QMainWindow):
                     ui.MENU_QUICK_SET_COVER,
                     lambda: self._on_quick_set_cover(entry.content_unit.id),
                     enabled,
+                )
+            )
+
+        # 在资源管理器中打开（Stage 5 Task 1，始终显示，单选时可用）
+        if len(entries) == 1:
+            actions.append(
+                (
+                    ui.MENU_OPEN_IN_EXPLORER,
+                    lambda: self._on_open_in_explorer(entries[0].path),
+                    True,
                 )
             )
 
@@ -1976,6 +2225,46 @@ class MainWindow(QMainWindow):
         """返回 TagFilterBar 实例（仅当注入 TagService 时存在，供测试）。"""
         return self._tag_filter_bar
 
+    # --- Stage 5 Task 1：视图切换测试接口 ---
+
+    def current_view_index(self) -> int:
+        """返回当前活动视图索引（0=列表，1=卡片，供测试）。"""
+        return self._current_view_index
+
+    def view_switch_bar_visible(self) -> bool:
+        """返回视图切换栏是否可见（供测试）。"""
+        return self._view_switch_bar.isVisibleTo(self)
+
+    def card_icon_size(self) -> int:
+        """返回当前卡片图标尺寸（供测试）。"""
+        return self._card_icon_size
+
+    def zoom_slider_value(self) -> int:
+        """返回缩放滑块当前值（供测试）。"""
+        return self._zoom_slider.value()
+
+    def set_card_icon_size_for_test(self, size: int) -> None:
+        """测试辅助：直接设置卡片图标尺寸（绕过滑块，供测试）。"""
+        self._zoom_slider.setValue(size)  # 触发 valueChanged → _on_zoom_changed
+
+    def switch_view_for_test(self, view_index: int) -> None:
+        """测试辅助：切换视图（供测试）。"""
+        self._switch_view(view_index)
+
+    def build_content_menu_actions(
+        self, entries: list[FileEntry]
+    ) -> list[tuple[str, object, bool]]:
+        """测试辅助：返回右键菜单项列表（供测试）。"""
+        return self._build_content_menu_actions(entries)
+
+    def open_in_explorer_handler(self) -> Callable[[str], None]:
+        """测试辅助：返回「在资源管理器中打开」handler（供测试）。"""
+        return self._on_open_in_explorer
+
+    def card_list_model(self) -> CardListModel:
+        """返回 CardListModel 实例（供测试）。"""
+        return self._card_list_model
+
     # --- 模式切换（spec §5.1/§5.2，roadmap 阶段 2 Task 5） ---
 
     def _set_mode(self, mode: AppMode) -> None:
@@ -2014,6 +2303,11 @@ class MainWindow(QMainWindow):
             # Stage 4 Task 3：整理模式隐藏 TagFilterBar
             if self._tag_filter_bar is not None:
                 self._tag_filter_bar.setVisible(False)
+            # Stage 5 Task 1（Q5=B）：整理模式隐藏视图切换栏 + 强制切到列表视图
+            self._view_switch_bar.setVisible(False)
+            if self._current_view_index != VIEW_INDEX_LIST:
+                self._view_list_button.setChecked(True)
+                self._switch_view(VIEW_INDEX_LIST)
         else:
             # 切换回浏览模式：恢复跟随目录树刷新
             self._organize_workarea_path = None
@@ -2029,6 +2323,8 @@ class MainWindow(QMainWindow):
             # Stage 4 Task 3：浏览模式恢复 TagFilterBar 显隐（按是否有分类）
             if self._tag_filter_bar is not None:
                 self._tag_filter_bar.setVisible(self._tag_filter_bar.has_categories())
+            # Stage 5 Task 1（Q5=B）：浏览模式恢复视图切换栏
+            self._view_switch_bar.setVisible(True)
 
     def _enter_organize_mode(self) -> None:
         """进入整理模式：根据当前选中节点状态加载中栏。

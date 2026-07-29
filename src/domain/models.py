@@ -178,7 +178,8 @@ class ManagedRoot:
 class ThumbnailCache:
     """缩略图缓存记录。spec §4.8 / §9。
 
-    关联键为 content_unit_id（一个内容单元至多一条缓存）。
+    Task 1a：支持多尺寸缓存（256/512 双档），复合主键 (content_unit_id, size)。
+    一个内容单元可有多条缓存记录（不同档位）。
     缓存有效性由调用方按 (source_size_bytes, source_modified_at, 文件存在性) 判断。
 
     status 取值：
@@ -190,9 +191,10 @@ class ThumbnailCache:
     """
 
     content_unit_id: str
+    size: int  # 缓存档位（64 旧档/256/512）
     source_size_bytes: int
     source_modified_at: str  # ISO 8601 UTC
-    cache_filename: str  # 相对 thumbnails 目录的文件名（如 "{unit_id}.png"）
+    cache_filename: str  # 相对 thumbnails 目录的文件名（如 "{unit_id}_{size}.webp"）
     status: str
     generated_at: str  # ISO 8601 UTC
     error_message: str | None = None

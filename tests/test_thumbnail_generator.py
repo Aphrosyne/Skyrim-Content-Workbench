@@ -35,16 +35,16 @@ def png_source(tmp_path: Path) -> Path:
 
 
 def test_generate_from_jpg(jpg_source, tmp_path):
-    cache_path = tmp_path / "thumb.png"
+    cache_path = tmp_path / "thumb.webp"
     generate_thumbnail(jpg_source, cache_path, size=64)
     assert cache_path.exists()
     with Image.open(cache_path) as img:
         assert img.size == (64, 64)
-        assert img.format == "PNG"
+        assert img.format == "WEBP"
 
 
 def test_generate_from_png(png_source, tmp_path):
-    cache_path = tmp_path / "thumb.png"
+    cache_path = tmp_path / "thumb.webp"
     generate_thumbnail(png_source, cache_path, size=64)
     assert cache_path.exists()
     with Image.open(cache_path) as img:
@@ -54,7 +54,7 @@ def test_generate_from_png(png_source, tmp_path):
 
 def test_generate_preserves_aspect_ratio(jpg_source, tmp_path):
     """100x80 源图 → 64x64 缩略图，保持宽高比缩放（不变形）。"""
-    cache_path = tmp_path / "thumb.png"
+    cache_path = tmp_path / "thumb.webp"
     generate_thumbnail(jpg_source, cache_path, size=64)
     # 重新打开缩略图，检查非透明像素区域比例（不要求精确，仅验证未被拉伸）
     with Image.open(cache_path) as img:

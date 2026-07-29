@@ -1,11 +1,12 @@
 """migrations 模块测试。
 
-覆盖 v0→v1 / v1→v2 / v2→v3 / v3→v4 / v4→v5 / v5→v6 迁移。
+覆盖 v0→v1 / v1→v2 / v2→v3 / v3→v4 / v4→v5 / v5→v6 / v6→v7 迁移。
 v3→v4 为方向 C 重建：新建 content_unit 等表，移除 mod_item / file_asset /
 folder_node / operation_log，重建 thumbnail_cache（FK 改为 content_unit）。
 v4→v5 新增 staging_area 表（阶段 3 Task 1 暂存区标记）。
 v5→v6 移除 content_unit.rating 列 + 加 tag_category.name / tag(name, category_id)
 UNIQUE 约束（阶段 4 Task 1）。
+v6→v7 thumbnail_cache 新增 size 列 + 复合主键 (content_unit_id, size)（Task 1a）。
 """
 
 from __future__ import annotations
@@ -28,18 +29,19 @@ def test_migrations_sorted_by_target() -> None:
     """MIGRATIONS 列表应按 target 升序可排序（init_db 内部排序）。"""
     targets = [t for t, _ in MIGRATIONS]
     assert targets == sorted(targets)
-    assert len(MIGRATIONS) >= 6
+    assert len(MIGRATIONS) >= 7
     assert MIGRATIONS[0][0] == 1
     assert MIGRATIONS[1][0] == 2
     assert MIGRATIONS[2][0] == 3
     assert MIGRATIONS[3][0] == 4
     assert MIGRATIONS[4][0] == 5
     assert MIGRATIONS[5][0] == 6
+    assert MIGRATIONS[6][0] == 7
 
 
-def test_current_schema_version_is_six() -> None:
-    """当前 schema 版本应为 6。"""
-    assert CURRENT_SCHEMA_VERSION == 6
+def test_current_schema_version_is_seven() -> None:
+    """Task 1a：当前 schema 版本应为 7。"""
+    assert CURRENT_SCHEMA_VERSION == 7
 
 
 def test_migrate_v0_to_v1_idempotent() -> None:
@@ -500,9 +502,9 @@ def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
     db_path = tmp_path / "test.db"
     version = init_db(db_path)
     assert version == CURRENT_SCHEMA_VERSION
-    assert version == 6
+    assert version == 7
 
-    # v6 后 managed_root 表仍存在
+    # v7 后 managed_root 表仍存在
     conn = sqlite3.connect(str(db_path))
     try:
         row = conn.execute(
@@ -594,9 +596,9 @@ def test_init_db_migrates_v3_db_to_v6(tmp_path) -> None:
     finally:
         conn.close()
 
-    # init_db 应识别 v3 并依次应用 v3→v4→v5→v6
+    # init_db 应识别 v3 并依次应用 v3→v4→v5→v6→v7
     version = init_db(db_path)
-    assert version == 6
+    assert version == 7
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row

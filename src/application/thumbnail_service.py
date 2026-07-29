@@ -6,13 +6,16 @@
 - 有效性判断：source_size + source_modified_at + 缓存文件存在性
 - GC：启动时清理无对应 content_unit 的缓存（Q8: B）
 
-不访问文件系统的写操作（仅读源图 + 写应用数据目录的缓存 PNG）。
+Task 1a：支持多档缓存（256/512）。get_cache / generate 接收 size 参数，
+invalidate 清理指定 unit 的所有档位文件与记录。
+
+不访问文件系统的写操作（仅读源图 + 写应用数据目录的缓存 WebP）。
 不修改用户原图。
 
 约束：
 - 写数据库操作不自提交，由 application 层调用方控制事务边界。
 - 缓存文件目录由调用方注入（通常为 app_paths.get_thumbnails_dir()）。
-- 缓存文件命名：{content_unit_id}.png（spec §9 / architecture.md §9）。
+- 缓存文件命名：{content_unit_id}_{size}.webp（Task 1a：多档缓存）。
 """
 
 from __future__ import annotations
@@ -59,13 +62,13 @@ class ThumbnailService:
         cache_repo: ThumbnailCacheRepository,
         content_unit_repo: ContentUnitRepository,
         thumbnails_dir: Path,
-        size: int = 64,
+        size: int = 256,
         now_provider: Callable[[], str] | None = None,
     ) -> None:
         self._cache_repo = cache_repo
         self._unit_repo = content_unit_repo
         self._thumbnails_dir = thumbnails_dir
-        self._size = size
+        self._size = size  # 默认档位（256，Task 1a）
         self._now = now_provider or _default_now_utc
 
     # --- 同步路径：缓存查询 ---
@@ -74,8 +77,9 @@ class ThumbnailService:
         self,
         content_unit_id: str,
         source_path: Path,
+        size: int = 256,
     ) -> Path | None:
-        """查询缓存：若命中且有效，返回缓存 PNG 文件路径；否则返回 None。
+        """查询缓存：若命中且有效，返回缓存 WebP 文件路径；否则返回 None。
 
         有效性判断（spec §9）：
         - cache.status == 'ok'
@@ -89,9 +93,9 @@ class ThumbnailService:
         不抛错；查询失败记日志返回 None。
         """
         try:
-            cache = self._cache_repo.get_by_id(content_unit_id)
+            cache = self._cache_repo.get_by_id_and_size(content_unit_id, size)
         except RepositoryError:
-            logger.exception("查询缩略图缓存失败：unit_id=%s", content_unit_id)
+            logger.exception("查询缩略图缓存失败：unit_id=%s size=%d", content_unit_id, size)
             return None
         if cache is None:
             return None
@@ -117,10 +121,15 @@ class ThumbnailService:
 
     # --- 异步路径：生成 ---
 
-    def generate(self, content_unit_id: str, source_path: Path) -> str:
+    def generate(
+        self,
+        content_unit_id: str,
+        source_path: Path,
+        size: int = 256,
+    ) -> str:
         """生成缩略图并写入缓存目录 + 更新数据库记录。
 
-        - 成功：写入 PNG + upsert status='ok' 记录
+        - 成功：写入 WebP + upsert status='ok' 记录
         - 源图不存在：upsert status='missing'
         - 源图损坏：upsert status='corrupt'
         - 不支持格式：upsert status='unsupported'
@@ -139,6 +148,7 @@ class ThumbnailService:
             # 源图不存在或不可访问
             self._record_failure(
                 content_unit_id,
+                size=size,
                 source_size=0,
                 source_modified_at=_default_now_utc(),
                 status="missing",
@@ -146,15 +156,16 @@ class ThumbnailService:
             )
             return "missing"
 
-        cache_filename = f"{content_unit_id}.png"
+        cache_filename = f"{content_unit_id}_{size}.webp"
         cache_path = self._thumbnails_dir / cache_filename
         source_modified_at = _mtime_to_iso(source_mtime)
 
         try:
-            generate_thumbnail(source_path, cache_path, self._size)
+            generate_thumbnail(source_path, cache_path, size)
         except ThumbnailSourceNotFoundError:
             self._record_failure(
                 content_unit_id,
+                size=size,
                 source_size=source_size,
                 source_modified_at=source_modified_at,
                 status="missing",
@@ -164,6 +175,7 @@ class ThumbnailService:
         except ThumbnailSourceUnsupportedError as e:
             self._record_failure(
                 content_unit_id,
+                size=size,
                 source_size=source_size,
                 source_modified_at=source_modified_at,
                 status="unsupported",
@@ -173,6 +185,7 @@ class ThumbnailService:
         except ThumbnailSourceCorruptError as e:
             self._record_failure(
                 content_unit_id,
+                size=size,
                 source_size=source_size,
                 source_modified_at=source_modified_at,
                 status="corrupt",
@@ -180,9 +193,10 @@ class ThumbnailService:
             )
             return "corrupt"
         except Exception as e:  # noqa: BLE001
-            logger.exception("生成缩略图失败：unit_id=%s", content_unit_id)
+            logger.exception("生成缩略图失败：unit_id=%s size=%d", content_unit_id, size)
             self._record_failure(
                 content_unit_id,
+                size=size,
                 source_size=source_size,
                 source_modified_at=source_modified_at,
                 status="error",
@@ -193,6 +207,7 @@ class ThumbnailService:
         # 成功
         self._record_success(
             content_unit_id=content_unit_id,
+            size=size,
             source_size=source_size,
             source_modified_at=source_modified_at,
             cache_filename=cache_filename,
@@ -202,17 +217,36 @@ class ThumbnailService:
     # --- 失效与删除 ---
 
     def invalidate(self, content_unit_id: str) -> None:
-        """删除指定内容单元的缓存记录与文件。
+        """删除指定内容单元的所有档位缓存记录与文件。
 
         用于封面清除 / 封面更换场景。文件不存在不报错。
+        Task 1a：遍历该 unit 的所有档位（64/256/512），逐个删除缓存文件，
+        然后删除数据库记录。
         """
-        # 先删文件再删记录
-        cache_path = self._thumbnails_dir / f"{content_unit_id}.png"
+        # 查询该 unit 的所有档位缓存记录
         try:
-            if cache_path.exists():
-                cache_path.unlink()
+            caches = self._cache_repo.list_by_unit(content_unit_id)
+        except RepositoryError:
+            caches = []
+
+        # 先删文件
+        for cache in caches:
+            cache_path = self._thumbnails_dir / cache.cache_filename
+            try:
+                if cache_path.exists():
+                    cache_path.unlink()
+            except OSError:
+                logger.warning("删除缩略图文件失败：%s", cache_path, exc_info=True)
+
+        # 兼容旧 v6 命名 {unit_id}.png（无 size 后缀）
+        legacy_path = self._thumbnails_dir / f"{content_unit_id}.png"
+        try:
+            if legacy_path.exists():
+                legacy_path.unlink()
         except OSError:
-            logger.warning("删除缩略图文件失败：%s", cache_path, exc_info=True)
+            logger.warning("删除旧缩略图文件失败：%s", legacy_path, exc_info=True)
+
+        # 再删记录
         try:
             self._cache_repo.delete(content_unit_id)
         except RepositoryError:
@@ -227,7 +261,7 @@ class ThumbnailService:
 
         同时清理：
         - thumbnail_cache 表中无对应 content_unit 的记录
-        - thumbnails 目录中无对应记录的 PNG 文件
+        - thumbnails 目录中无对应记录的 PNG / WebP 文件
         """
         cleaned = 0
 
@@ -245,17 +279,24 @@ class ThumbnailService:
                 self.invalidate(cache.content_unit_id)
                 cleaned += 1
 
-        # 2. 清理目录中孤立的 PNG 文件
+        # 2. 清理目录中孤立的缓存文件
         if self._thumbnails_dir.exists():
             for entry in self._thumbnails_dir.iterdir():
-                if not entry.is_file() or entry.suffix.lower() != ".png":
+                if not entry.is_file():
                     continue
-                # 文件名格式：{unit_id}.png
-                unit_id = entry.stem
+                suffix = entry.suffix.lower()
+                if suffix not in (".png", ".webp"):
+                    continue
+
+                # 文件名格式：{unit_id}_{size}.webp 或旧 {unit_id}.png
+                stem = entry.stem
+                # 新命名含 "_"，旧命名不含
+                unit_id = stem.rsplit("_", 1)[0] if "_" in stem else stem
+
                 # 检查是否有对应的 DB 记录
                 with contextlib.suppress(RepositoryError):
-                    cache = self._cache_repo.get_by_id(unit_id)
-                    if cache is None:
+                    caches = self._cache_repo.list_by_unit(unit_id)
+                    if not caches:
                         try:
                             entry.unlink()
                             cleaned += 1
@@ -270,12 +311,14 @@ class ThumbnailService:
     def _record_success(
         self,
         content_unit_id: str,
+        size: int,
         source_size: int,
         source_modified_at: str,
         cache_filename: str,
     ) -> None:
         cache = ThumbnailCache(
             content_unit_id=content_unit_id,
+            size=size,
             source_size_bytes=source_size,
             source_modified_at=source_modified_at,
             cache_filename=cache_filename,
@@ -286,11 +329,12 @@ class ThumbnailService:
         try:
             self._cache_repo.upsert(cache)
         except RepositoryError:
-            logger.exception("写入缩略图缓存记录失败：unit_id=%s", content_unit_id)
+            logger.exception("写入缩略图缓存记录失败：unit_id=%s size=%d", content_unit_id, size)
 
     def _record_failure(
         self,
         content_unit_id: str,
+        size: int,
         source_size: int,
         source_modified_at: str,
         status: str,
@@ -298,9 +342,10 @@ class ThumbnailService:
     ) -> None:
         cache = ThumbnailCache(
             content_unit_id=content_unit_id,
+            size=size,
             source_size_bytes=source_size,
             source_modified_at=source_modified_at,
-            cache_filename=f"{content_unit_id}.png",
+            cache_filename=f"{content_unit_id}_{size}.webp",
             status=status,
             error_message=error_message,
             generated_at=self._now(),
@@ -308,10 +353,10 @@ class ThumbnailService:
         try:
             self._cache_repo.upsert(cache)
         except (RepositoryError, sqlite3.Error):
-            logger.exception("写入缩略图失败记录失败：unit_id=%s", content_unit_id)
+            logger.exception("写入缩略图失败记录失败：unit_id=%s size=%d", content_unit_id, size)
 
     def get_size(self) -> int:
-        """返回缩略图尺寸（供测试）。"""
+        """返回默认档位尺寸（供测试）。"""
         return self._size
 
     def get_thumbnails_dir(self) -> Path:

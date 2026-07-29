@@ -18,7 +18,7 @@ from infrastructure.migrations import MIGRATIONS
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 
 def get_connection(db_path: Path, timeout: float = 5.0) -> sqlite3.Connection:

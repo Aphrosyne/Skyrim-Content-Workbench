@@ -53,7 +53,7 @@ def service(db_connection, thumbnails_dir, tmp_path) -> ThumbnailService:
         cache_repo=ThumbnailCacheRepository(db_connection),
         content_unit_repo=content_unit_repo,
         thumbnails_dir=thumbnails_dir,
-        size=64,
+        size=256,
     )
 
 
@@ -69,7 +69,7 @@ def coordinator(qapp, service, db_path, thumbnails_dir) -> Iterator[ThumbnailCoo
         thumbnail_service=service,
         db_path=db_path,
         thumbnails_dir=thumbnails_dir,
-        size=64,
+        size=256,
     )
     c.start()
     yield c
@@ -78,7 +78,7 @@ def coordinator(qapp, service, db_path, thumbnails_dir) -> Iterator[ThumbnailCoo
 
 def test_request_thumbnail_cache_miss_returns_none_and_dispatches(coordinator, jpg_source):
     """缓存未命中 → 返回 None + 投递到队列。"""
-    pixmap = coordinator.request_thumbnail("u1", jpg_source)
+    pixmap = coordinator.request_thumbnail("u1", jpg_source, size=256)
     assert pixmap is None
     # 队列应有 1 个任务
     assert coordinator.queue_size() >= 0  # 至少调度过
@@ -89,35 +89,44 @@ def test_request_thumbnail_cache_hit_returns_pixmap(
 ):
     """缓存命中 → 同步返回 QPixmap。"""
     # 先生成一次缓存
-    service.generate("u1", jpg_source)
-    pixmap = coordinator.request_thumbnail("u1", jpg_source)
+    service.generate("u1", jpg_source, size=256)
+    pixmap = coordinator.request_thumbnail("u1", jpg_source, size=256)
     assert pixmap is not None
     assert not pixmap.isNull()
 
 
 def test_duplicate_request_not_redispatched(coordinator, jpg_source, monkeypatch):
-    """同一 unit_id 重复请求不重复投递（去重）。"""
+    """同一 (unit_id, size) 重复请求不重复投递（去重）。"""
     # 第一次请求：投递
-    coordinator.request_thumbnail("u1", jpg_source)
+    coordinator.request_thumbnail("u1", jpg_source, size=256)
     pending1 = coordinator.pending_count()
     # 第二次请求：应去重
-    coordinator.request_thumbnail("u1", jpg_source)
+    coordinator.request_thumbnail("u1", jpg_source, size=256)
     pending2 = coordinator.pending_count()
     assert pending2 == pending1  # 没有新增
 
 
+def test_different_sizes_not_deduplicated(coordinator, jpg_source):
+    """Task 1a：同 unit_id 不同 size 不去重，允许并行生成。"""
+    coordinator.request_thumbnail("u1", jpg_source, size=256)
+    pending1 = coordinator.pending_count()
+    coordinator.request_thumbnail("u1", jpg_source, size=512)
+    pending2 = coordinator.pending_count()
+    assert pending2 == pending1 + 1  # 512 档也入队
+
+
 def test_invalidate_delegates_to_service(coordinator, service, jpg_source, thumbnails_dir):
     """invalidate 调用 service.invalidate。"""
-    service.generate("u1", jpg_source)
-    assert (thumbnails_dir / "u1.png").exists()
+    service.generate("u1", jpg_source, size=256)
+    assert (thumbnails_dir / "u1_256.webp").exists()
     coordinator.invalidate("u1")
-    assert not (thumbnails_dir / "u1.png").exists()
+    assert not (thumbnails_dir / "u1_256.webp").exists()
 
 
 def test_shutdown_clears_queue(coordinator, jpg_source):
     """shutdown 清空待处理队列。"""
-    coordinator.request_thumbnail("u1", jpg_source)
-    coordinator.request_thumbnail("u2", jpg_source)
+    coordinator.request_thumbnail("u1", jpg_source, size=256)
+    coordinator.request_thumbnail("u2", jpg_source, size=256)
     coordinator.shutdown()
     assert coordinator.queue_size() == 0
 
@@ -130,67 +139,64 @@ def test_shutdown_does_not_crash_when_no_worker(coordinator):
 def test_thumbnail_ready_signal_emitted_after_generate(qapp, coordinator, service, jpg_source):
     """worker 完成后发射 thumbnail_ready 信号。
 
-    使用 QEventLoop + 信号直连等待（不依赖 pytest-qt）。
+    Task 1a：信号携带 (unit_id, size)。
     """
     from PySide6.QtCore import QEventLoop, QTimer
 
-    received: list[str] = []
+    received: list[tuple[str, int]] = []
     loop = QEventLoop()
 
-    def on_ready(unit_id: str) -> None:
-        received.append(unit_id)
+    def on_ready(unit_id: str, size: int) -> None:
+        received.append((unit_id, size))
         loop.quit()
 
     coordinator.thumbnail_ready.connect(on_ready)
     QTimer.singleShot(10000, loop.quit)  # 超时兜底
-    coordinator.request_thumbnail("u1", jpg_source)
+    coordinator.request_thumbnail("u1", jpg_source, size=256)
     loop.exec()
     coordinator.thumbnail_ready.disconnect(on_ready)
 
-    assert received == ["u1"]
+    assert received == [("u1", 256)]
 
 
 def test_get_size_returns_configured_value(service, thumbnails_dir):
     """Q1: C 可配置尺寸。"""
     # 通过 service.get_size() 验证
-    assert service.get_size() == 64
+    assert service.get_size() == 256
 
 
 def test_pending_cleared_after_worker_complete_allows_redispatch(
     qapp, coordinator, service, jpg_source
 ):
-    """Stage 4.5 H3：worker 完成后 pending 集合应精确移除该 unit_id，
+    """Stage 4.5 H3：worker 完成后 pending 集合应精确移除该 (unit_id, size)，
     允许同一 unit 后续重新入队。
 
-    原实现只在队列空时整体清空 pending，导致封面更换后无法重新生成。
-
-    注：失败路径 (_on_worker_failed) 的 discard 逻辑与成功路径对称，
-    成功路径已覆盖即可证明 discard 逻辑正确。
+    Task 1a：pending 按 (unit_id, size) 元组移除。
     """
     from PySide6.QtCore import QEventLoop, QTimer
 
     # 第一次生成
     loop1 = QEventLoop()
-    received1: list[str] = []
+    received1: list[tuple[str, int]] = []
 
-    def on_ready1(unit_id: str) -> None:
-        received1.append(unit_id)
+    def on_ready1(unit_id: str, size: int) -> None:
+        received1.append((unit_id, size))
         loop1.quit()
 
     coordinator.thumbnail_ready.connect(on_ready1)
     QTimer.singleShot(10000, loop1.quit)
-    coordinator.request_thumbnail("u1", jpg_source)
+    coordinator.request_thumbnail("u1", jpg_source, size=256)
     loop1.exec()
     coordinator.thumbnail_ready.disconnect(on_ready1)
-    assert received1 == ["u1"]
+    assert received1 == [("u1", 256)]
 
-    # 此时 pending 应已清空（u1 已精确移除）
+    # 此时 pending 应已清空（(u1, 256) 已精确移除）
     assert coordinator.pending_count() == 0
 
     # invalidate 后再请求应能重新入队（验证 pending 未卡住）
     coordinator.invalidate("u1")
-    pixmap = coordinator.request_thumbnail("u1", jpg_source)
+    pixmap = coordinator.request_thumbnail("u1", jpg_source, size=256)
     # 缓存已被 invalidate 清空 → 返回 None，但应已入队
     assert pixmap is None
-    # pending 应包含 u1（重新入队成功）
+    # pending 应包含 (u1, 256)（重新入队成功）
     assert coordinator.pending_count() >= 1

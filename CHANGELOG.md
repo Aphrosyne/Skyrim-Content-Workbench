@@ -10,6 +10,44 @@
 
 ---
 
+## [0.32.0] - 2026-07-29
+
+Stage 5 Task 1a：缩略图缓存架构改造（双档 WebP 缓存，为 Task 1b 卡片视图做准备）
+
+将单档 64×64 PNG 缓存升级为双档 256/512 WebP 缓存，支持 lazy generation 和按需生成。schema v6 → v7 迁移。**本 Task 仅改造缓存架构，UI 适配在 Task 1b 完成。**
+
+**新增功能**
+
+- Schema v7 迁移：`thumbnail_cache` 表新增 `size` 列，主键改为 `(content_unit_id, size)` 复合主键。SQLite 不支持 ALTER PRIMARY KEY，采用重建表方式迁移。旧 64 档记录保留（size=64），由 GC 清理无对应 content_unit 的记录
+- 缓存格式从 PNG 改为 WebP (quality=90)：磁盘占用从 ~2.8GB/10k 降到 ~950MB/10k，节省约 65%。Qt6 和 Pillow 均原生支持
+- 缓存文件命名：`{content_unit_id}_{size}.webp`（如 `u1_256.webp`、`u1_512.webp`）
+- `ThumbnailService.get_cache` / `generate` 支持 size 参数，可查询/生成指定档位缓存
+- `ThumbnailService.invalidate` 清理指定 unit 的所有档位文件与记录，同时兼容清理旧 v6 命名 `{id}.png`
+- `ThumbnailCoordinator.request_thumbnail` 支持 size 参数，pending 集合改为 `(unit_id, size)` 元组去重，允许同一 unit 不同档位并行生成
+- `ThumbnailWorker` 信号改为 `(unit_id, size, status)`，默认 size 256
+
+**架构决策**
+
+- 取消 64 档封面缓存：64×64 对 Mod 资源浏览无视觉价值，列表视图将改用分类/状态 icon（Task 1b）
+- 256 档：标记内容单元/设置封面时生成，支撑卡片视图 128~256 显示范围
+- 512 档：点击卡片时按需生成，支撑右栏 MetadataPanel 大封面预览（Task 1b）和卡片视图 257~512 显示范围
+- 512 档未命中时临时用 256 档放大显示，后台生成 512 后替换
+
+**测试**
+
+- 新增 12 个测试：复合主键共存、多档 generate、不同 size 不去重、旧 PNG 清理、WebP 格式验证等
+- 更新 6 个测试文件适配新 API（get_by_id_and_size、size 参数、信号签名变化）
+- 全量回归：1054 passed, 3 skipped, ruff check + format 全通过
+
+**不在本 Task 范围**
+
+- 列表视图移除封面缩略图、改用分类/状态 icon → Task 1b
+- 卡片视图滑块 128~512 + 双击输入 → Task 1b
+- 右栏 MetadataPanel 大封面预览 → Task 1b
+- 在资源管理器中打开 → Task 1b
+
+---
+
 ## [0.31.0] - 2026-07-29
 
 Stage 5 Task 0.5：数据目录路径抽象与隔离（独立前置任务，不纳入 Task 1）

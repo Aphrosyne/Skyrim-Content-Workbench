@@ -337,6 +337,70 @@ def migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
     logger.info("迁移 v5 → v6 完成")
 
 
+def migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
+    """v6 → v7：thumbnail_cache 支持多尺寸缓存（Task 1a）。
+
+    Stage 5 Task 1a：卡片视图需要 256/512 双档缓存，原单档 64×64 PNG 缓存
+    改为多尺寸复合主键，缓存格式从 PNG 改为 WebP。
+
+    变更：
+    - 新增 size 列（INTEGER NOT NULL，默认 64）
+    - 主键改为 (content_unit_id, size) 复合主键
+    - 旧 64 档记录保留（GC 清理无对应 content_unit 的记录）
+
+    实现说明：
+    - SQLite 不支持 ALTER PRIMARY KEY，需重建表
+    - 旧 cache_filename 仍为 {id}.png，新生成为 {id}_{size}.webp
+    - 旧 64 档缓存文件由 GC 在启动时清理（不在此迁移删除，避免数据丢失）
+
+    幂等性：通过检查 thumbnail_cache 是否已有 size 列判断是否已迁移。
+    """
+    # 幂等检查：若 size 列已存在则跳过
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(thumbnail_cache)")}
+    if "size" in cols:
+        logger.info("v7 迁移已应用，跳过")
+        return
+
+    # 1. 创建新表（复合主键）
+    conn.executescript(
+        """
+        CREATE TABLE thumbnail_cache_new (
+            content_unit_id TEXT NOT NULL,
+            size INTEGER NOT NULL DEFAULT 64,
+            source_size_bytes INTEGER NOT NULL,
+            source_modified_at TEXT NOT NULL,
+            cache_filename TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('ok','missing','corrupt','unsupported','error')),
+            error_message TEXT,
+            generated_at TEXT NOT NULL,
+            PRIMARY KEY (content_unit_id, size)
+        );
+        """
+    )
+
+    # 2. 迁移旧数据（标记为 64 档）
+    conn.execute(
+        """
+        INSERT INTO thumbnail_cache_new
+            (content_unit_id, size, source_size_bytes, source_modified_at,
+             cache_filename, status, error_message, generated_at)
+        SELECT content_unit_id, 64, source_size_bytes, source_modified_at,
+               cache_filename, status, error_message, generated_at
+        FROM thumbnail_cache
+        """
+    )
+
+    # 3. 替换旧表
+    conn.executescript(
+        """
+        DROP TABLE thumbnail_cache;
+        ALTER TABLE thumbnail_cache_new RENAME TO thumbnail_cache;
+        CREATE INDEX idx_thumbnail_cache_unit ON thumbnail_cache(content_unit_id);
+        """
+    )
+    logger.info("迁移 v6 → v7 完成")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -346,4 +410,5 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (4, migrate_v3_to_v4),
     (5, migrate_v4_to_v5),
     (6, migrate_v5_to_v6),
+    (7, migrate_v6_to_v7),
 ]

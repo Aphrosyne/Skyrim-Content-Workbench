@@ -143,17 +143,18 @@ class TestDelete:
         cache_repo.upsert(
             ThumbnailCache(
                 content_unit_id="u-tc",
+                size=256,
                 source_size_bytes=100,
                 source_modified_at="2026-07-01T00:00:00Z",
-                cache_filename="u-tc.png",
+                cache_filename="u-tc_256.webp",
                 status="ok",
                 generated_at="2026-07-01T00:00:01Z",
             )
         )
-        assert cache_repo.get_by_id("u-tc") is not None
+        assert cache_repo.get_by_id_and_size("u-tc", 256) is not None
 
         # 删除 ContentUnit 应同时清理 thumbnail_cache（不抛 FK 违约）
         repo.delete("u-tc")
 
         assert repo.get_by_id("u-tc") is None
-        assert cache_repo.get_by_id("u-tc") is None
+        assert cache_repo.get_by_id_and_size("u-tc", 256) is None
