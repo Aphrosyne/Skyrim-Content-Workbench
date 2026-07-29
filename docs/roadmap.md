@@ -437,6 +437,34 @@
 - [x] **TD-L19**：`OperationHistory` delete 操作的 can_undo 必须为 False
 - [x] **TD-M11**：`MainWindow._commit` 失败时通过 `QMessageBox.critical` 提示用户
 
+### Task 0.5：数据目录路径抽象与隔离 ✅
+
+> 完成于 2026-07-29，版本 v0.31.0。独立前置任务，不纳入 Task 1，避免缓存架构与路径迁移耦合。
+
+**背景**：原应用数据目录固定在 `%LOCALAPPDATA%\SkyrimContentWorkbench\`，开发环境调试时数据混杂在系统 AppData 中不便管理。Task 1 的卡片视图缩略图缓存改造需要清晰的路径抽象，因此先独立完成数据目录迁移。
+
+**路径决策优先级**：
+1. `SCW_DATA_DIR` 环境变量（显式指定，生产环境用）
+2. 项目根目录 `data/`（开发环境默认，通过向上查找 `pyproject.toml` 判定）
+3. `%LOCALAPPDATA%\SkyrimContentWorkbench\`（Windows 回退）
+4. `~/.skyrimmodworkbench/`（非 Windows 回退）
+
+**安全约束（用户决策）**：
+- 程序**不执行任何自动迁移、复制、删除操作**——数据安全由用户掌控
+- 检测到旧 `%LOCALAPPDATA%\SkyrimContentWorkbench\` 有数据时，仅输出日志提示用户手动迁移
+- 迁移完成后（新目录已有 `app.db`）不再提示
+- 测试通过 `SCW_DATA_DIR` 环境变量严格隔离测试数据目录
+
+**验收：**
+- [x] 路径优先级正确：环境变量 > 项目根 data/ > AppData 回退
+- [x] 开发环境默认使用项目根 `data/`，生产环境可通过 `SCW_DATA_DIR` 切换
+- [x] 检测到旧目录时仅输出日志提示，**不执行任何文件操作**
+- [x] 旧目录原样保留（不删除、不复制、不移动）
+- [x] 新目录已有 `app.db` 时不再提示
+- [x] 中文路径与含空格路径正常工作
+- [x] 测试 fixture 通过 `SCW_DATA_DIR` 隔离，不污染项目 `data/`
+- [x] 全量回归：1048 passed, 3 skipped, ruff check + format 全通过
+
 ### Task 1：大图卡片 / 详细列表切换 + 在资源管理器中打开
 
 > 依赖前置：Task 0 扩展（v0.30.2）已实现标记文件夹时自动录入封面 + 右键「快速设置封面」，确保大图卡片视图有数据来源。

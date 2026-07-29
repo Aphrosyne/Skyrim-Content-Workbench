@@ -10,6 +10,44 @@
 
 ---
 
+## [0.31.0] - 2026-07-29
+
+Stage 5 Task 0.5：数据目录路径抽象与隔离（独立前置任务，不纳入 Task 1）
+
+将应用数据目录从 `%LOCALAPPDATA%\SkyrimContentWorkbench\` 迁移到项目根目录 `data/`，为开发环境提供独立数据目录，避免污染系统 AppData。**程序不执行任何自动迁移、复制、删除操作**——若检测到旧目录，仅输出日志提示用户手动迁移，数据安全由用户掌控。schema_version 维持 6，无数据库迁移。
+
+**新增功能**
+
+- [app_paths.py](src/app/app_paths.py) 重构 `get_app_data_root`：路径决策优先级为 `SCW_DATA_DIR 环境变量 > 项目根 data/（开发环境，通过向上查找 pyproject.toml 判定）> %LOCALAPPDATA%\SkyrimContentWorkbench\（Windows 回退）> ~/.skyrimmodworkbench/（非 Windows 回退）`
+- [app_paths.py](src/app/app_paths.py) 新增 `_find_project_root`：从本文件向上查找最多 5 层，定位含 `pyproject.toml` 的项目根
+- [app_paths.py](src/app/app_paths.py) 新增 `_log_legacy_appdata_hint_if_exists`：检测到旧 `%LOCALAPPDATA%\SkyrimContentWorkbench\` 有数据且新目录无 `app.db` 时，输出日志提示用户手动复制 `app.db`、`thumbnails/`、`exports/`、`logs/` 到新目录。**不执行任何文件操作**（用户决策：程序不动数据）
+- [main.py](src/app/main.py) 通过 `ensure_app_directories()` 在启动时创建目录结构（入口未变，仅内部实现变化）
+
+**安全约束**
+
+- 程序只负责创建新目录，不执行任何迁移、复制、移动、删除操作
+- 旧目录检测仅触发日志提示，不读取或复制旧目录内容
+- 测试 fixture 通过 `SCW_DATA_DIR` 环境变量严格隔离测试数据目录，避免污染项目 `data/`
+
+**配置变更**
+
+- 新增环境变量 `SCW_DATA_DIR`：显式指定应用数据目录路径（生产环境用）
+- 新增 [.gitignore](.gitignore) 规则 `/data/`：忽略项目根运行时数据目录
+- 保留未来生产环境通过 `SCW_DATA_DIR` 切换到 AppData 的能力
+
+**测试**
+
+- 新增 [tests/test_app_paths.py](tests/test_app_paths.py) 15 个测试：路径优先级（4）+ 项目根定位（2）+ 目录创建与幂等（2）+ 旧目录仅提示不动数据（4）+ 中文/空格路径与一致性（3）
+- 修复 [tests/conftest.py](tests/conftest.py) `temp_app_data` fixture：改用 `SCW_DATA_DIR` 隔离测试数据目录，避免测试写入项目 `data/` 污染
+- 全量回归：1048 passed, 3 skipped, ruff check + format 全通过
+
+**文档**
+
+- 更新 [docs/roadmap.md](docs/roadmap.md) Stage 5 部分：新增 Task 0.5 章节，标记完成
+- 更新 [docs/spec.md](docs/spec.md) 应用数据目录路径说明（如适用）
+
+---
+
 ## [0.30.2] - 2026-07-29
 
 Stage 5 Task 0 扩展：手动触发的快速设置封面功能

@@ -32,13 +32,16 @@ def qapp() -> Iterator[QApplication]:
 
 @pytest.fixture
 def temp_app_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """将 LOCALAPPDATA 指向临时目录，返回临时应用数据根目录的父目录。
+    """将 SCW_DATA_DIR 指向临时目录，返回临时应用数据根目录。
 
-    测试中 app_paths.get_app_data_root() 将返回 <temp_app_data>/SkyrimContentWorkbench。
+    Task 0.5 后 get_app_data_root() 优先返回项目根 data/（开发环境），
+    因此测试必须显式设置 SCW_DATA_DIR 以隔离数据目录，避免污染项目 data/。
     """
     root = tmp_path / "appdata"
     root.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("LOCALAPPDATA", str(root))
+    monkeypatch.setenv("SCW_DATA_DIR", str(root))
+    # 同时清理 LOCALAPPDATA 避免触发迁移逻辑
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
     yield root
 
 

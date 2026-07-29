@@ -26,6 +26,7 @@ venv/
 Thumbs.db
 .DS_Store
 
-# 本地开发运行时产生的应用数据（仅防止误提交；真实运行时数据位于 %LOCALAPPDATA%）
+# 本地开发运行时产生的应用数据（Task 0.5：数据目录迁移到项目根 data/）
+/data/
 /local_appdata/
 
