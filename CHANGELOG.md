@@ -10,6 +10,41 @@
 
 ---
 
+## [0.33.0] - 2026-07-29
+
+Stage 5 Task 1b：大图卡片 / 详细列表切换 + 在资源管理器中打开
+
+在 Task 1a 双档缓存架构基础上完成 UI 适配：列表视图改用 Qt 标准图标（移除封面缩略图），新增卡片视图（QListView IconMode）通过 CardListModel 代理 FileListModel 共享数据源（Q6:B），缩放滑块 128~512 支持双击输入，右栏封面预览扩大至 256×256，右键菜单新增「在资源管理器中打开」。
+
+**新增功能**
+
+- 新增 [CardListModel](src/app/card_list_model.py)：轻量代理 model，委托 FileListModel 共享同一份 FileEntry 列表（Q6:B 复用），切换视图不丢失数据。按 icon_size 动态选择缓存档位（≤256 用 256 档，>256 用 512 档），内置 QPixmap 内存缓存避免 data() 高频调用重复缩放
+- 新增 `ZoomSlider`（[main_window.py](src/app/main_window.py)）：继承 QSlider，双击弹出 QInputDialog 输入具体数值（128~512），弥补滑块步进不够精细的问题
+- 卡片视图缩放滑块范围 128~512（默认 256），通过 QSettings 持久化（Stage 5 Task 1 Q1=A）
+- 视图切换 QStackedWidget：QTableView（列表）/ QListView IconMode（卡片）自由切换，选中状态跨视图保持（用 entry.path 匹配，Q4=A）
+- 右键菜单「在资源管理器中打开」：调用 `explorer /select,` 定位到文件并选中，中文路径通过 list 形式传参自动处理
+
+**改动**
+
+- [file_list_model.py](src/app/file_list_model.py) `icon_for` 重构：移除缩略图查询逻辑，列表视图始终返回 Qt 标准文件/文件夹图标（Task 1a 决策：64×64 对列表视图无视觉价值）
+- [metadata_panel.py](src/app/metadata_panel.py) 封面预览尺寸 120×120 → 256×256，利用 512 档缓存缩小显示，质量优于直接用 256 档
+- [main_window.py](src/app/main_window.py) `_init_thumbnail_coordinator`：provider 注入目标从 FileListModel 改为 CardListModel（支持 size 参数）
+- [ui_constants.py](src/app/ui_constants.py) 滑块范围 96~256 → 128~512，新增双击输入对话框常量
+
+**架构决策**
+
+- CardListModel 独立注入支持 size 参数的 provider，与 FileListModel 解耦：列表视图不再查询缩略图，卡片视图按 icon_size 选择档位，两者职责清晰
+- 卡片名称不含 [内容单元] 标记（Q6:B）：卡片空间有限，完整信息通过 ToolTip 承载（路径 + 内容单元状态）
+- 512 档按需生成：滑块拖到 >256 时才查询/生成 512 档，避免全覆盖的磁盘膨胀
+
+**测试**
+
+- 新增 3 个测试文件：`test_card_list_model.py`（11 个）、`test_main_window_view_switch.py`（12 个）、`test_main_window_open_in_explorer.py`（6 个）
+- 更新 3 个测试文件适配新行为：`test_file_list_model_thumbnail.py`（列表视图标准图标）、`test_main_window_thumbnail.py`（CardListModel provider 注入）、`test_main_window_content.py`
+- 全量回归：1053 passed, 3 skipped, ruff check + format 全通过
+
+---
+
 ## [0.32.0] - 2026-07-29
 
 Stage 5 Task 1a：缩略图缓存架构改造（双档 WebP 缓存，为 Task 1b 卡片视图做准备）

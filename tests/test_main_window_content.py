@@ -486,8 +486,8 @@ def test_switching_tree_node_clears_metadata(qapp, main_window_env) -> None:
             qapp.processEvents()
             # 普通文件夹下只有 readme.txt
             assert window.entry_count() == 1
-            # 元数据面板应清空
-            assert "双击" in window.metadata_full_text()
+            # 元数据面板应清空（显示"单击内容单元查看元数据"提示）
+            assert "单击" in window.metadata_full_text()
             return
     pytest.fail("未找到普通文件夹节点")
 

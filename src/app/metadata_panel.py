@@ -226,7 +226,9 @@ class MetadataPanel(QWidget):
 
         cover_preview_row = QHBoxLayout()
         self._cover_preview = QLabel(ui.METADATA_PANEL_COVER_PREVIEW_PLACEHOLDER)
-        self._cover_preview.setFixedSize(120, 120)
+        # Task 1b：右栏大封面预览，从 120×120 改为 256×256
+        # 利用 512 档缓存缩小显示（若可用），质量优于直接用 256 档
+        self._cover_preview.setFixedSize(256, 256)
         self._cover_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._cover_preview.setStyleSheet("border: 1px solid #ccc; color: #999;")
         cover_preview_row.addWidget(self._cover_preview)
@@ -471,7 +473,11 @@ class MetadataPanel(QWidget):
         self._refresh_preset_list()
 
     def _refresh_cover_preview(self, cover_path: str | None) -> None:
-        """刷新封面预览（基于 current_unit.path + cover_path）。"""
+        """刷新封面预览（基于 current_unit.path + cover_path）。
+
+        Task 1b：右栏大封面预览，从 120×120 改为 256×256。
+        优先加载原图（若有），缩放到 256×256 显示。
+        """
         if self._current_unit is None:
             self._cover_value.setText(ui.METADATA_PANEL_COVER_NONE)
             self._cover_preview.setText(ui.METADATA_PANEL_COVER_PREVIEW_PLACEHOLDER)
@@ -486,13 +492,13 @@ class MetadataPanel(QWidget):
 
         # 显示相对路径
         self._cover_value.setText(cover_path)
-        # 加载预览图（按 120x120 缩放保持比例）
+        # 加载预览图（按 256x256 缩放保持比例，Task 1b）
         full_path = Path(self._current_unit.path) / cover_path
         pixmap = QPixmap(str(full_path))
         if not pixmap.isNull():
             scaled = pixmap.scaled(
-                120,
-                120,
+                256,
+                256,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )

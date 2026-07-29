@@ -55,6 +55,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QListView,
     QListWidget,
@@ -121,6 +122,28 @@ VIEW_INDEX_CARD = 1
 
 # 详情区路径 / 元数据路径字段在 Elide 时保留的左右字符比例参考
 # 详情区第 2 行为路径，元数据面板第 2 行为路径（详见 _apply_elide）
+
+
+class ZoomSlider(QSlider):
+    """缩放滑块（Task 1b：支持双击输入具体数值）。
+
+    双击滑块弹出输入对话框，允许用户输入 128~512 范围内的具体数值。
+    """
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if event.button() == Qt.LeftButton:
+            value, ok = QInputDialog.getInt(
+                self,
+                ui.ZOOM_INPUT_DIALOG_TITLE,
+                ui.ZOOM_INPUT_DIALOG_LABEL,
+                self.value(),
+                ui.ZOOM_SLIDER_MIN,
+                ui.ZOOM_SLIDER_MAX,
+                1,
+            )
+            if ok:
+                self.setValue(value)
+        super().mouseDoubleClickEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -193,36 +216,41 @@ class MainWindow(QMainWindow):
     def _init_thumbnail_coordinator(self) -> None:
         """初始化缩略图调度器并连接信号。
 
-        若 thumbnail_coordinator 已注入（测试场景），直接使用；
-        否则创建独立连接 + Service + Coordinator。
+        Task 1b：列表视图不再使用缩略图（改用 Qt 标准 icon），
+        仅 CardListModel 注入 provider（支持 size 参数）。
         """
         if self._thumbnail_coordinator is None:
-            return  # 未注入 → 文件列表退化为标准图标
+            return  # 未注入 → 卡片视图退化为标准图标
         self._thumbnail_coordinator.start()
         self._thumbnail_coordinator.thumbnail_ready.connect(
             self._on_thumbnail_ready,
             Qt.QueuedConnection,  # noqa: UP037
         )
-        # 注入 provider 到 FileListModel
-        self._content_list_model.set_thumbnail_provider(self._thumbnail_provider)
+        # Task 1b：注入 provider 到 CardListModel（支持 size 参数）
+        self._card_list_model.set_thumbnail_provider(self._card_thumbnail_provider)
 
-    def _thumbnail_provider(
+    def _card_thumbnail_provider(
         self,
         content_unit_id: str,
         source_path: str,
+        size: int,
     ) -> QPixmap | None:
-        """缩略图查询回调：缓存命中同步返回 QPixmap，未命中投递后台生成。"""
+        """卡片视图缩略图查询回调（Task 1b：支持 size 参数）。
+
+        缓存命中同步返回 QPixmap，未命中投递后台生成。
+        """
         if self._thumbnail_coordinator is None:
             return None
-        return self._thumbnail_coordinator.request_thumbnail(content_unit_id, Path(source_path))
+        return self._thumbnail_coordinator.request_thumbnail(
+            content_unit_id, Path(source_path), size=size
+        )
 
     def _on_thumbnail_ready(self, content_unit_id: str, size: int) -> None:
         """后台缩略图生成完成：刷新对应行 DecorationRole。
 
-        Task 1a：信号新增 size 参数。当前 UI 仅显示 256 档（列表视图无封面、
-        卡片视图未接入），size 参数暂未使用，待 Task 1b 卡片视图接入。
+        Task 1b：通知 CardListModel 按指定档位刷新。
         """
-        self._content_list_model.notify_thumbnail_ready(content_unit_id)
+        self._card_list_model.notify_thumbnail_ready(content_unit_id, size)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         """关闭窗口前等待后台线程退出，避免 QThread Running 状态析构 CTD。"""
@@ -474,7 +502,7 @@ class MainWindow(QMainWindow):
         # 缩放滑块（Stage 5 Task 1，Q3=A：纳入卡片缩放）
         zoom_label = QLabel(ui.ZOOM_SLIDER_LABEL)
         view_switch_layout.addWidget(zoom_label)
-        self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self._zoom_slider = ZoomSlider(Qt.Orientation.Horizontal)
         self._zoom_slider.setMinimum(ui.ZOOM_SLIDER_MIN)
         self._zoom_slider.setMaximum(ui.ZOOM_SLIDER_MAX)
         self._zoom_slider.setValue(ui.ZOOM_SLIDER_DEFAULT)

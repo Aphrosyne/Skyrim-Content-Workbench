@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from pathlib import Path
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtGui import QIcon, QPixmap
@@ -179,7 +178,7 @@ class FileListModel(QAbstractTableModel):
         if role == Qt.UserRole:
             return entry
         if role == Qt.DecorationRole and col == COL_NAME:
-            return self._icon_for(entry)
+            return self.icon_for(entry)
         return None
 
     def headerData(  # noqa: N802 (Qt 命名)
@@ -256,36 +255,18 @@ class FileListModel(QAbstractTableModel):
         """返回行数（供测试）。"""
         return len(self._entries)
 
-    # --- 内部 ---
+    # --- 图标接口（Stage 5 Task 1：icon_for 公开供 CardListModel 复用） ---
 
-    def _icon_for(self, entry: FileEntry) -> QIcon | None:
-        """返回条目图标。
+    def icon_for(self, entry: FileEntry) -> QIcon | None:
+        """返回条目图标（Stage 5 Task 1b：列表视图改用 Qt 标准 icon）。
 
-        Stage 4 Task 4 优先级：
-        1. 内容单元 + 有 cover_path + provider 返回 QPixmap → 封面缩略图（QIcon 包装）
-        2. 其他情况 → Qt 标准文件/文件夹图标
+        Task 1b 决策：列表视图移除封面缩略图（64×64 视觉价值有限），
+        改用 Qt 标准文件/文件夹图标。封面浏览由卡片视图承担。
+
+        优先级：
+        1. 文件夹 → Qt 文件夹图标
+        2. 文件 → Qt 文件图标
         """
-        # 优先尝试缩略图
-        if (
-            self._thumbnail_provider is not None
-            and entry.content_unit is not None
-            and entry.content_unit.cover_path
-        ):
-            unit_id = entry.content_unit.id
-            # 缓存命中
-            if unit_id in self._thumbnail_cache:
-                pixmap = self._thumbnail_cache[unit_id]
-                if pixmap is not None:
-                    return QIcon(pixmap)
-                # None 表示 provider 已查过但无可用缩略图 → 退化为标准图标
-            else:
-                # 调用 provider（可能同步返回 QPixmap，或返回 None 触发后台生成）
-                source_path = str(Path(entry.content_unit.path) / entry.content_unit.cover_path)
-                pixmap = self._thumbnail_provider(unit_id, source_path)
-                self._thumbnail_cache[unit_id] = pixmap
-                if pixmap is not None:
-                    return QIcon(pixmap)
-        # 退化为标准图标
         self._ensure_icons()
         return self._dir_icon if entry.is_dir else self._file_icon
 

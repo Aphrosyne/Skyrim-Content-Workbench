@@ -87,6 +87,8 @@ MENU_QUICK_SET_COVER = "快速设置封面"
 MENU_QUICK_SET_COVER_NO_IMAGE = "该目录无可用图片"
 MENU_QUICK_SET_COVER_ALREADY_SET = "已设置封面，未覆盖"
 MENU_QUICK_SET_COVER_OK = "封面已设置"
+MENU_OPEN_IN_EXPLORER = "在资源管理器中打开"
+MENU_OPEN_IN_EXPLORER_FAILED = "无法打开资源管理器"
 
 # 创建 Mod 组对话框
 CREATE_MOD_GROUP_DIALOG_TITLE = "创建 Mod 组"
@@ -145,7 +147,7 @@ QUICK_INSERT_SELF_SUBDIR_HINT = "不能将 Mod 组移动到自身子目录内。
 
 # 元数据面板区域
 METADATA_GROUP_TITLE = "元数据"
-METADATA_NOT_SELECTED = "双击内容单元查看元数据。"
+METADATA_NOT_SELECTED = "单击内容单元查看元数据。"
 METADATA_NOT_CONTENT_UNIT = "此项不是内容单元，无元数据。"
 METADATA_TITLE_LABEL = "标题"
 METADATA_PATH_LABEL = "路径"
@@ -338,3 +340,25 @@ TAG_FILTER_CATEGORY_BADGE = " ({count})"  # 折叠态下分类按钮显示的已
 THUMBNAIL_SIZE = 64  # 列表中小图标尺寸（默认值，spec §9「列表模式下小图标」）
 THUMBNAIL_FORMAT = "PNG"  # 缓存文件格式（保留透明通道，与圆角兼容）
 THUMBNAIL_FILENAME_TEMPLATE = "{unit_id}.png"  # 缓存文件命名（spec §9 / architecture.md §9）
+
+# 视图切换（Stage 5 Task 1）
+VIEW_SWITCH_GROUP_LABEL = "视图"
+VIEW_SWITCH_LIST = "列表"
+VIEW_SWITCH_CARD = "卡片"
+VIEW_SWITCH_LIST_TOOLTIP = "切换到详细列表视图（4 列：名称/类型/大小/修改日期）"
+VIEW_SWITCH_CARD_TOOLTIP = "切换到大图卡片视图（仅显示封面 + 名称）"
+ZOOM_SLIDER_LABEL = "缩放"
+ZOOM_SLIDER_TOOLTIP = "调整卡片图标尺寸（仅卡片视图生效，双击输入具体数值）"
+ZOOM_SLIDER_MIN = 128
+ZOOM_SLIDER_MAX = 512
+ZOOM_SLIDER_DEFAULT = 256
+ZOOM_SLIDER_SINGLE_STEP = 16
+ZOOM_SLIDER_PAGE_STEP = 64
+
+# 滑块双击输入对话框（Task 1b）
+ZOOM_INPUT_DIALOG_TITLE = "缩放"
+ZOOM_INPUT_DIALOG_LABEL = "输入尺寸 (128-512):"
+
+# CardListModel 卡片名称 ToolTip 中内容单元状态文本（Stage 5 Task 1，Q6:B）
+CARD_TOOLTIP_CONTENT_UNIT_STATUS = "内容单元状态：{status}"
+CARD_TOOLTIP_SEPARATOR = " | "
