@@ -406,11 +406,14 @@ content_unit_tag
 
 operation_history
   - id TEXT PRIMARY KEY
-  - operation_type TEXT NOT NULL CHECK(operation_type IN ('move','delete','rename','new_folder'))
+  - operation_type TEXT NOT NULL CHECK(operation_type IN ('move','delete','rename','new_folder','undo','copy'))
   - source_path TEXT NOT NULL
   - target_path TEXT
   - created_at TEXT NOT NULL
   - can_undo INTEGER NOT NULL DEFAULT 1
+  - undone_at TEXT NULL  # v8 新增，撤销时间戳；NULL 表示未撤销
+  # v9：CHECK 约束扩展 'copy'（Stage 5 Task 3b）
+  # 自动清理上限：max_history_records=1000，写入前预清理，保留可撤销记录
 
 managed_root（保留）
   - id, real_path, path_key UNIQUE, display_name, created_at, updated_at

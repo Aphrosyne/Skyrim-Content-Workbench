@@ -10,6 +10,67 @@
 
 ---
 
+## [0.38.0] - 2026-07-30
+
+Stage 5 Task 3b：应用内文件复制/剪切/粘贴 + 冲突解决 + 操作历史自动清理
+
+为 Task 3a 已实现的文件操作补齐**复制/剪切/粘贴**能力，配套冲突解决对话框，并引入操作历史上限保护避免数据库膨胀。schema_version v8 → v9 迁移。
+
+**新增功能**
+
+- Schema v9 迁移：operation_history.operation_type CHECK 约束扩展包含 `'copy'`，支持复制操作历史记录。SQLite 不支持直接修改 CHECK 约束，采用重建表方式迁移，旧数据全部保留
+- 新增 [ClipboardService](src/application/clipboard_service.py)：应用内剪贴板（Q3=A 不与系统剪贴板混用，Q6=A 不持久化，实例变量保存状态，关闭即清空）
+  - `set_copy(paths)` / `set_cut(paths)`：设置复制/剪切状态，覆盖旧状态
+  - `get()`：返回当前 ClipboardEntry 或 None
+  - `is_cut(path)` / `cut_paths()`：查询剪切状态（用于 UI 半透明高亮）
+  - `clear()`：清空剪贴板
+- 新增 [ConflictResolutionService](src/application/conflict_resolution_service.py)：粘贴冲突检测与解决
+  - `scan_conflicts(src_paths, dst_dir, operation)`：扫描目标目录已有同名文件，生成 ConflictItem 列表（含 suggested_dst 重命名建议，Windows 风格 `file (1).ext` 递增）
+  - `resolve(conflicts, decisions)`：根据用户决策（覆盖/跳过/重命名）生成 ResolvedAction 列表，覆盖时 `overwrite=True` 由调用方先删除目标
+  - 跨盘剪切检测：`is_cross_drive` 标记（Q7=B 跨盘剪切拒绝提示，跨盘复制允许）
+- 新增 [ConflictResolutionDialog](src/app/conflict_resolution_dialog.py)：冲突解决 UI
+  - QTableWidget 展示冲突列表（源文件名 / 处理方式单选 / 重命名预览）
+  - 默认「重命名」（最安全选项）；支持「应用到全部」一键统一所有行决策
+- 扩展 [FileOperationService](src/infrastructure/file_operation_service.py)：
+  - 新增 `copy(src, dst, *, overwrite=False)` 方法：复制文件/目录，跨盘复制允许（不退化），can_undo=False（Q4=A 不可撤销）
+  - `move()` / `copy()` 新增 `overwrite` keyword-only 参数：为 True 时调用 `_remove_target_for_overwrite()` 先删除目标 + 同步元数据（folder_cache + ContentUnit），再执行移动/复制
+  - 新增 `_remove_target_for_overwrite()`：覆盖前直接删除目标（不进回收站，不写 delete 历史），同步失败 best-effort 记日志不中断
+  - 新增 `_sync_on_copy()`：目录复制同步 folder_cache（on_folder_created）+ 复制 ContentUnit（新 id + 新 path，Q10=A 元数据保留）
+  - **操作历史自动清理**：`__init__` 新增 `max_history_records: int = 1000` 参数；新增 `_create_history()` 辅助方法，**写入前**预清理到 `limit-1`（为新记录腾位，避免新记录被误删），仅删除 `can_undo=0 或 undone_at IS NOT NULL` 的记录（保留可撤销记录供用户撤销）
+  - 所有 `self._repo.create(history)` 替换为 `self._create_history(history)`
+- 扩展 [OperationHistoryRepository](src/infrastructure/repositories/operation_history.py)：
+  - 新增 `count()`：返回 operation_history 总记录数
+  - 新增 `delete_oldest_exceeding(limit, *, preserve_can_undo=True)`：删除超出上限的最旧记录，preserve_can_undo=True 时保留可撤销记录（can_undo=1 且 undone_at IS NULL）
+- [MainWindow](src/app/main_window.py) 集成剪贴板 + 冲突解决 + 快捷键 + 右键菜单：
+  - 注入 ClipboardService
+  - **快捷键**：中栏和目录树均注册 Ctrl+C/X/V（WidgetShortcut 上下文，用户补充需求：目录树支持全部快捷键）；目录树补齐 F2/Delete
+  - **右键菜单**：中栏和目录树右键菜单添加「复制」「剪切」「粘贴」「删除」项；粘贴项根据剪贴板状态动态启用/禁用
+  - **半透明渲染**：FileListModel / CardListModel 新增 `set_cut_paths()` 方法，剪切条目以 50% 透明度（alpha=128）渲染（Q12=A）
+  - **粘贴流程**：`_perform_paste()` 调用 ConflictResolutionService 检测冲突 → ConflictResolutionDialog 用户决策 → FileOperationService 执行 copy/move（传递 overwrite 参数）
+- [ui_constants.py](src/app/ui_constants.py) 新增剪贴板 / 冲突解决文案：SHORTCUT_COPIED / SHORTCUT_CUT / SHORTCUT_PASTED / SHORTCUT_PASTE_EMPTY / SHORTCUT_PASTE_PARTIAL / SHORTCUT_PASTE_CROSS_DRIVE_CUT / SHORTCUT_PASTE_SRC_NOT_FOUND / SHORTCUT_PASTE_FAILED / CONFLICT_DIALOG_* / MENU_COPY / MENU_CUT / MENU_PASTE
+
+**设计要点**
+
+- **应用内剪贴板（Q3=A）**：状态保存在 ClipboardService 实例变量中，不与系统剪贴板混用，关闭即清空，避免误粘贴外部内容到 Mod 目录
+- **冲突解决流程分离**：scan_conflicts（检测）→ ConflictResolutionDialog（用户决策）→ resolve（生成 ResolvedAction）→ FileOperationService 执行，逻辑清晰可测试
+- **覆盖前先删除**：ConflictResolutionDialog 选「覆盖」时，resolve 返回 `overwrite=True`，FileOperationService 先删除目标 + 同步元数据，再执行 copy/move。避免直接调用 copy/move 因 `dst.exists()` 抛 ConflictError
+- **操作历史预清理策略**：写入新记录前先清理到 `limit-1`，为新记录腾位；仅删除不可撤销/已撤销记录，保留可撤销记录供用户撤销
+- **目录树与中栏功能统一（用户补充）**：目录树支持全部快捷键（F2/Delete/Ctrl+C/X/V）及右键菜单（复制/剪切/粘贴/删除），复用 `_perform_paste` 等核心方法
+- **快捷键上下文分离**：F2/Delete 仅需 FileOperationService；Ctrl+C/X/V 需 FileOperationService + ClipboardService，独立 gating 避免互相阻塞
+
+**测试**
+
+- 新增 [test_clipboard_service.py](tests/test_clipboard_service.py) 13 个用例：set_copy/set_cut 覆盖 / get / is_cut / cut_paths / clear / 输入不变性 / now_provider 注入
+- 新增 [test_conflict_resolution_service.py](tests/test_conflict_resolution_service.py) 18 个用例：scan_conflicts（无冲突/有冲突/多源/跨盘检测） / resolve（覆盖/跳过/重命名/数量不匹配/非法决策） / _suggest_rename 递增 / has_conflict / has_cross_drive_cut
+- 新增 [test_conflict_resolution_dialog.py](tests/test_conflict_resolution_dialog.py) 8 个用例：默认重命名 / 多冲突 / 空列表 / 应用到全部 / 中文文件名 / 预览列 / 单选切换 / unchecked 忽略
+- 新增 [test_operation_history_cleanup.py](tests/test_operation_history_cleanup.py) 14 个用例：count / delete_oldest_exceeding（未超限/超限/保留可撤销/不区分删除/已撤销可清理/0关闭/负数） / FileOperationService 自动清理（超限触发/0关闭/保留可撤销）
+- 扩展 [test_file_operation_service.py](tests/test_file_operation_service.py) TestCopy 类 8 个用例 + TestCopyAutoSync 4 个用例 + TestCopyWithoutSync 1 用例 + copy overwrite 3 用例 + move overwrite 2 用例
+- 扩展 [test_main_window_shortcuts.py](tests/test_main_window_shortcuts.py) 替换 Ctrl+C/X/V 占位测试为真实功能测试 12 用例 + 目录树全快捷键测试
+- 扩展 [test_migrations.py](tests/test_migrations.py) v8→v9 迁移测试 4 用例 + 修正 v0→current 版本断言
+- 全量回归：1262 passed, 5 skipped, ruff check + format 全通过
+
+---
+
 ## [0.37.0] - 2026-07-30
 
 Stage 5 Task 4：键盘快捷键

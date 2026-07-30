@@ -1,14 +1,16 @@
-"""MainWindow 键盘快捷键集成测试（Stage 5 Task 4）。
+"""MainWindow 键盘快捷键集成测试（Stage 5 Task 4 + Task 3b）。
 
 覆盖：
 - F2（中栏）：重命名选中条目（Q1=A：多选取第一个）
 - F2（目录树）：重命名目录树选中节点（用户补充需求）
 - Delete（中栏）：删除选中条目
+- Delete（目录树）：删除选中节点（Task 3b 补充）
 - Ctrl+Z：撤销最近可撤销操作（Q2=A 二次确认；Q3=B 跳过不可撤销/已撤销）
 - Ctrl+A：全选中栏内容
-- Ctrl+C/X/V（中栏）：占位（Q4=C 静默忽略，不提示）
-- 无选中条目时 F2/Delete 状态栏提示
+- Ctrl+C/X/V（中栏 + 目录树）：复制/剪切/粘贴（Task 3b 实现）
+- 无选中条目时 F2/Delete/Ctrl+C/X 状态栏提示
 - 无可撤销操作时 Ctrl+Z 状态栏提示
+- 空剪贴板时 Ctrl+V 状态栏提示
 - 快捷键仅在中栏/目录树聚焦时生效（Q5=A WidgetShortcut）
 """
 
@@ -25,6 +27,7 @@ from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QInputDialog, QMessageBox  # noqa: E402
 
 from app.main_window import MainWindow  # noqa: E402
+from application.clipboard_service import ClipboardService  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
 from application.folder_tree_service import FolderTreeService  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
@@ -105,6 +108,8 @@ def shortcut_env(qapp, tmp_path: Path):
         now_provider=lambda: "2026-07-30T12:00:00Z",
         uuid_provider=fake_uuid,
     )
+    # Stage 5 Task 3b：注入 ClipboardService
+    clipboard_service = ClipboardService()
 
     root_dir = _make_tree(tmp_path)
     root = managed_service.add_root(root_dir)
@@ -119,6 +124,7 @@ def shortcut_env(qapp, tmp_path: Path):
         commit_callback=conn.commit,
         file_operation_service=file_op_service,
         undo_service=undo_service,
+        clipboard_service=clipboard_service,
     )
     yield window, conn, root_dir, root, file_op_service, undo_service
 
@@ -401,26 +407,182 @@ class TestCtrlASelectAll:
         assert len(selected_rows) == model.entry_count()
 
 
-# === Ctrl+C/X/V 占位 ===
+# === Ctrl+C/X/V 复制/剪切/粘贴（Task 3b） ===
 
 
-class TestCtrlCXPVPlaceholder:
-    def test_ctrl_c_silent_no_op(self, qapp, shortcut_env) -> None:
-        """Q4=C：Ctrl+C 静默忽略，不提示。"""
+class TestCtrlCopy:
+    def test_ctrl_c_copies_selected_to_clipboard(self, qapp, shortcut_env) -> None:
+        """Ctrl+C 选中条目复制到剪贴板。"""
         window, _, _, _, _, _ = shortcut_env
-        # 直接调用 lambda（无验证方式，仅确保不抛异常）
-        # QShortcut 的 lambda: None 无法直接测试，这里验证快捷键已注册
-        assert hasattr(window, "_shortcut_copy")  # noqa: SLF001
+        _select_stash(qapp, window)
+        _select_entry(qapp, window, "file1.7z")
+        qapp.processEvents()
 
-    def test_ctrl_x_silent_no_op(self, qapp, shortcut_env) -> None:
-        """Q4=C：Ctrl+X 静默忽略，不提示。"""
-        window, _, _, _, _, _ = shortcut_env
-        assert hasattr(window, "_shortcut_cut")  # noqa: SLF001
+        window._on_shortcut_copy()  # noqa: SLF001
+        qapp.processEvents()
 
-    def test_ctrl_v_silent_no_op(self, qapp, shortcut_env) -> None:
-        """Q4=C：Ctrl+V 静默忽略，不提示。"""
+        entry = window._clipboard_service.get()  # noqa: SLF001
+        assert entry is not None
+        assert entry.operation == "copy"
+        assert len(entry.paths) == 1
+        assert "file1.7z" in entry.paths[0]
+
+    def test_ctrl_c_no_selection_status_message(self, qapp, shortcut_env) -> None:
+        """无选中条目时 Ctrl+C 状态栏提示。"""
         window, _, _, _, _, _ = shortcut_env
-        assert hasattr(window, "_shortcut_paste")  # noqa: SLF001
+        _select_stash(qapp, window)
+        # 清除中栏选中
+        window._content_view.clearSelection()  # noqa: SLF001
+        qapp.processEvents()
+
+        window._on_shortcut_copy()  # noqa: SLF001
+
+        # 剪贴板应仍为空
+        assert window._clipboard_service.get() is None  # noqa: SLF001
+
+    def test_ctrl_c_clears_previous_cut_highlight(self, qapp, shortcut_env) -> None:
+        """Ctrl+C 后清除之前的剪切高亮。"""
+        window, _, _, _, _, _ = shortcut_env
+        _select_stash(qapp, window)
+        _select_entry(qapp, window, "file1.7z")
+        qapp.processEvents()
+
+        # 先剪切
+        window._on_shortcut_cut()  # noqa: SLF001
+        qapp.processEvents()
+        assert window._content_list_model._cut_paths  # noqa: SLF001
+
+        # 再复制 → 清除剪切高亮
+        window._on_shortcut_copy()  # noqa: SLF001
+        qapp.processEvents()
+        assert window._content_list_model._cut_paths == set()  # noqa: SLF001
+
+
+class TestCtrlCut:
+    def test_ctrl_x_cuts_selected_to_clipboard(self, qapp, shortcut_env) -> None:
+        """Ctrl+X 选中条目剪切到剪贴板。"""
+        window, _, _, _, _, _ = shortcut_env
+        _select_stash(qapp, window)
+        _select_entry(qapp, window, "file1.7z")
+        qapp.processEvents()
+
+        window._on_shortcut_cut()  # noqa: SLF001
+        qapp.processEvents()
+
+        entry = window._clipboard_service.get()  # noqa: SLF001
+        assert entry is not None
+        assert entry.operation == "cut"
+        assert len(entry.paths) == 1
+
+    def test_ctrl_x_sets_cut_highlight(self, qapp, shortcut_env) -> None:
+        """Ctrl+X 后中栏条目半透明渲染（Q12=A）。"""
+        window, _, _, _, _, _ = shortcut_env
+        _select_stash(qapp, window)
+        _select_entry(qapp, window, "file1.7z")
+        qapp.processEvents()
+
+        window._on_shortcut_cut()  # noqa: SLF001
+        qapp.processEvents()
+
+        # cut_paths 应包含选中路径
+        cut_paths = window._content_list_model._cut_paths  # noqa: SLF001
+        assert len(cut_paths) == 1
+
+    def test_ctrl_x_no_selection_status_message(self, qapp, shortcut_env) -> None:
+        """无选中条目时 Ctrl+X 状态栏提示。"""
+        window, _, _, _, _, _ = shortcut_env
+        _select_stash(qapp, window)
+        window._content_view.clearSelection()  # noqa: SLF001
+        qapp.processEvents()
+
+        window._on_shortcut_cut()  # noqa: SLF001
+
+        assert window._clipboard_service.get() is None  # noqa: SLF001
+
+
+class TestCtrlPaste:
+    def test_ctrl_v_empty_clipboard_status_message(self, qapp, shortcut_env) -> None:
+        """空剪贴板时 Ctrl+V 状态栏提示。"""
+        window, _, _, _, _, _ = shortcut_env
+        _select_stash(qapp, window)
+        qapp.processEvents()
+
+        # 确保剪贴板为空
+        window._clipboard_service.clear()  # noqa: SLF001
+
+        window._on_shortcut_paste()  # noqa: SLF001
+        qapp.processEvents()
+
+        # 剪贴板仍为空，无文件操作
+        assert window._clipboard_service.get() is None  # noqa: SLF001
+
+    def test_ctrl_v_pastes_copied_file(self, qapp, shortcut_env) -> None:
+        """Ctrl+V 粘贴复制的文件到当前目录。"""
+        window, _, root_dir, _, _, _ = shortcut_env
+        _select_stash(qapp, window)
+        _select_entry(qapp, window, "file1.7z")
+        qapp.processEvents()
+
+        # 复制 file1.7z
+        window._on_shortcut_copy()  # noqa: SLF001
+        qapp.processEvents()
+
+        # 切换到根目录（粘贴目标）
+        model = window._tree_model  # noqa: SLF001
+        root_idx = model.index(0, 0)
+        window._tree_view.setCurrentIndex(root_idx)  # noqa: SLF001
+        qapp.processEvents()
+
+        # 粘贴到根目录
+        window._on_shortcut_paste_tree()  # noqa: SLF001
+        qapp.processEvents()
+
+        # 根目录应出现 file1.7z 副本
+        assert (root_dir / "file1.7z").is_file()
+        # 源文件保留（copy 不删除源）
+        assert (root_dir / "Stash" / "file1.7z").is_file()
+
+
+class TestCtrlCopyCutTree:
+    """目录树 Ctrl+C/X/V（Task 3b 补充：目录树支持全部快捷键）。"""
+
+    def test_ctrl_c_tree_copies_node(self, qapp, shortcut_env) -> None:
+        """Ctrl+C 目录树选中节点复制到剪贴板。"""
+        window, _, _, _, _, _ = shortcut_env
+        _select_stash(qapp, window)
+        qapp.processEvents()
+
+        window._on_shortcut_copy_tree()  # noqa: SLF001
+        qapp.processEvents()
+
+        entry = window._clipboard_service.get()  # noqa: SLF001
+        assert entry is not None
+        assert entry.operation == "copy"
+        assert "Stash" in entry.paths[0]
+
+    def test_ctrl_x_tree_cuts_node(self, qapp, shortcut_env) -> None:
+        """Ctrl+X 目录树选中节点剪切到剪贴板。"""
+        window, _, _, _, _, _ = shortcut_env
+        _select_stash(qapp, window)
+        qapp.processEvents()
+
+        window._on_shortcut_cut_tree()  # noqa: SLF001
+        qapp.processEvents()
+
+        entry = window._clipboard_service.get()  # noqa: SLF001
+        assert entry is not None
+        assert entry.operation == "cut"
+
+    def test_ctrl_c_tree_no_selection(self, qapp, shortcut_env) -> None:
+        """目录树无选中时 Ctrl+C 状态栏提示。"""
+        window, _, _, _, _, _ = shortcut_env
+        # 清除目录树选中
+        window._tree_view.clearSelection()  # noqa: SLF001
+        qapp.processEvents()
+
+        window._on_shortcut_copy_tree()  # noqa: SLF001
+
+        assert window._clipboard_service.get() is None  # noqa: SLF001
 
 
 # === 快捷键注册验证 ===
@@ -428,8 +590,9 @@ class TestCtrlCXPVPlaceholder:
 
 class TestShortcutRegistration:
     def test_shortcuts_registered_with_file_op_service(self, qapp, shortcut_env) -> None:
-        """注入 FileOperationService 时所有快捷键已注册。"""
+        """注入 FileOperationService + ClipboardService 时所有快捷键已注册。"""
         window, _, _, _, _, _ = shortcut_env
+        # 中栏快捷键
         assert hasattr(window, "_shortcut_rename")  # noqa: SLF001
         assert hasattr(window, "_shortcut_delete")  # noqa: SLF001
         assert hasattr(window, "_shortcut_select_all")  # noqa: SLF001
@@ -437,7 +600,12 @@ class TestShortcutRegistration:
         assert hasattr(window, "_shortcut_cut")  # noqa: SLF001
         assert hasattr(window, "_shortcut_paste")  # noqa: SLF001
         assert hasattr(window, "_shortcut_undo")  # noqa: SLF001
+        # 目录树快捷键（Task 3b：目录树支持全部快捷键）
         assert hasattr(window, "_shortcut_rename_tree")  # noqa: SLF001
+        assert hasattr(window, "_shortcut_delete_tree")  # noqa: SLF001
+        assert hasattr(window, "_shortcut_copy_tree")  # noqa: SLF001
+        assert hasattr(window, "_shortcut_cut_tree")  # noqa: SLF001
+        assert hasattr(window, "_shortcut_paste_tree")  # noqa: SLF001
 
     def test_undo_shortcut_not_registered_without_undo_service(self, qapp, tmp_path: Path) -> None:
         """未注入 UndoService 时 Ctrl+Z 快捷键不注册。"""

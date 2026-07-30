@@ -243,6 +243,35 @@ class TestMove:
 
         assert unrelated.read_text(encoding="utf-8") == "keep-me"
 
+    def test_move_overwrite_replaces_existing_file(self, service, tmp_path: Path) -> None:
+        """overwrite=True 时覆盖已存在的目标文件。"""
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_text("new content")
+        dst = tmp_path / "dst.txt"
+        dst.write_text("old content")
+
+        svc.move(src, dst, overwrite=True)
+
+        # 目标被覆盖为新内容
+        assert dst.read_text() == "new content"
+        # 源已移动（不存在）
+        assert not src.exists()
+
+    def test_move_overwrite_false_still_raises_conflict(self, service, tmp_path: Path) -> None:
+        """overwrite=False 时目标已存在仍抛 ConflictError（向后兼容）。"""
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_text("src")
+        dst = tmp_path / "dst.txt"
+        dst.write_text("existing")
+
+        with pytest.raises(ConflictError):
+            svc.move(src, dst, overwrite=False)
+
+        with pytest.raises(ConflictError):
+            svc.move(src, dst)  # 默认 overwrite=False
+
 
 # === 跨盘检测（Windows 单盘环境跳过） ===
 
@@ -1182,5 +1211,307 @@ class TestDeleteWithoutSync:
 
         # folder_cache 表为空（无 helper 注入，不写）
         assert folder_cache_repo.list_all() == []
+
+        conn.close()
+
+
+# === Stage 5 Task 3b：copy ===
+
+
+class TestCopy:
+    """copy 基础测试（不注入 helper/repo）。"""
+
+    def test_copy_file_success(self, service, tmp_path: Path) -> None:
+        """复制文件成功，源保留，目标内容一致。"""
+        svc, _ = service
+        src = tmp_path / "file.7z"
+        src.write_bytes(b"content")
+        dst = tmp_path / "copy.7z"
+
+        history = svc.copy(src, dst)
+
+        # 源保留（copy 不删除源）
+        assert src.is_file()
+        # 目标内容一致
+        assert dst.is_file()
+        assert dst.read_bytes() == b"content"
+        # 历史记录
+        assert history.operation_type == "copy"
+        assert history.source_path == str(src)
+        assert history.target_path == str(dst)
+        assert history.can_undo is False  # Q4=A 不可撤销
+
+    def test_copy_directory_success(self, service, tmp_path: Path) -> None:
+        """复制目录成功，递归复制子内容。"""
+        svc, _ = service
+        src = tmp_path / "src_dir"
+        src.mkdir()
+        (src / "inner.txt").write_text("data", encoding="utf-8")
+        sub = src / "sub"
+        sub.mkdir()
+        (sub / "deep.txt").write_text("deep", encoding="utf-8")
+        dst = tmp_path / "dst_dir"
+
+        svc.copy(src, dst)
+
+        assert src.is_dir()  # 源保留
+        assert dst.is_dir()
+        assert (dst / "inner.txt").read_text(encoding="utf-8") == "data"
+        assert (dst / "sub" / "deep.txt").read_text(encoding="utf-8") == "deep"
+
+    def test_rejects_missing_source(self, service, tmp_path: Path) -> None:
+        """源不存在抛 SourceNotFoundError。"""
+        svc, _ = service
+        src = tmp_path / "nonexistent.7z"
+        dst = tmp_path / "dst.7z"
+
+        with pytest.raises(SourceNotFoundError):
+            svc.copy(src, dst)
+
+    def test_rejects_existing_target(self, service, tmp_path: Path) -> None:
+        """目标已存在抛 ConflictError（不覆盖，AGENTS 规则 2）。"""
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_text("src")
+        dst = tmp_path / "dst.txt"
+        dst.write_text("existing")
+
+        with pytest.raises(ConflictError):
+            svc.copy(src, dst)
+
+    def test_rejects_missing_parent(self, service, tmp_path: Path) -> None:
+        """目标父目录不存在抛 SourceNotFoundError。"""
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_text("src")
+        dst = tmp_path / "nonexistent" / "dst.txt"
+
+        with pytest.raises(SourceNotFoundError):
+            svc.copy(src, dst)
+
+    def test_rejects_self_subdirectory(self, service, tmp_path: Path) -> None:
+        """复制到自身子目录抛 SelfSubdirectoryError。"""
+        svc, _ = service
+        src = tmp_path / "src_dir"
+        src.mkdir()
+        (src / "inner.txt").write_text("data")
+        # 目标在 src 子树内（创建父目录以通过 dst_parent.exists() 检查）
+        (src / "sub").mkdir()
+        dst = src / "sub" / "copy"
+
+        with pytest.raises(SelfSubdirectoryError):
+            svc.copy(src, dst)
+
+    def test_writes_operation_history(self, service, tmp_path: Path) -> None:
+        """成功复制后写 operation_history，can_undo=0。"""
+        svc, conn = service
+        src = tmp_path / "src.txt"
+        src.write_text("src")
+        dst = tmp_path / "dst.txt"
+
+        svc.copy(src, dst)
+        conn.commit()
+
+        rows = conn.execute("SELECT * FROM operation_history").fetchall()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["operation_type"] == "copy"
+        assert row["source_path"] == str(src)
+        assert row["target_path"] == str(dst)
+        assert row["can_undo"] == 0
+
+    def test_chinese_path(self, service, tmp_path: Path) -> None:
+        """中文路径复制成功。"""
+        svc, _ = service
+        src = tmp_path / "汉化包.7z"
+        src.write_bytes(b"\x00" * 100)
+        dst = tmp_path / "汉化包_副本.7z"
+
+        history = svc.copy(src, dst)
+
+        assert dst.is_file()
+        assert "汉化包_副本" in history.target_path
+
+    def test_copy_overwrite_replaces_existing_file(self, service, tmp_path: Path) -> None:
+        """overwrite=True 时覆盖已存在的目标文件。"""
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_text("new content")
+        dst = tmp_path / "dst.txt"
+        dst.write_text("old content")
+
+        svc.copy(src, dst, overwrite=True)
+
+        # 目标被覆盖为新内容
+        assert dst.read_text() == "new content"
+        # 源保留
+        assert src.read_text() == "new content"
+
+    def test_copy_overwrite_replaces_existing_directory(self, service, tmp_path: Path) -> None:
+        """overwrite=True 时覆盖已存在的目标目录。"""
+        svc, _ = service
+        src = tmp_path / "src_dir"
+        src.mkdir()
+        (src / "new.txt").write_text("new")
+        dst = tmp_path / "dst_dir"
+        dst.mkdir()
+        (dst / "old.txt").write_text("old")
+
+        svc.copy(src, dst, overwrite=True)
+
+        # 旧文件被删除，新文件存在
+        assert not (dst / "old.txt").exists()
+        assert (dst / "new.txt").read_text() == "new"
+
+    def test_copy_overwrite_false_still_raises_conflict(self, service, tmp_path: Path) -> None:
+        """overwrite=False 时目标已存在仍抛 ConflictError（向后兼容）。"""
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_text("src")
+        dst = tmp_path / "dst.txt"
+        dst.write_text("existing")
+
+        with pytest.raises(ConflictError):
+            svc.copy(src, dst, overwrite=False)
+
+        with pytest.raises(ConflictError):
+            svc.copy(src, dst)  # 默认 overwrite=False
+
+
+class TestCopyAutoSync:
+    """copy 注入 helper + content_unit_repo 后自动同步（Stage 4.5 H4）。"""
+
+    def test_copy_directory_syncs_folder_cache(self, service_with_sync, tmp_path: Path) -> None:
+        """目录复制后 folder_cache 新增顶层节点。"""
+        svc, conn, folder_cache_repo, _ = service_with_sync
+        src = tmp_path / "src_dir"
+        src.mkdir()
+        (src / "inner.txt").write_text("data")
+        dst = tmp_path / "dst_dir"
+
+        svc.copy(src, dst)
+        conn.commit()
+
+        fc = folder_cache_repo.get_by_path(str(dst))
+        assert fc is not None
+        assert fc.path == str(dst)
+
+    def test_copy_file_updates_folder_mtime(self, service_with_sync, tmp_path: Path) -> None:
+        """文件复制后父目录 folder_cache mtime 更新。"""
+        svc, conn, folder_cache_repo, _ = service_with_sync
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        # 预置 parent 的 folder_cache
+        from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper
+
+        helper = FolderCacheSyncHelper(
+            folder_cache_repo,
+            now_provider=lambda: "2026-07-30T00:00:00Z",
+            uuid_provider=lambda: "fc-id",
+        )
+        helper.on_folder_created(parent, parent.parent)
+        conn.commit()
+
+        src = tmp_path / "src.txt"
+        src.write_text("src")
+        dst = parent / "dst.txt"
+
+        svc.copy(src, dst)
+        conn.commit()
+
+        fc = folder_cache_repo.get_by_path(str(parent))
+        assert fc is not None
+        # mtime 应非空（被 update_folder_mtime 设置）
+        assert fc.last_scanned_mtime is not None
+
+    def test_copy_directory_duplicates_content_units(
+        self, service_with_sync, tmp_path: Path
+    ) -> None:
+        """目录复制后复制 ContentUnit 记录（Q10=A，新 id + 新 path）。"""
+        svc, conn, _, content_unit_repo = service_with_sync
+        src = tmp_path / "src_dir"
+        src.mkdir()
+        (src / "inner.txt").write_text("data")
+        dst = tmp_path / "dst_dir"
+
+        # 预置源目录的 ContentUnit
+        original_unit = _seed_content_unit(
+            content_unit_repo,
+            unit_id="unit-src",
+            path=str(src),
+            status="organized",
+        )
+        conn.commit()
+
+        svc.copy(src, dst)
+        conn.commit()
+
+        # 原记录保留
+        original = content_unit_repo.get_by_id(original_unit.id)
+        assert original is not None
+        assert original.path == str(src)
+
+        # 新记录创建（路径 = dst）
+        new_units = content_unit_repo.list_by_path_prefix_normalized(str(dst))
+        assert len(new_units) == 1
+        assert new_units[0].path == str(dst)
+        assert new_units[0].id != original_unit.id  # 新 id
+        assert new_units[0].status == "organized"  # 元数据保留
+
+    def test_copy_file_duplicates_content_unit(self, service_with_sync, tmp_path: Path) -> None:
+        """文件复制后复制对应 ContentUnit（如有）。"""
+        svc, conn, _, content_unit_repo = service_with_sync
+        src = tmp_path / "src.txt"
+        src.write_text("src")
+        dst = tmp_path / "dst.txt"
+
+        original_unit = _seed_content_unit(
+            content_unit_repo,
+            unit_id="unit-file",
+            path=str(src),
+        )
+        conn.commit()
+
+        svc.copy(src, dst)
+        conn.commit()
+
+        # 原记录保留
+        assert content_unit_repo.get_by_id(original_unit.id) is not None
+        # 新记录创建
+        new_units = content_unit_repo.list_by_path_prefix_normalized(str(dst))
+        assert len(new_units) == 1
+        assert new_units[0].path == str(dst)
+
+
+class TestCopyWithoutSync:
+    """未注入 helper/repo 时 copy 不同步（向后兼容）。"""
+
+    def test_copy_without_helper_no_sync(self, tmp_path: Path) -> None:
+        """无 helper/repo 注入时 copy 仅复制文件，不写 folder_cache。"""
+        db_path = tmp_path / "test.db"
+        init_db(db_path)
+        conn = get_connection(db_path)
+        conn.row_factory = sqlite3.Row
+        svc = FileOperationService(
+            OperationHistoryRepository(conn),
+            now_provider=lambda: "2026-07-30T00:00:00Z",
+            uuid_provider=lambda: "uuid-no-sync",
+        )
+        folder_cache_repo = FolderCacheRepository(conn)
+
+        src = tmp_path / "src_dir"
+        src.mkdir()
+        (src / "inner.txt").write_text("data")
+        dst = tmp_path / "dst_dir"
+
+        svc.copy(src, dst)
+        conn.commit()
+
+        # folder_cache 表为空（无 helper 注入，不写）
+        assert folder_cache_repo.list_all() == []
+
+        # 文件已复制
+        assert dst.is_dir()
+        assert (dst / "inner.txt").read_text() == "data"
 
         conn.close()

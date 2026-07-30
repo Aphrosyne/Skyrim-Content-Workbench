@@ -150,6 +150,34 @@ SHORTCUT_UNDO_CONFIRM_TEXT = "确定要撤销以下操作？\n\n{desc}\n\n此操
 # Q4=C：Ctrl+C/X/V 静默忽略，不提示
 # （无文案，handler 直接 return）
 
+# === Stage 5 Task 3b：剪贴板与冲突解决 ===
+SHORTCUT_COPIED = "已复制 {n} 项到剪贴板"
+SHORTCUT_CUT = "已剪切 {n} 项"
+SHORTCUT_PASTED = "已粘贴 {n} 项到 {dir_name}"
+SHORTCUT_PASTE_EMPTY = "剪贴板为空"
+SHORTCUT_PASTE_PARTIAL = "部分操作失败：成功 {ok} 项，失败 {fail} 项"
+SHORTCUT_PASTE_CROSS_DRIVE_CUT = "跨盘剪切不支持，请改为复制后手动删除原文件"
+SHORTCUT_PASTE_SRC_NOT_FOUND = "源文件不存在，可能已被外部删除：{name}"
+SHORTCUT_PASTE_FAILED = "粘贴失败：{error}"
+
+# 冲突解决对话框
+CONFLICT_DIALOG_TITLE = "冲突解决"
+CONFLICT_DIALOG_HINT = "目标目录已存在以下同名文件，请选择处理方式："
+CONFLICT_DIALOG_COL_SOURCE = "源文件名"
+CONFLICT_DIALOG_COL_DECISION = "处理方式"
+CONFLICT_DIALOG_COL_PREVIEW = "重命名预览"
+CONFLICT_DIALOG_RADIO_OVERWRITE = "覆盖"
+CONFLICT_DIALOG_RADIO_SKIP = "跳过"
+CONFLICT_DIALOG_RADIO_RENAME = "重命名"
+CONFLICT_DIALOG_APPLY_ALL = "应用到全部"
+CONFLICT_DIALOG_OK = "确定"
+CONFLICT_DIALOG_CANCEL = "取消"
+
+# 右键菜单剪贴板项
+MENU_COPY = "复制"
+MENU_CUT = "剪切"
+MENU_PASTE = "粘贴"
+
 # 创建 Mod 组对话框
 CREATE_MOD_GROUP_DIALOG_TITLE = "创建 Mod 组"
 CREATE_MOD_GROUP_DIALOG_LABEL = "请选择或输入 Mod 组名称："

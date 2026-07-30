@@ -19,6 +19,7 @@ from app.logging_setup import setup_logging
 from app.main_window import MainWindow
 from app.thumbnail_coordinator import ThumbnailCoordinator
 from application.assembly_service import AssemblyService
+from application.clipboard_service import ClipboardService
 from application.content_service import ContentService
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
@@ -164,6 +165,9 @@ def main() -> int:
         content_unit_repo=content_unit_repo,
     )
 
+    # Stage 5 Task 3b：应用内剪贴板服务（Q3=A 不与系统剪贴板混用）
+    clipboard_service = ClipboardService()
+
     # 加载预置标签库（D1-D4：仅当 tag_category 表为空时加载）
     # 加载失败不阻塞应用启动（service 内部捕获并记录 ERROR 日志）
     if _DEFAULT_TAGS_JSON.is_file():
@@ -203,6 +207,7 @@ def main() -> int:
         thumbnail_coordinator=thumbnail_coordinator,
         file_operation_service=file_operation_service,
         undo_service=undo_service,
+        clipboard_service=clipboard_service,
     )
     window.show()
     exit_code = app.exec()

@@ -91,6 +91,7 @@ class FileOperationService:
         uuid_provider: Callable[[], str] | None = None,
         folder_cache_helper: FolderCacheSyncHelper | None = None,
         content_unit_repo: ContentUnitRepository | None = None,
+        max_history_records: int = 1000,
     ) -> None:
         """初始化 FileOperationService。
 
@@ -104,6 +105,9 @@ class FileOperationService:
             content_unit_repo: ContentUnit 仓储（可选）。Stage 4.5 H4：
                 注入后 move 目录时自动重写 ContentUnit.path 前缀。
                 None 时不更新 ContentUnit.path（调用方自行处理）。
+            max_history_records: operation_history 表保留上限（默认 1000）。
+                每次写入新记录后自动清理超出上限的最旧记录（保留可撤销记录）。
+                设为 0 关闭自动清理。
         """
         self._repo = history_repo
         self._now = now_provider or _default_now_utc
@@ -111,6 +115,29 @@ class FileOperationService:
         # Stage 4.5 H4：folder_cache 同步 + ContentUnit.path 更新
         self._folder_cache_helper = folder_cache_helper
         self._content_unit_repo = content_unit_repo
+        # Stage 5 Task 3b：操作历史自动清理上限
+        self._max_history_records = max_history_records
+
+    def _create_history(self, history: OperationHistory) -> OperationHistory:
+        """写入操作历史并执行自动清理（上限保护）。
+
+        Stage 5 Task 3b：写入前先检查 operation_history 总数是否已达到上限，
+        若已达到则预先清理最旧的不可撤销/已撤销记录（保留可撤销记录供用户撤销），
+        然后再写入新记录。这样新记录不会被误删。
+        清理失败仅记日志，不阻塞主操作。
+        """
+        if self._max_history_records > 0:
+            try:
+                # 预清理到 limit-1，为新记录腾出空间
+                deleted = self._repo.delete_oldest_exceeding(
+                    self._max_history_records - 1, preserve_can_undo=True
+                )
+                if deleted > 0:
+                    logger.debug("自动清理 %d 条旧操作历史", deleted)
+            except Exception:  # noqa: BLE001
+                logger.warning("操作历史自动清理失败（非致命）", exc_info=True)
+        record = self._repo.create(history)
+        return record
 
     def new_folder(self, folder_path: Path) -> OperationHistory:
         """创建新文件夹。
@@ -173,17 +200,25 @@ class FileOperationService:
             can_undo=True,
         )
         try:
-            return self._repo.create(history)
+            return self._create_history(history)
         except Exception as e:  # noqa: BLE001
             # 文件操作已成功但写历史失败：记日志，不回滚（用户可手动清理空文件夹）
             logger.exception("写入 operation_history 失败（new_folder：%s）", folder_path)
             raise FileOperationError(f"写入操作历史失败：{e}") from e
 
-    def move(self, src: Path, dst: Path) -> OperationHistory:
+    def move(
+        self,
+        src: Path,
+        dst: Path,
+        *,
+        overwrite: bool = False,
+    ) -> OperationHistory:
         """移动文件或目录到目标路径。
 
         - 源必须存在。
         - 目标不能已存在（不覆盖，AGENTS 规则 2）。
+        - overwrite=True 时：目标已存在则先删除目标（用户已确认覆盖），
+          同步 folder_cache + ContentUnit 后直接删除（不进回收站，不写 delete 历史）。
         - 跨盘检测：src 与 dst.parent 的 st_dev 不同抛 CrossDriveError。
         - 自目录检测：dst 在 src 子树内抛 SelfSubdirectoryError。
         - 使用 shutil.move 保留元数据（copystat）。
@@ -198,13 +233,14 @@ class FileOperationService:
         Args:
             src: 源文件/目录路径。
             dst: 目标完整路径（含文件名）。
+            overwrite: 是否覆盖已存在的目标（默认 False）。
 
         Returns:
             OperationHistory 记录。
 
         Raises:
             SourceNotFoundError: 源不存在。
-            ConflictError: 目标已存在。
+            ConflictError: 目标已存在且 overwrite=False。
             CrossDriveError: 跨盘移动。
             SelfSubdirectoryError: 移动到自身子目录。
             FileOperationError: 其他文件系统错误或同步失败。
@@ -217,7 +253,10 @@ class FileOperationService:
 
         try:
             if dst.exists():
-                raise ConflictError(f"目标已存在：{dst}")
+                if not overwrite:
+                    raise ConflictError(f"目标已存在：{dst}")
+                # 覆盖模式：先删除目标 + 同步元数据
+                self._remove_target_for_overwrite(dst)
         except OSError as e:
             raise FileOperationError(f"无法检查目标路径：{e}") from e
 
@@ -260,7 +299,7 @@ class FileOperationService:
             can_undo=True,
         )
         try:
-            return self._repo.create(history)
+            return self._create_history(history)
         except Exception as e:  # noqa: BLE001
             logger.exception("写入 operation_history 失败（move：%s → %s）", src, dst)
             raise FileOperationError(f"写入操作历史失败：{e}") from e
@@ -444,7 +483,7 @@ class FileOperationService:
             can_undo=True,
         )
         try:
-            return self._repo.create(history)
+            return self._create_history(history)
         except Exception as e:  # noqa: BLE001
             logger.exception("写入 operation_history 失败（rename：%s → %s）", old_path, new_path)
             raise FileOperationError(f"写入操作历史失败：{e}") from e
@@ -559,7 +598,7 @@ class FileOperationService:
                 can_undo=False,
             )
             try:
-                histories.append(self._repo.create(history))
+                histories.append(self._create_history(history))
             except Exception as e:  # noqa: BLE001
                 logger.exception("写入 operation_history 失败（delete：%s）", path)
                 sync_errors.append(f"写入历史失败：{e}")
@@ -618,3 +657,239 @@ class FileOperationService:
                 self._content_unit_repo.delete(unit.id)
             except (RepositoryError, sqlite3.Error) as e:
                 raise FileOperationError(f"删除 ContentUnit 失败：unit_id={unit.id} err={e}") from e
+
+    # === Stage 5 Task 3b：覆盖前删除目标 ===
+
+    def _remove_target_for_overwrite(self, dst: Path) -> None:
+        """覆盖前删除已存在的目标（用户已通过 ConflictResolutionDialog 确认覆盖）。
+
+        直接删除（不进回收站，不写 delete 历史），同步 folder_cache + ContentUnit。
+        同步失败记日志不中断（best-effort）：文件删除是用户明确授权的覆盖操作，
+        DB 同步失败不应阻止覆盖执行；后续 copy/move 的 _sync_on_copy/move 会重建记录。
+
+        Raises:
+            FileOperationError: 文件删除失败（此时不执行后续 copy/move）。
+        """
+        # 先同步 folder_cache + ContentUnit（此时 DB 中还有旧记录，_sync_on_delete
+        # 通过 folder_cache 判断是否为目录，不依赖文件系统）
+        if self._folder_cache_helper is not None:
+            try:
+                self._sync_on_delete(dst)
+            except FileOperationError:
+                logger.warning(
+                    "覆盖前同步 folder_cache 失败（best-effort）：%s",
+                    dst,
+                    exc_info=True,
+                )
+
+        if self._content_unit_repo is not None:
+            try:
+                self._delete_content_units_on_path(dst)
+            except (RepositoryError, sqlite3.Error, FileOperationError):
+                logger.warning(
+                    "覆盖前删除 ContentUnit 失败（best-effort）：%s",
+                    dst,
+                    exc_info=True,
+                )
+
+        # 删除目标文件/目录
+        try:
+            if dst.is_dir():
+                shutil.rmtree(str(dst))
+            else:
+                os.remove(str(dst))
+        except OSError as e:
+            raise FileOperationError(f"无法删除覆盖目标：{dst}：{e}") from e
+
+    # === Stage 5 Task 3b：复制 ===
+
+    def copy(
+        self,
+        src: Path,
+        dst: Path,
+        *,
+        overwrite: bool = False,
+    ) -> OperationHistory:
+        """复制文件或目录到目标路径。
+
+        - 源必须存在。
+        - 目标不能已存在（不覆盖，AGENTS 规则 2；冲突处理在 UI 层由
+          ConflictResolutionDialog 提前解决，调用方传入最终无冲突的 dst）。
+        - overwrite=True 时：目标已存在则先删除目标（用户已确认覆盖），
+          同步 folder_cache + ContentUnit 后直接删除（不进回收站，不写 delete 历史）。
+        - 跨盘复制允许（copy 不退化，与 move 不同）。
+        - 自目录检测：dst 在 src 子树内抛 SelfSubdirectoryError（避免无限递归复制）。
+        - 文件用 shutil.copy2（保留元数据）；文件夹用 shutil.copytree。
+        - Stage 4.5 H4：注入 helper/repo 后自动同步 folder_cache + ContentUnit：
+          * 目录复制：on_folder_created（插入新顶层节点）+ 复制 ContentUnit（新 id + 新 path）
+          * 文件复制：update_folder_mtime（父目录 mtime 更新）+ 复制 ContentUnit（如有）
+          同步失败抛 FileOperationError，由上层 UoW 回滚 DB 写操作。
+          文件已复制无法回滚，由调用方处理。
+        - 成功后写 operation_history（operation_type='copy'，
+          source_path=src，target_path=dst，can_undo=False，Q4=A）。
+
+        Args:
+            src: 源文件/目录路径。
+            dst: 目标完整路径（含文件名）。
+            overwrite: 是否覆盖已存在的目标（默认 False）。
+
+        Returns:
+            OperationHistory 记录。
+
+        Raises:
+            SourceNotFoundError: 源不存在。
+            ConflictError: 目标已存在且 overwrite=False。
+            SelfSubdirectoryError: 复制到自身子目录。
+            FileOperationError: 其他文件系统错误或同步失败。
+        """
+        try:
+            if not src.exists():
+                raise SourceNotFoundError(f"源不存在：{src}")
+        except OSError as e:
+            raise FileOperationError(f"无法访问源路径：{e}") from e
+
+        try:
+            if dst.exists():
+                if not overwrite:
+                    raise ConflictError(f"目标已存在：{dst}")
+                # 覆盖模式：先删除目标 + 同步元数据
+                self._remove_target_for_overwrite(dst)
+        except OSError as e:
+            raise FileOperationError(f"无法检查目标路径：{e}") from e
+
+        try:
+            dst_parent = dst.parent
+            if not dst_parent.exists():
+                raise SourceNotFoundError(f"目标父目录不存在：{dst_parent}")
+        except OSError as e:
+            raise FileOperationError(f"无法访问目标父目录：{e}") from e
+
+        # 自目录检测：dst 在 src 子树内（仅目录复制时有风险）
+        sep = os.sep
+        src_str = str(src).rstrip(sep) + sep
+        dst_str = str(dst)
+        if dst_str.startswith(src_str):
+            raise SelfSubdirectoryError(f"不能复制到自身子目录：{src} → {dst}")
+
+        # 执行复制
+        try:
+            if src.is_dir():
+                shutil.copytree(str(src), str(dst))
+            else:
+                shutil.copy2(str(src), str(dst))
+        except OSError as e:
+            raise FileOperationError(f"无法复制：{src} → {dst}：{e}") from e
+
+        # 同步 folder_cache + ContentUnit
+        self._sync_on_copy(src, dst)
+
+        history = OperationHistory(
+            id=self._new_uuid(),
+            operation_type="copy",
+            source_path=str(src),
+            target_path=str(dst),
+            created_at=self._now(),
+            can_undo=False,
+        )
+        try:
+            return self._create_history(history)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("写入 operation_history 失败（copy：%s → %s）", src, dst)
+            raise FileOperationError(f"写入操作历史失败：{e}") from e
+
+    def _sync_on_copy(self, src: Path, dst: Path) -> None:
+        """复制后同步 folder_cache + ContentUnit（Q10=A 复制 ContentUnit）。
+
+        - 目录复制：on_folder_created（插入新顶层 folder_cache 节点）
+          + 复制所有路径前缀匹配的 ContentUnit（新 id + 新 path + 元数据保留）
+        - 文件复制：update_folder_mtime（父目录 mtime 更新）
+          + 复制 ContentUnit.path == src 的单个记录（如有）
+
+        与 _sync_on_move 的差异：
+        - 不删除旧 folder_cache（复制保留原文件）
+        - 不更新 ContentUnit.path（复制创建新记录，原记录保留）
+        - 子目录 folder_cache 节点不自动插入（由下次扫描补全，与 move 行为一致）
+
+        同步失败抛 FileOperationError，由上层 UoW 回滚 DB 写操作。
+        文件已复制无法回滚，由调用方处理。
+
+        未注入 helper/repo 时为空操作（向后兼容）。
+        """
+        if self._folder_cache_helper is None and self._content_unit_repo is None:
+            return
+
+        try:
+            is_dir = dst.is_dir()
+        except OSError as e:
+            logger.warning("无法判断复制后目标类型 %s: %s", dst, e)
+            return
+
+        if is_dir:
+            # 目录复制：插入新 folder_cache 顶层节点
+            if self._folder_cache_helper is not None:
+                self._folder_cache_helper.on_folder_created(dst, dst.parent)
+            # 复制 ContentUnit（新 id + 新 path + 元数据保留，Q10=A）
+            if self._content_unit_repo is not None:
+                self._duplicate_content_units_on_copy(src, dst)
+        else:
+            # 文件复制：仅更新父目录 mtime
+            if self._folder_cache_helper is not None:
+                self._folder_cache_helper.update_folder_mtime(dst.parent)
+            # 复制单个 ContentUnit（如 src 对应一个内容单元）
+            if self._content_unit_repo is not None:
+                self._duplicate_content_units_on_copy(src, dst)
+
+    def _duplicate_content_units_on_copy(self, src: Path, dst: Path) -> None:
+        """复制目录/文件后，复制所有路径前缀匹配的 ContentUnit 记录。
+
+        包括：
+        - ContentUnit.path == src → 创建新记录（新 id，path=dst，元数据保留）
+        - ContentUnit.path 以 src/ 开头 → 创建新记录（新 id，path=dst + 相对后缀）
+
+        新记录的 id 重新生成，created_at/updated_at 重置为当前时间，
+        原记录保留不变（复制不修改源）。
+
+        Raises:
+            FileOperationError: ContentUnit 复制失败。
+        """
+        affected = self._content_unit_repo.list_by_path_prefix_normalized(str(src))
+        if not affected:
+            return
+
+        src_key = make_path_key(src)
+        dst_str = str(dst)
+        sep = os.sep
+        src_prefix = src_key.rstrip(sep) + sep
+        now = self._now()
+
+        for unit in affected:
+            unit_key = make_path_key(unit.path)
+            if unit_key == src_key:
+                new_path = dst_str
+            elif unit_key.startswith(src_prefix):
+                # 尝试保留原始大小写
+                try:
+                    relative = Path(unit.path).relative_to(src)
+                    new_path = str(dst / relative)
+                except ValueError:
+                    suffix = unit_key[len(src_key) :]
+                    new_path = dst_str + suffix
+            else:
+                continue
+
+            new_unit = ContentUnit(
+                id=self._new_uuid(),
+                path=new_path,
+                title=unit.title,
+                content_type=unit.content_type,
+                source_url=unit.source_url,
+                cover_path=unit.cover_path,
+                status=unit.status,
+                notes=unit.notes,
+                created_at=now,
+                updated_at=now,
+            )
+            try:
+                self._content_unit_repo.create(new_unit)
+            except (RepositoryError, sqlite3.Error) as e:
+                raise FileOperationError(f"复制 ContentUnit 失败：src_id={unit.id} err={e}") from e

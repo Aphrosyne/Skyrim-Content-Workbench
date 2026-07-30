@@ -617,7 +617,7 @@
 - [x] 快捷键上下文范围正确（中栏/目录树/窗口级）
 - [x] 未注入对应 Service 时快捷键不注册
 
-### Task 3b：复制/剪切/粘贴 + 任意目录间移动
+### Task 3b：复制/剪切/粘贴 + 任意目录间移动 ✅
 
 > 原 Task 3 拆分的第二部分，依赖 Task 6 的 history 框架。
 
@@ -626,12 +626,23 @@
 - 任意目录间移动（不限于暂存区→分类目录）
 - 剪切状态下文件列表条目半透明显示（视觉提示）
 
+**实际实现补充：**
+- 新增 `ClipboardService`（应用内剪贴板，不与系统剪贴板混用，不持久化）
+- 新增 `ConflictResolutionService` + `ConflictResolutionDialog`，粘贴冲突时弹窗让用户选择覆盖/跳过/重命名
+- `FileOperationService.copy()` 新增，目录复制时同步复制 ContentUnit 元数据（新 id + 新 path）
+- `FileOperationService.move()/copy()` 新增 `overwrite` 参数，支持覆盖前先删除目标
+- 操作历史自动清理：`max_history_records=1000`，写入前预清理，保留可撤销记录
+- 目录树支持全部快捷键（F2/Delete/Ctrl+C/X/V）及右键菜单（用户补充需求）
+- schema_version v8 → v9，operation_history.operation_type CHECK 扩展 `'copy'`
+
 **验收：**
-- [ ] 复制/剪切/粘贴正常工作且同步数据库
-- [ ] 任意目录间移动可用
-- [ ] 剪切状态有视觉提示
-- [ ] 操作写入 operation_history
-- [ ] 中文路径正常工作
+- [x] 复制/剪切/粘贴正常工作且同步数据库
+- [x] 任意目录间移动可用
+- [x] 剪切状态有视觉提示（50% 透明度）
+- [x] 操作写入 operation_history
+- [x] 中文路径正常工作
+- [x] 覆盖/跳过/重命名冲突解决正常
+- [x] 操作历史自动清理，不造成数据库膨胀
 
 ### Task 5：「移动到……」快捷对话框
 

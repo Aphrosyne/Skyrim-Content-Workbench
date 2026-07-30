@@ -464,6 +464,72 @@ def migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
     logger.info("迁移 v7 → v8 完成")
 
 
+def migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
+    """v8 → v9：operation_history 支持复制操作（Stage 5 Task 3b）。
+
+    变更：
+    - operation_type CHECK 约束扩展为包含 'copy'
+      （copy 记录由 FileOperationService.copy 写入，
+       source_path=原路径，target_path=新路径，can_undo=0）
+
+    实现说明：
+    - SQLite 不支持直接修改 CHECK 约束，需重建表
+    - 旧数据全部保留，无新列
+
+    幂等性：通过检查 operation_history 的 CHECK 约束是否已包含 'copy' 判断是否已迁移。
+    旧表 CHECK 约束文本不含 'copy'，迁移后包含 'copy'。
+    """
+    # 幂等检查：读取当前 operation_history 表的 sql，若已含 'copy' 则跳过
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='operation_history'"
+    ).fetchone()
+    if row is None:
+        # 表不存在（全新数据库走 init_db 建表路径），无需迁移
+        return
+    current_sql = row["sql"] if isinstance(row, sqlite3.Row) else row[0]
+    if current_sql and "'copy'" in current_sql:
+        logger.info("v9 迁移已应用，跳过")
+        return
+
+    # 1. 创建新表（CHECK 约束扩展 'copy'）
+    conn.executescript(
+        """
+        CREATE TABLE operation_history_new (
+            id TEXT PRIMARY KEY,
+            operation_type TEXT NOT NULL CHECK(operation_type IN (
+                'move','delete','rename','new_folder','undo','copy'
+            )),
+            source_path TEXT NOT NULL,
+            target_path TEXT,
+            created_at TEXT NOT NULL,
+            can_undo INTEGER NOT NULL DEFAULT 1,
+            undone_at TEXT
+        );
+        """
+    )
+
+    # 2. 迁移旧数据
+    conn.execute(
+        """
+        INSERT INTO operation_history_new
+            (id, operation_type, source_path, target_path, created_at, can_undo, undone_at)
+        SELECT id, operation_type, source_path, target_path, created_at, can_undo, undone_at
+        FROM operation_history
+        """
+    )
+
+    # 3. 替换旧表 + 重建索引
+    conn.executescript(
+        """
+        DROP TABLE operation_history;
+        ALTER TABLE operation_history_new RENAME TO operation_history;
+        CREATE INDEX IF NOT EXISTS idx_operation_history_created
+            ON operation_history(created_at);
+        """
+    )
+    logger.info("迁移 v8 → v9 完成")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -475,4 +541,5 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (6, migrate_v5_to_v6),
     (7, migrate_v6_to_v7),
     (8, migrate_v7_to_v8),
+    (9, migrate_v8_to_v9),
 ]

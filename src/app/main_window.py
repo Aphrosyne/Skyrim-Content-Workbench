@@ -93,6 +93,7 @@ from app.tag_filter import TagFilterBar
 from app.tag_manager_dialog import TagManagerDialog
 from app.thumbnail_coordinator import ThumbnailCoordinator
 from application.assembly_service import AssemblyService
+from application.clipboard_service import ClipboardService
 from application.content_service import ContentService
 from application.errors import (
     ApplicationError,
@@ -232,6 +233,7 @@ class MainWindow(QMainWindow):
         thumbnail_coordinator: ThumbnailCoordinator | None = None,
         file_operation_service: FileOperationService | None = None,
         undo_service: UndoService | None = None,
+        clipboard_service: ClipboardService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -250,6 +252,8 @@ class MainWindow(QMainWindow):
         self._file_operation_service = file_operation_service
         # Stage 5 Task 6：操作历史撤销服务
         self._undo_service = undo_service
+        # Stage 5 Task 3b：应用内剪贴板服务（Q3=A 不与系统剪贴板混用）
+        self._clipboard_service = clipboard_service
         # Stage 4 Task 4：缩略图调度器（可选注入，便于测试）
         self._thumbnail_coordinator = thumbnail_coordinator
         self._thread: QThread | None = None
@@ -1417,11 +1421,23 @@ class MainWindow(QMainWindow):
                 staging_action = menu.addAction(ui.MENU_UNMARK_STAGING)
             else:
                 staging_action = menu.addAction(ui.MENU_MARK_STAGING)
-        # 新建文件夹（Stage 5 Task 3a，仅注入 FileOperationService 时显示）
+        # 新建文件夹 / 删除（Stage 5 Task 3a，仅需 FileOperationService）
         new_folder_action = None
+        delete_action = None
+        # 剪贴板项（Stage 5 Task 3b：复制/剪切/粘贴，需 FileOperationService + ClipboardService）
+        copy_action = None
+        cut_action = None
+        paste_action = None
         if self._file_operation_service is not None:
             menu.addSeparator()
             new_folder_action = menu.addAction(ui.MENU_NEW_FOLDER)
+            if self._clipboard_service is not None:
+                copy_action = menu.addAction(ui.MENU_COPY)
+                cut_action = menu.addAction(ui.MENU_CUT)
+                # 粘贴项仅在剪贴板非空时启用
+                paste_action = menu.addAction(ui.MENU_PASTE)
+                paste_action.setEnabled(self._clipboard_service.get() is not None)
+            delete_action = menu.addAction(ui.MENU_DELETE)
         # 在资源管理器中打开（Stage 5 Task 1，始终显示）
         explorer_action = menu.addAction(ui.MENU_OPEN_IN_EXPLORER)
 
@@ -1435,6 +1451,14 @@ class MainWindow(QMainWindow):
                 self._mark_staging_from_node(node)
         elif new_folder_action is not None and chosen is new_folder_action:
             self._on_new_folder_in_dir(node.real_path)
+        elif copy_action is not None and chosen is copy_action:
+            self._on_shortcut_copy_tree()
+        elif cut_action is not None and chosen is cut_action:
+            self._on_shortcut_cut_tree()
+        elif paste_action is not None and chosen is paste_action:
+            self._on_shortcut_paste_tree()
+        elif delete_action is not None and chosen is delete_action:
+            self._on_shortcut_delete_tree()
         elif chosen is explorer_action:
             self._on_open_in_explorer(node.real_path)
 
@@ -1533,9 +1557,10 @@ class MainWindow(QMainWindow):
                 break
 
     def _show_empty_area_context_menu(self, active_view, pos: QPoint) -> None:
-        """空白区域右键菜单（Stage 5 Task 3a）。
+        """空白区域右键菜单（Stage 5 Task 3a + Task 3b）。
 
-        仅显示"新建文件夹"（基于当前显示的目录）。需注入 FileOperationService。
+        显示"新建文件夹"和"粘贴"（基于当前显示的目录）。
+        需注入 FileOperationService + ClipboardService。
         """
         if self._file_operation_service is None:
             return
@@ -1545,9 +1570,18 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         new_folder_action = menu.addAction(ui.MENU_NEW_FOLDER)
+        # 粘贴项（Stage 5 Task 3b，仅注入 ClipboardService 且剪贴板非空时显示）
+        paste_action = None
+        if self._clipboard_service is not None:
+            paste_action = menu.addAction(ui.MENU_PASTE)
+            paste_action.setEnabled(self._clipboard_service.get() is not None)
         chosen = menu.exec(active_view.viewport().mapToGlobal(pos))
         if chosen is new_folder_action:
             self._on_new_folder_in_dir(current_dir)
+        elif paste_action is not None and chosen is paste_action:
+            from pathlib import Path  # noqa: PLC0415
+
+            self._perform_paste(Path(current_dir))
 
     def _build_content_menu_actions(
         self, entries: list[FileEntry]
@@ -1647,8 +1681,8 @@ class MainWindow(QMainWindow):
                 )
             )
 
-        # Stage 5 Task 3a：新建文件夹 / 重命名 / 删除
-        # 仅当注入了 FileOperationService 时显示
+        # Stage 5 Task 3a：新建文件夹 / 重命名 / 删除（仅需 FileOperationService）
+        # Stage 5 Task 3b：复制 / 剪切（需 FileOperationService + ClipboardService）
         if self._file_operation_service is not None:
             # 新建文件夹：单选时基于该条目所在目录；列表空白区域另处理
             # 这里仅在选中条目时显示（空白区域由 _on_content_context_menu 处理）
@@ -1660,6 +1694,10 @@ class MainWindow(QMainWindow):
                 )
                 # 重命名：单选
                 actions.append((ui.MENU_RENAME, lambda: self._on_rename_entry(entry), True))
+            # 复制 / 剪切：需 ClipboardService
+            if self._clipboard_service is not None:
+                actions.append((ui.MENU_COPY, lambda: self._on_shortcut_copy(), True))
+                actions.append((ui.MENU_CUT, lambda: self._on_shortcut_cut(), True))
             # 删除：单选或批量
             actions.append((ui.MENU_DELETE, lambda: self._on_delete_entries(entries), True))
 
@@ -2380,33 +2418,20 @@ class MainWindow(QMainWindow):
         """注册键盘快捷键。
 
         Q5=A：context=WidgetShortcut，仅在该控件聚焦时生效。
-        特例：目录树 F2 重命名（用户补充：目录树也需要重命名快捷键）。
+        用户补充（Task 3b）：目录树支持全部快捷键（F2/Delete/Ctrl+C/X/V）。
 
         快捷键列表：
         - F2（中栏）：重命名选中条目（Q1=A：多选取第一个）
         - F2（目录树）：重命名选中目录树节点
-        - Delete（中栏）：删除选中条目
+        - Delete（中栏/目录树）：删除选中条目
         - Ctrl+Z：撤销最近可撤销操作（Q2=A 二次确认；Q3=B 跳过不可撤销/已撤销）
         - Ctrl+A（中栏）：全选
-        - Ctrl+C/X/V（中栏）：占位，Q4=C 静默忽略
+        - Ctrl+C/X/V（中栏/目录树）：复制/剪切/粘贴（Task 3b 接入真实逻辑）
         """
-        # 中栏 Ctrl+A / Ctrl+C/X/V 始终注册（不依赖 FileOperationService）
+        # 中栏 Ctrl+A 始终注册
         self._shortcut_select_all = QShortcut(QKeySequence("Ctrl+A"), self._content_view)
         self._shortcut_select_all.setContext(Qt.ShortcutContext.WidgetShortcut)
         self._shortcut_select_all.activated.connect(self._on_shortcut_select_all)
-
-        # Ctrl+C/X/V 占位（Q4=C 静默忽略，不提示）
-        self._shortcut_copy = QShortcut(QKeySequence("Ctrl+C"), self._content_view)
-        self._shortcut_copy.setContext(Qt.ShortcutContext.WidgetShortcut)
-        self._shortcut_copy.activated.connect(lambda: None)
-
-        self._shortcut_cut = QShortcut(QKeySequence("Ctrl+X"), self._content_view)
-        self._shortcut_cut.setContext(Qt.ShortcutContext.WidgetShortcut)
-        self._shortcut_cut.activated.connect(lambda: None)
-
-        self._shortcut_paste = QShortcut(QKeySequence("Ctrl+V"), self._content_view)
-        self._shortcut_paste.setContext(Qt.ShortcutContext.WidgetShortcut)
-        self._shortcut_paste.activated.connect(lambda: None)
 
         # Ctrl+Z：窗口级（任意位置聚焦均可触发，因为撤销是全局操作）
         # 仅在注入 UndoService 时注册
@@ -2415,7 +2440,7 @@ class MainWindow(QMainWindow):
             self._shortcut_undo.setContext(Qt.ShortcutContext.WindowShortcut)
             self._shortcut_undo.activated.connect(self._on_shortcut_undo)
 
-        # F2 / Delete 依赖 FileOperationService（未注入时不注册，避免误操作）
+        # F2 / Delete 依赖 FileOperationService
         if self._file_operation_service is not None:
             # 中栏 F2 重命名（Q1=A：多选取第一个）
             self._shortcut_rename = QShortcut(QKeySequence("F2"), self._content_view)
@@ -2427,10 +2452,42 @@ class MainWindow(QMainWindow):
             self._shortcut_delete.setContext(Qt.ShortcutContext.WidgetShortcut)
             self._shortcut_delete.activated.connect(self._on_shortcut_delete)
 
-            # 目录树 F2 重命名（用户补充：目录树也需要重命名快捷键）
+            # 目录树 F2 / Delete（用户补充：目录树也支持 F2/Delete）
             self._shortcut_rename_tree = QShortcut(QKeySequence("F2"), self._tree_view)
             self._shortcut_rename_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
             self._shortcut_rename_tree.activated.connect(self._on_shortcut_rename_tree)
+
+            self._shortcut_delete_tree = QShortcut(QKeySequence("Delete"), self._tree_view)
+            self._shortcut_delete_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._shortcut_delete_tree.activated.connect(self._on_shortcut_delete_tree)
+
+        # Ctrl+C / Ctrl+X / Ctrl+V 依赖 FileOperationService + ClipboardService
+        if self._file_operation_service is not None and self._clipboard_service is not None:
+            # 中栏 Ctrl+C / Ctrl+X / Ctrl+V（Task 3b 真实逻辑）
+            self._shortcut_copy = QShortcut(QKeySequence("Ctrl+C"), self._content_view)
+            self._shortcut_copy.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._shortcut_copy.activated.connect(self._on_shortcut_copy)
+
+            self._shortcut_cut = QShortcut(QKeySequence("Ctrl+X"), self._content_view)
+            self._shortcut_cut.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._shortcut_cut.activated.connect(self._on_shortcut_cut)
+
+            self._shortcut_paste = QShortcut(QKeySequence("Ctrl+V"), self._content_view)
+            self._shortcut_paste.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._shortcut_paste.activated.connect(self._on_shortcut_paste)
+
+            # 目录树 Ctrl+C / Ctrl+X / Ctrl+V（用户补充：目录树也支持复制/剪切/粘贴）
+            self._shortcut_copy_tree = QShortcut(QKeySequence("Ctrl+C"), self._tree_view)
+            self._shortcut_copy_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._shortcut_copy_tree.activated.connect(self._on_shortcut_copy_tree)
+
+            self._shortcut_cut_tree = QShortcut(QKeySequence("Ctrl+X"), self._tree_view)
+            self._shortcut_cut_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._shortcut_cut_tree.activated.connect(self._on_shortcut_cut_tree)
+
+            self._shortcut_paste_tree = QShortcut(QKeySequence("Ctrl+V"), self._tree_view)
+            self._shortcut_paste_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._shortcut_paste_tree.activated.connect(self._on_shortcut_paste_tree)
 
     def _on_shortcut_rename_content(self) -> None:
         """F2：重命名中栏选中条目（Q1=A：多选取第一个）。"""
@@ -2560,6 +2617,208 @@ class MainWindow(QMainWindow):
                 self,
                 ui.SHORTCUT_UNDO_CONFIRM_TITLE,
                 ui.SHORTCUT_UNDO_FAILED.format(error=str(e)),
+            )
+
+    # === Stage 5 Task 3b：剪贴板快捷键 handler ===
+
+    def _on_shortcut_copy(self) -> None:
+        """Ctrl+C：复制中栏选中条目到应用内剪贴板。"""
+        if self._clipboard_service is None:
+            return
+        entries = self._get_selected_entries()
+        if not entries:
+            self.statusBar().showMessage(ui.SHORTCUT_NO_SELECTION, 2000)
+            return
+        paths = [e.path for e in entries]
+        self._clipboard_service.set_copy(paths)
+        # 清除之前的剪切高亮
+        self._content_list_model.set_cut_paths(set())
+        self.statusBar().showMessage(ui.SHORTCUT_COPIED.format(n=len(paths)), 3000)
+
+    def _on_shortcut_cut(self) -> None:
+        """Ctrl+X：剪切中栏选中条目到应用内剪贴板。"""
+        if self._clipboard_service is None:
+            return
+        entries = self._get_selected_entries()
+        if not entries:
+            self.statusBar().showMessage(ui.SHORTCUT_NO_SELECTION, 2000)
+            return
+        paths = [e.path for e in entries]
+        self._clipboard_service.set_cut(paths)
+        # 更新剪切高亮（Q12=A 50% 透明度）
+        self._content_list_model.set_cut_paths(set(paths))
+        self.statusBar().showMessage(ui.SHORTCUT_CUT.format(n=len(paths)), 3000)
+
+    def _on_shortcut_paste(self) -> None:
+        """Ctrl+V：粘贴到中栏当前目录。"""
+        if self._clipboard_service is None or self._file_operation_service is None:
+            return
+        dst_dir = self._current_displayed_dir()
+        if dst_dir is None:
+            return
+        self._perform_paste(Path(dst_dir))
+
+    def _on_shortcut_copy_tree(self) -> None:
+        """Ctrl+C：复制目录树选中节点到应用内剪贴板。"""
+        if self._clipboard_service is None:
+            return
+        node = self._get_selected_tree_node()
+        if node is None:
+            self.statusBar().showMessage(ui.SHORTCUT_NO_SELECTION, 2000)
+            return
+        self._clipboard_service.set_copy([node.real_path])
+        self._content_list_model.set_cut_paths(set())
+        self.statusBar().showMessage(ui.SHORTCUT_COPIED.format(n=1), 3000)
+
+    def _on_shortcut_cut_tree(self) -> None:
+        """Ctrl+X：剪切目录树选中节点到应用内剪贴板。"""
+        if self._clipboard_service is None:
+            return
+        node = self._get_selected_tree_node()
+        if node is None:
+            self.statusBar().showMessage(ui.SHORTCUT_NO_SELECTION, 2000)
+            return
+        self._clipboard_service.set_cut([node.real_path])
+        self._content_list_model.set_cut_paths({node.real_path})
+        self.statusBar().showMessage(ui.SHORTCUT_CUT.format(n=1), 3000)
+
+    def _on_shortcut_paste_tree(self) -> None:
+        """Ctrl+V：粘贴到目录树选中节点。"""
+        if self._clipboard_service is None or self._file_operation_service is None:
+            return
+        node = self._get_selected_tree_node()
+        if node is None:
+            self.statusBar().showMessage(ui.SHORTCUT_NO_SELECTION, 2000)
+            return
+        self._perform_paste(Path(node.real_path))
+
+    def _on_shortcut_delete_tree(self) -> None:
+        """Delete：删除目录树选中节点。"""
+        if self._file_operation_service is None:
+            return
+        node = self._get_selected_tree_node()
+        if node is None:
+            self.statusBar().showMessage(ui.SHORTCUT_NO_SELECTION, 2000)
+            return
+        entry = FileEntry(
+            path=node.real_path,
+            name=Path(node.real_path).name,
+            is_dir=True,
+            size=0,
+            modified_at="1970-01-01T00:00:00Z",
+            content_unit=None,
+        )
+        self._on_delete_entries([entry])
+
+    def _get_selected_tree_node(self):
+        """获取目录树当前选中节点，无选中返回 None。"""
+        sm = self._tree_view.selectionModel()
+        if sm is None:
+            return None
+        indexes = sm.selectedIndexes()
+        if not indexes:
+            return None
+        return self._tree_model.node_at(indexes[0])
+
+    def _perform_paste(self, dst_dir: Path) -> None:
+        """执行粘贴操作（共享逻辑，供中栏/目录树 Ctrl+V 调用）。
+
+        流程：
+        1. 检查剪贴板是否为空
+        2. 跨盘剪切检测（Q7=B 拒绝）
+        3. 扫描冲突（ConflictResolutionService）
+        4. 若有冲突，弹出 ConflictResolutionDialog（Q3=C 用户选择覆盖/跳过/重命名）
+        5. 按 ResolvedAction 执行 copy/move，收集成功与失败
+        6. 刷新 UI + 状态栏提示
+        """
+        from application.conflict_resolution_service import (  # noqa: PLC0415
+            ConflictResolutionService,
+            has_conflict,
+            has_cross_drive_cut,
+        )
+        from application.errors import (  # noqa: PLC0415
+            ConflictError,
+            CrossDriveError,
+            FileOperationError,
+            SelfSubdirectoryError,
+            SourceNotFoundError,
+        )
+
+        entry = self._clipboard_service.get()
+        if entry is None or not entry.paths:
+            self.statusBar().showMessage(ui.SHORTCUT_PASTE_EMPTY, 2000)
+            return
+
+        src_paths = [Path(p) for p in entry.paths]
+        operation = entry.operation  # 'copy' or 'cut'
+
+        # 跨盘剪切检测（Q7=B）
+        conflict_service = ConflictResolutionService()
+        conflicts = conflict_service.scan_conflicts(src_paths, dst_dir, operation)
+        if operation == "cut" and has_cross_drive_cut(conflicts):
+            QMessageBox.warning(self, ui.CONFLICT_DIALOG_TITLE, ui.SHORTCUT_PASTE_CROSS_DRIVE_CUT)
+            return
+
+        # 冲突解决（Q3=C）
+        if has_conflict(conflicts):
+            from app.conflict_resolution_dialog import ConflictResolutionDialog  # noqa: PLC0415
+
+            dialog = ConflictResolutionDialog(conflicts, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return  # 用户取消
+            decisions = dialog.decisions()
+        else:
+            # 无冲突，全部用默认目标路径
+            decisions = ["overwrite"] * len(conflicts)
+
+        actions = conflict_service.resolve(conflicts, decisions)
+
+        # 执行 copy/move
+        ok_count = 0
+        fail_count = 0
+        errors: list[str] = []
+        for action in actions:
+            if action.skipped:
+                continue
+            try:
+                if operation == "copy":
+                    self._file_operation_service.copy(
+                        action.src, action.dst, overwrite=action.overwrite
+                    )
+                else:  # cut
+                    self._file_operation_service.move(
+                        action.src, action.dst, overwrite=action.overwrite
+                    )
+                ok_count += 1
+            except SourceNotFoundError:
+                fail_count += 1
+                errors.append(ui.SHORTCUT_PASTE_SRC_NOT_FOUND.format(name=action.src.name))
+            except (ConflictError, CrossDriveError, SelfSubdirectoryError, FileOperationError) as e:
+                fail_count += 1
+                errors.append(ui.SHORTCUT_PASTE_FAILED.format(error=str(e)))
+
+        # cut 模式粘贴后清空剪贴板 + 清除剪切高亮
+        if operation == "cut":
+            self._clipboard_service.clear()
+            self._content_list_model.set_cut_paths(set())
+
+        # 提交事务 + 刷新 UI
+        self._commit()
+        self._refresh_tree()
+        self._refresh_content_list_for_current_mode()
+
+        # 状态栏提示
+        if fail_count == 0:
+            self.statusBar().showMessage(
+                ui.SHORTCUT_PASTED.format(n=ok_count, dir_name=dst_dir.name), 3000
+            )
+        else:
+            QMessageBox.information(
+                self,
+                ui.CONFLICT_DIALOG_TITLE,
+                ui.SHORTCUT_PASTE_PARTIAL.format(ok=ok_count, fail=fail_count)
+                + "\n\n"
+                + "\n".join(errors[:5]),
             )
 
     def _update_metadata(self, unit: ContentUnit) -> None:

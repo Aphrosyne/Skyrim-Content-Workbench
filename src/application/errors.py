@@ -148,3 +148,14 @@ class UndoSafetyError(UndoError):
 
 class UndoAlreadyUndoneError(UndoError):
     """该操作已被撤销（undone_at 非空），不可重复撤销。"""
+
+
+# === 剪贴板（Stage 5 Task 3b） ===
+
+
+class ClipboardError(ApplicationError):
+    """剪贴板操作基础错误。"""
+
+
+class EmptyClipboardError(ClipboardError):
+    """剪贴板为空时执行粘贴操作。"""

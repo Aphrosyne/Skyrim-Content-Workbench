@@ -35,7 +35,7 @@ import logging
 from collections.abc import Callable
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QBrush, QColor, QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QStyle
 
 from app import ui_constants as ui
@@ -134,6 +134,8 @@ class FileListModel(QAbstractTableModel):
         self._thumbnail_provider: ThumbnailProvider | None = None
         # unit_id → QPixmap (None 表示不可用)
         self._thumbnail_cache: dict[str, QPixmap | None] = {}
+        # Stage 5 Task 3b：剪切状态路径集合（用于半透明渲染，Q12=A 50% 透明度）
+        self._cut_paths: set[str] = set()
 
     # --- QAbstractTableModel 必需方法 ---
 
@@ -179,6 +181,11 @@ class FileListModel(QAbstractTableModel):
             return entry
         if role == Qt.DecorationRole and col == COL_NAME:
             return self.icon_for(entry)
+        if role == Qt.ForegroundRole:
+            # Stage 5 Task 3b：剪切状态半透明渲染（Q12=A 50% 透明度）
+            if entry.path in self._cut_paths:
+                return QBrush(QColor(0, 0, 0, 128))
+            return None
         return None
 
     def headerData(  # noqa: N802 (Qt 命名)
@@ -206,7 +213,24 @@ class FileListModel(QAbstractTableModel):
         self._apply_sort()
         # 清空缩略图缓存（新列表可能 unit_id 集合不同）
         self._thumbnail_cache.clear()
+        # Stage 5 Task 3b：切换目录后清空剪切高亮（Q8=A：剪贴板状态保留，视觉仅在原目录显示）
+        self._cut_paths = set()
         self.endResetModel()
+
+    def set_cut_paths(self, paths: set[str]) -> None:
+        """设置剪切状态路径集合，触发 dataChanged 更新渲染。
+
+        Stage 5 Task 3b：剪切后条目半透明显示（Q12=A 50% 透明度）。
+        切换目录时 refresh 会清空 cut_paths（Q8=A：视觉仅在原目录显示）。
+
+        Args:
+            paths: 处于剪切状态的路径字符串集合。
+        """
+        self._cut_paths = set(paths)
+        if self._entries:
+            top_left = self.index(0, 0)
+            bottom_right = self.index(len(self._entries) - 1, COLUMN_COUNT - 1)
+            self.dataChanged.emit(top_left, bottom_right, [Qt.ForegroundRole])
 
     def set_sort_key(self, sort_key: str, ascending: bool) -> None:
         """切换排序键与方向，重新对现有条目排序。"""

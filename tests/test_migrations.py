@@ -1,12 +1,13 @@
 """migrations 模块测试。
 
-覆盖 v0→v1 / v1→v2 / v2→v3 / v3→v4 / v4→v5 / v5→v6 / v6→v7 迁移。
+覆盖 v0→v1 / v1→v2 / v2→v3 / v3→v4 / v4→v5 / v5→v6 / v6→v7 / v8→v9 迁移。
 v3→v4 为方向 C 重建：新建 content_unit 等表，移除 mod_item / file_asset /
 folder_node / operation_log，重建 thumbnail_cache（FK 改为 content_unit）。
 v4→v5 新增 staging_area 表（阶段 3 Task 1 暂存区标记）。
 v5→v6 移除 content_unit.rating 列 + 加 tag_category.name / tag(name, category_id)
 UNIQUE 约束（阶段 4 Task 1）。
 v6→v7 thumbnail_cache 新增 size 列 + 复合主键 (content_unit_id, size)（Task 1a）。
+v8→v9 operation_history.operation_type CHECK 约束扩展 'copy'（Stage 5 Task 3b）。
 """
 
 from __future__ import annotations
@@ -22,6 +23,9 @@ from infrastructure.migrations import (
     migrate_v3_to_v4,
     migrate_v4_to_v5,
     migrate_v5_to_v6,
+    migrate_v6_to_v7,
+    migrate_v7_to_v8,
+    migrate_v8_to_v9,
 )
 
 
@@ -29,7 +33,7 @@ def test_migrations_sorted_by_target() -> None:
     """MIGRATIONS 列表应按 target 升序可排序（init_db 内部排序）。"""
     targets = [t for t, _ in MIGRATIONS]
     assert targets == sorted(targets)
-    assert len(MIGRATIONS) >= 8
+    assert len(MIGRATIONS) >= 9
     assert MIGRATIONS[0][0] == 1
     assert MIGRATIONS[1][0] == 2
     assert MIGRATIONS[2][0] == 3
@@ -38,11 +42,12 @@ def test_migrations_sorted_by_target() -> None:
     assert MIGRATIONS[5][0] == 6
     assert MIGRATIONS[6][0] == 7
     assert MIGRATIONS[7][0] == 8
+    assert MIGRATIONS[8][0] == 9
 
 
-def test_current_schema_version_is_eight() -> None:
-    """Stage 5 Task 6：当前 schema 版本应为 8（operation_history 撤销支持）。"""
-    assert CURRENT_SCHEMA_VERSION == 8
+def test_current_schema_version_is_nine() -> None:
+    """Stage 5 Task 3b：当前 schema 版本应为 9（operation_history 支持复制操作）。"""
+    assert CURRENT_SCHEMA_VERSION == 9
 
 
 def test_migrate_v0_to_v1_idempotent() -> None:
@@ -503,7 +508,7 @@ def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
     db_path = tmp_path / "test.db"
     version = init_db(db_path)
     assert version == CURRENT_SCHEMA_VERSION
-    assert version == 8
+    assert version == 9
 
     # v7 后 managed_root 表仍存在
     conn = sqlite3.connect(str(db_path))
@@ -597,9 +602,9 @@ def test_init_db_migrates_v3_db_to_v6(tmp_path) -> None:
     finally:
         conn.close()
 
-    # init_db 应识别 v3 并依次应用 v3→v4→v5→v6→v7→v8
+    # init_db 应识别 v3 并依次应用 v3→v4→v5→v6→v7→v8→v9
     version = init_db(db_path)
-    assert version == 8
+    assert version == 9
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -828,5 +833,108 @@ def test_migrate_v5_to_v6_idempotent_when_rating_already_absent() -> None:
         # 验证状态稳定
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(content_unit)")}
         assert "rating" not in cols
+    finally:
+        conn.close()
+
+
+# --- v8 → v9 迁移测试（Stage 5 Task 3b） ---
+
+
+def _apply_v0_to_v8(conn: sqlite3.Connection) -> None:
+    """辅助：将内存数据库迁移到 v8 状态。"""
+    migrate_v0_to_v1(conn)
+    migrate_v1_to_v2(conn)
+    migrate_v2_to_v3(conn)
+    migrate_v3_to_v4(conn)
+    migrate_v4_to_v5(conn)
+    migrate_v5_to_v6(conn)
+    migrate_v6_to_v7(conn)
+    migrate_v7_to_v8(conn)
+
+
+def test_migrate_v8_to_v9_allows_copy_operation_type() -> None:
+    """v8→v9 迁移后 operation_history 应接受 operation_type='copy'。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v8(conn)
+        migrate_v8_to_v9(conn)
+
+        # 'copy' 类型应可写入（不违反 CHECK 约束）
+        conn.execute(
+            "INSERT INTO operation_history (id, operation_type, source_path, "
+            "target_path, created_at, can_undo) VALUES "
+            "('h1', 'copy', 'D:/src.txt', 'D:/dst.txt', '2026-07-30T00:00:00Z', 0)"
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT operation_type FROM operation_history WHERE id = 'h1'"
+        ).fetchone()
+        assert row["operation_type"] == "copy"
+    finally:
+        conn.close()
+
+
+def test_migrate_v8_to_v9_preserves_existing_history() -> None:
+    """v8→v9 迁移应保留既有 operation_history 数据。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v8(conn)
+        # 写入一条历史记录
+        conn.execute(
+            "INSERT INTO operation_history (id, operation_type, source_path, "
+            "target_path, created_at, can_undo) VALUES "
+            "('h-old', 'move', 'D:/a.txt', 'D:/b.txt', '2026-07-01T00:00:00Z', 1)"
+        )
+        conn.commit()
+
+        migrate_v8_to_v9(conn)
+
+        row = conn.execute("SELECT * FROM operation_history WHERE id = 'h-old'").fetchone()
+        assert row is not None
+        assert row["operation_type"] == "move"
+        assert row["source_path"] == "D:/a.txt"
+        assert row["target_path"] == "D:/b.txt"
+    finally:
+        conn.close()
+
+
+def test_migrate_v8_to_v9_idempotent() -> None:
+    """v8→v9 迁移函数本身幂等（重复调用不报错，'copy' 约束保持）。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v8(conn)
+        migrate_v8_to_v9(conn)
+        # 再次调用应跳过（CHECK 约束已含 'copy'）
+        migrate_v8_to_v9(conn)
+
+        # 'copy' 仍可写入
+        conn.execute(
+            "INSERT INTO operation_history (id, operation_type, source_path, "
+            "target_path, created_at, can_undo) VALUES "
+            "('h2', 'copy', 'D:/s', 'D:/d', '2026-07-30T00:00:00Z', 0)"
+        )
+        conn.commit()
+        assert (
+            conn.execute("SELECT COUNT(*) FROM operation_history WHERE id = 'h2'").fetchone()[0]
+            == 1
+        )
+    finally:
+        conn.close()
+
+
+def test_migrate_v8_to_v9_skips_when_table_absent() -> None:
+    """operation_history 表不存在时迁移应跳过（不报错）。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        # 不应用任何迁移，operation_history 表不存在
+        migrate_v8_to_v9(conn)
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='operation_history'"
+        ).fetchone()
+        assert row is None
     finally:
         conn.close()

@@ -27,7 +27,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QBrush, QColor, QIcon, QPixmap
 
 from app import ui_constants as ui
 from app.file_list_model import FileListModel
@@ -95,6 +95,11 @@ class CardListModel(QAbstractListModel):
             return entry
         if role == Qt.DecorationRole:
             return self._get_decoration(entry)
+        if role == Qt.ForegroundRole:
+            # Stage 5 Task 3b：剪切状态半透明渲染（委托 FileListModel 的 cut_paths）
+            if self._source is not None and entry.path in self._source._cut_paths:  # noqa: SLF001
+                return QBrush(QColor(0, 0, 0, 128))
+            return None
         return None
 
     def _elide_name(self, name: str) -> str:
