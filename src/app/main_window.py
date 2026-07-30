@@ -109,6 +109,7 @@ from application.quick_insert_service import QuickInsertService
 from application.scan_service import ScanSummary
 from application.staging_service import StagingService
 from application.tag_service import TagService
+from application.undo_service import UndoService
 from domain.models import AppMode, ContentUnit, FileEntry, ManagedRoot
 from infrastructure.file_operation_service import FileOperationService
 
@@ -230,6 +231,7 @@ class MainWindow(QMainWindow):
         tag_service: TagService | None = None,
         thumbnail_coordinator: ThumbnailCoordinator | None = None,
         file_operation_service: FileOperationService | None = None,
+        undo_service: UndoService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -246,6 +248,8 @@ class MainWindow(QMainWindow):
         self._tag_service = tag_service
         # Stage 5 Task 3a：文件操作服务（new_folder / rename / delete）
         self._file_operation_service = file_operation_service
+        # Stage 5 Task 6：操作历史撤销服务
+        self._undo_service = undo_service
         # Stage 4 Task 4：缩略图调度器（可选注入，便于测试）
         self._thumbnail_coordinator = thumbnail_coordinator
         self._thread: QThread | None = None
@@ -414,6 +418,14 @@ class MainWindow(QMainWindow):
         self._tag_manager_button.clicked.connect(self._on_tag_manager_clicked)
         self._tag_manager_button.setVisible(self._tag_service is not None)
         top_layout.addWidget(self._tag_manager_button)
+
+        # Stage 5 Task 6：操作历史按钮
+        # 仅注入 UndoService 时显示
+        self._operation_history_button = QPushButton(ui.TOOLBAR_OPERATION_HISTORY)
+        self._operation_history_button.setToolTip(ui.TOOLBAR_OPERATION_HISTORY)
+        self._operation_history_button.clicked.connect(self._on_operation_history_clicked)
+        self._operation_history_button.setVisible(self._undo_service is not None)
+        top_layout.addWidget(self._operation_history_button)
 
         # === 三栏 Splitter ===
         splitter = QSplitter(Qt.Horizontal)
@@ -2304,6 +2316,38 @@ class MainWindow(QMainWindow):
         # Stage 4 Task 3：标签库可能变更，刷新 TagFilterBar 可选标签。
         # refresh_categories 会自动剔除已删除的已选标签并重新筛选。
         self._refresh_tag_filter_bar()
+
+    # === Stage 5 Task 6：操作历史与撤销 ===
+
+    def _on_operation_history_clicked(self) -> None:
+        """打开操作历史对话框。
+
+        - 仅当注入了 undo_service 时响应（按钮可见性已通过 __init__ 控制）。
+        - Dialog 内部完成 undo 流程（反向文件操作 + 同步 + 写 undo 记录 + mark_undone），
+          但不自提交；由 MainWindow 在 dialog.exec() 返回后 commit。
+        - Dialog 撤销成功后通过 callback 通知 MainWindow 刷新中栏/目录树。
+        - 失败时（UndoSafetyError 等）Dialog 内部已弹窗提示，MainWindow 仅 rollback。
+        """
+        if self._undo_service is None:
+            return
+
+        had_undone = [False]  # 闭包变量，记录是否发生过撤销
+
+        def _on_undone() -> None:
+            had_undone[0] = True
+
+        from app.operation_history_dialog import OperationHistoryDialog  # noqa: PLC0415
+
+        dialog = OperationHistoryDialog(self._undo_service, parent=self, limit=100)
+        dialog.set_on_undone_callback(_on_undone)
+        dialog.exec()
+
+        if had_undone[0]:
+            # 发生过撤销：commit + 刷新 UI
+            self._commit()
+            self._refresh_tree()
+            self._refresh_content_list_for_current_mode()
+            self.statusBar().showMessage("已撤销操作", 3000)
 
     def _update_metadata(self, unit: ContentUnit) -> None:
         """更新元数据面板。

@@ -121,3 +121,30 @@ class InvalidMetadataError(ApplicationError):
 
 class CoverImageNotFoundError(ApplicationError):
     """封面图片在内容单元目录下不存在或不可访问。"""
+
+
+# === 操作历史撤销（Stage 5 Task 6） ===
+
+
+class UndoError(ApplicationError):
+    """撤销操作基础错误。"""
+
+
+class UndoNotAllowedError(UndoError):
+    """该操作不允许撤销（can_undo=False 或 operation_type='undo'/'delete'）。"""
+
+
+class UndoSafetyError(UndoError):
+    """撤销安全检查失败：源文件不存在 / 已被外部修改 / 目标已存在。
+
+    Attributes:
+        reason: 具体失败原因（面向用户的中文消息）。
+    """
+
+    def __init__(self, message: str, reason: str = "") -> None:
+        super().__init__(message)
+        self.reason = reason or message
+
+
+class UndoAlreadyUndoneError(UndoError):
+    """该操作已被撤销（undone_at 非空），不可重复撤销。"""

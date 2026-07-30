@@ -401,6 +401,69 @@ def migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
     logger.info("迁移 v6 → v7 完成")
 
 
+def migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
+    """v7 → v8：operation_history 支持撤销标记（Task 6）。
+
+    Stage 5 Task 6：为操作历史撤销框架做铺垫。
+
+    变更：
+    - 新增 undone_at TEXT 列（NULL 表示未撤销，非 NULL 为撤销时间戳）
+    - operation_type CHECK 约束扩展为包含 'undo'
+      （undo 记录的 source_path 指向被撤销的原 history.id，
+       can_undo=0，undone_at 必须为 NULL，避免无限循环撤销）
+
+    实现说明：
+    - SQLite 不支持直接修改 CHECK 约束，需重建表
+    - 旧数据全部保留，undone_at 默认 NULL（未撤销）
+    - operation_type='undo' 的记录在迁移后才会被 UndoService 写入
+
+    幂等性：通过检查 operation_history 是否已有 undone_at 列判断是否已迁移。
+    """
+    # 幂等检查：若 undone_at 列已存在则跳过
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(operation_history)")}
+    if "undone_at" in cols:
+        logger.info("v8 迁移已应用，跳过")
+        return
+
+    # 1. 创建新表（扩展 CHECK 约束 + 新增 undone_at 列）
+    conn.executescript(
+        """
+        CREATE TABLE operation_history_new (
+            id TEXT PRIMARY KEY,
+            operation_type TEXT NOT NULL CHECK(operation_type IN (
+                'move','delete','rename','new_folder','undo'
+            )),
+            source_path TEXT NOT NULL,
+            target_path TEXT,
+            created_at TEXT NOT NULL,
+            can_undo INTEGER NOT NULL DEFAULT 1,
+            undone_at TEXT
+        );
+        """
+    )
+
+    # 2. 迁移旧数据（undone_at 默认 NULL，表示未撤销）
+    conn.execute(
+        """
+        INSERT INTO operation_history_new
+            (id, operation_type, source_path, target_path, created_at, can_undo, undone_at)
+        SELECT id, operation_type, source_path, target_path, created_at, can_undo, NULL
+        FROM operation_history
+        """
+    )
+
+    # 3. 替换旧表 + 重建索引
+    conn.executescript(
+        """
+        DROP TABLE operation_history;
+        ALTER TABLE operation_history_new RENAME TO operation_history;
+        CREATE INDEX IF NOT EXISTS idx_operation_history_created
+            ON operation_history(created_at);
+        """
+    )
+    logger.info("迁移 v7 → v8 完成")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -411,4 +474,5 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (5, migrate_v4_to_v5),
     (6, migrate_v5_to_v6),
     (7, migrate_v6_to_v7),
+    (8, migrate_v7_to_v8),
 ]

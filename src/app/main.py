@@ -27,6 +27,7 @@ from application.quick_insert_service import QuickInsertService
 from application.staging_service import StagingService
 from application.tag_service import TagService
 from application.thumbnail_service import ThumbnailService
+from application.undo_service import UndoService
 from infrastructure.db import get_connection, init_db
 from infrastructure.file_operation_service import FileOperationService
 from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper
@@ -153,6 +154,16 @@ def main() -> int:
         ContentUnitTagRepository(conn),
     )
 
+    # Stage 5 Task 6：操作历史撤销服务
+    # 注入 FileOperationService（执行反向 move/rename）+ FolderCacheSyncHelper +
+    # ContentUnitRepository（同步 folder_cache + ContentUnit.path）
+    undo_service = UndoService(
+        history_repo=OperationHistoryRepository(conn),
+        file_operation_service=file_operation_service,
+        folder_cache_helper=folder_cache_helper,
+        content_unit_repo=content_unit_repo,
+    )
+
     # 加载预置标签库（D1-D4：仅当 tag_category 表为空时加载）
     # 加载失败不阻塞应用启动（service 内部捕获并记录 ERROR 日志）
     if _DEFAULT_TAGS_JSON.is_file():
@@ -191,6 +202,7 @@ def main() -> int:
         tag_service=tag_service,
         thumbnail_coordinator=thumbnail_coordinator,
         file_operation_service=file_operation_service,
+        undo_service=undo_service,
     )
     window.show()
     exit_code = app.exec()

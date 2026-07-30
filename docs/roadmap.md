@@ -574,22 +574,24 @@
 - [x] 三类操作均写入 operation_history
 - [x] 中文路径正常工作
 
-### Task 6：操作历史与撤销
+### Task 6：操作历史与撤销 ✅
 
 > 原 roadmap Task 6 提前到此位置，为后续 Task 3b/5 提供 undo 框架。
+> 完成于 2026-07-30。schema_version v7 → v8 迁移。
 
-- 操作历史对话框（QDialog 弹出，Q4: A）展示 operation_history 表记录
+- 操作历史对话框（QDialog 弹出，Q1: A 顶部工具栏按钮）展示 operation_history 表记录
 - undo 框架：根据 operation_type 分派反向操作（move/rename/new_folder 可撤销，delete 不可撤销）
-- undo 前校验文件状态安全，不安全时阻止（Q7: C：列表标注「不可撤销」+ 弹窗提示原因）
-- 修复 TD-H1（已 Task 0 完成）配合 undo 安全检查
+- undo 前校验文件状态安全，不安全时阻止（Q5: A：路径存在 + size/mtime 校验；Q7: A 二次确认弹窗）
+- schema v8 迁移：operation_history 新增 undone_at 列 + operation_type='undo' 支持
+- UndoService 写 undo 记录（can_undo=False，避免无限循环）+ mark_undone 标记原记录
 
 **验收：**
-- [ ] 每次移动/重命名/删除操作记录到 history
-- [ ] 操作历史对话框正确展示记录列表
-- [ ] 可从历史选择操作撤销
-- [ ] 不安全状态（如源文件已被外部修改）阻止撤销并弹窗提示
-- [ ] 撤销后文件回到操作前位置
-- [ ] delete 操作在列表中标注「不可撤销」
+- [x] 每次移动/重命名/删除操作记录到 history
+- [x] 操作历史对话框正确展示记录列表
+- [x] 可从历史选择操作撤销
+- [x] 不安全状态（如源文件已被外部修改）阻止撤销并弹窗提示
+- [x] 撤销后文件回到操作前位置
+- [x] delete 操作在列表中标注「不可撤销」
 
 ### Task 4：键盘快捷键
 

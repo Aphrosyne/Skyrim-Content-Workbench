@@ -8,10 +8,74 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
-### Stage 5 Task 3a：新建文件夹 + 重命名 + 删除（移至回收站）
+---
+
+## [0.36.0] - 2026-07-30
+
+Stage 5 Task 6：操作历史与撤销框架
+
+为 Stage 5 Task 3a 已实现的文件操作（new_folder / rename / delete）以及更早的 move 操作补齐**撤销框架**，并提供查看操作历史的 UI 入口。schema_version v7 → v8 迁移。
+
+**新增功能**
+
+- Schema v8 迁移：operation_history 表新增 `undone_at TEXT NULL` 列（NULL 表示未撤销，非 NULL 为撤销时间戳）；operation_type CHECK 约束扩展为包含 `'undo'`。SQLite 不支持直接修改 CHECK 约束，采用重建表方式迁移。旧数据全部保留，undone_at 默认 NULL
+- 扩展 [OperationHistoryRepository](src/infrastructure/repositories/operation_history.py)：
+  - 新增 `list_recent(limit=100)`：按 created_at 降序返回最近 N 条记录（最新在上），限制查询条数避免全表加载
+  - 新增 `mark_undone(history_id, undone_at)`：标记原操作为已撤销，写入 undone_at 时间戳。已撤销的记录再次 mark_undone 抛 ConstraintViolationError
+  - `_row_to_model` 兼容 v7 旧 schema（无 undone_at 列时返回 None）
+- 新增 [UndoService](src/application/undo_service.py)：
+  - `undo(history) -> OperationHistory`：撤销一条记录，返回新写入的 undo 记录
+  - 前置校验：can_undo / operation_type（delete/undo 拒绝）/ undone_at（不可重复撤销）
+  - 安全校验（Q5=A）：路径存在 + size/mtime 校验。new_folder 校验空目录；rename/move 校验 target 存在 + source 不存在（避免覆盖外部创建的文件）
+  - 反向操作分派：new_folder → 删除空文件夹（rmdir）；rename → 反向 rename（通过 FileOperationService.rename）；move → 反向 move（通过 FileOperationService.move）
+  - 同步：new_folder 撤销后通过 FolderCacheSyncHelper.on_folder_deleted 删除 folder_cache 节点；rename/move 撤销由 FileOperationService 内部同步逻辑处理
+  - 写 undo 记录：operation_type='undo'，source_path 指向原 history.id（形成审计链），can_undo=False（避免无限循环撤销），undone_at 必为 None
+  - 标记原记录：mark_undone 写入时间戳
+- 新增 [errors.py](src/application/errors.py) 撤销异常：`UndoError`（基础）/ `UndoNotAllowedError`（delete/undo/can_undo=False）/ `UndoSafetyError`（含 reason 字段）/ `UndoAlreadyUndoneError`
+- 新增 [OperationHistoryDialog](src/app/operation_history_dialog.py)：
+  - QTableWidget 4 列（时间 / 操作 / 描述 / 状态），按 created_at 降序（最新在上）
+  - can_undo=False 的行整行灰色，撤销按钮禁用
+  - 已撤销的行（undone_at 非空）显示「已撤销」标记，整行灰色
+  - 底部按钮：刷新 / 撤销选中 / 关闭
+  - Q7=A：撤销前二次确认弹窗
+  - 撤销成功后通过 callback 通知 MainWindow 刷新中栏/目录树
+- [MainWindow](src/app/main_window.py) 顶部工具栏新增「操作历史」按钮（注入 UndoService 时显示）；`_on_operation_history_clicked` 打开对话框，exec() 返回后 commit + 刷新 UI
+- [Domain models](src/domain/models.py) OperationHistory 新增 `undone_at` 字段 + `operation_type='undo'` 校验：undo 记录的 can_undo 必为 False、target_path 必为 None、undone_at 必为 None
+
+**设计要点**
+
+- **undo 不直接复用普通文件操作方法后简单取反**（用户补充要求 #2）：UndoService 内部通过 `_SafetyCheckResult` dataclass 明确记录原始操作类型、操作前状态（source_size/source_mtime）、操作后状态（target_size/target_mtime）、安全检查结果（ok + reason）
+- **undo 记录不可再撤销**（避免无限循环）：operation_type='undo' 的 can_undo 必为 False，`_check_undo_allowed` 前置拦截
+- **跨会话撤销**（Q2=A）：operation_history 持久化设计，重启应用后历史记录仍可查询、仍可撤销状态安全的操作
+- **事务边界**：UndoService 不自提交，由 MainWindow 在 dialog.exec() 返回后 commit；失败时 rollback
+
+**测试**
+
+- 新增 [test_undo_service.py](tests/test_undo_service.py) 25 个用例：
+  - 正常 undo（new_folder / rename / move 三种类型）
+  - 文件被外部修改后的 undo 阻止（源/目标不存在）
+  - 文件不存在后的 undo 阻止（target 已删除）
+  - 多次 undo（连续撤销不同记录）
+  - 重启应用后历史恢复（重新构造 UndoService 后仍能撤销）
+  - undo 自身不会进入可无限 undo 循环（undo 记录不可再撤销）
+  - delete / undo 操作拒绝撤销
+  - 已撤销操作重复撤销
+  - new_folder 非空时撤销阻止（Q4=A）
+  - folder_cache + ContentUnit.path 同步
+  - list_recent 查询（降序 + limit + 含已撤销记录）
+  - OperationHistory 数据模型 v8 校验
+  - mark_undone 仓储方法
+- 更新 [test_migrations.py](tests/test_migrations.py)：v8 迁移测试 + schema 版本断言更新为 8
+- 全量回归：1165 passed, 5 skipped, ruff check + format 全通过
+
+---
+
+## [0.35.0] - 2026-07-30
+
+Stage 5 Task 3a：新建文件夹 + 重命名 + 删除（移至回收站）
 
 > 原 Task 3 拆分的第一部分，覆盖最基础的文件 CRUD。为 Task 6 undo 框架做铺垫。
-> 完成于 2026-07-30。schema_version 维持 7，无数据库迁移。
+> schema_version 维持 7，无数据库迁移。
 
 **新增功能**
 
@@ -42,7 +106,61 @@
 
 全量回归：1140 passed, 5 skipped, ruff check + format 全通过。
 
-### Stage 5 Task 2 验收修复 2：排序最终方案 + UI 稳定性
+---
+
+## [0.34.0] - 2026-07-29
+
+Stage 5 Task 2：排序 UI + 前进/后退目录导航 + 验收修复
+
+在 Task 1b 双档缓存架构基础上完成排序 UI 补齐与目录导航，含两轮验收修复。schema_version 维持 7，无数据库迁移。
+
+### Task 2：排序 UI + 前进/后退目录导航
+
+**排序 UI**（在阶段 3 Task 2 已有 `FileListModel.set_sort_key` 基础上补齐）：
+- `FileListModel.headerData` 当前排序列追加 ▲/▼ 方向指示（Q1=A 文本方案）
+- `set_sort_key` 发射 `headerDataChanged` 刷新列头显示
+- 视图切换栏新增排序字段下拉框 + 升降序方向按钮（Q2=A 列表/卡片视图共享）
+- 列头点击与下拉框双向同步
+
+**前进/后退目录导航**（用户验收时新增需求，类似资源管理器）：
+- 视图切换栏左侧新增 ←/→ 按钮
+- 维护浏览历史栈（back_stack + forward_stack + current_nav_path）
+- 仅浏览模式记录历史，整理模式不记录
+- 相邻相同路径去重，进入新目录清空前进栈（标准浏览器行为）
+- 历史导航触发的切换不再入栈，避免循环
+
+**测试**：新增 10 个测试（列头方向指示 3 + 排序下拉框同步 4 + 前进后退导航 4）。全量回归：1065 passed, 3 skipped, ruff check + format 全通过。
+
+### Task 2 验收修复：排序/卡片/批量取消 6 项问题
+
+**问题 1：排序下拉框"名称"需两次点击**
+- 根因：`currentIndexChanged` 在索引未变化时不触发信号
+- 修复：改用 `activated` 信号（仅用户交互触发，程序化 setCurrentIndex 不触发）
+
+**问题 2：排序方向按钮蓝色高亮**
+- 根因：`setCheckable(True)` 的 checked 状态有蓝色背景
+- 修复：移除 checkable，方向由文本 ▲/▼ 表达；`setFocusPolicy(NoFocus)` 去除焦点高亮
+
+**问题 3：卡片模式文件名过长撑大卡片**
+- 修复：`CardListModel._elide_name` 用 `QFontMetrics.elidedText` 截断长文件名
+- `_card_view.setGridSize` 固定网格单元尺寸 + `setUniformItemSizes(True)` + `setWordWrap(False)`
+
+**问题 4：卡片预览图比例影响卡片形状**
+- 修复：`CardListModel._crop_to_square` 居中裁剪为 icon_size × icon_size 方形（Q1=A）
+- 用 `KeepAspectRatioByExpanding` 填满后居中 crop，横竖图统一外框
+
+**问题 5：批量取消内容单元标记缺失**
+- 新增 `_on_batch_unmark_content_unit` handler，容错策略与批量标记一致
+- 多选且至少一个已标记时显示菜单项（Q2:A）
+
+**问题 6：右键菜单命名统一**
+- `取消标记` → `取消内容单元标记`
+- `把每个文件标记为内容单元` → `批量标记为内容单元`（Q3:A）
+- 新增 `批量取消内容单元标记`
+
+**测试**：新增 11 个测试。全量回归：1076 passed, 3 skipped, ruff check + format 全通过。
+
+### Task 2 验收修复 2：排序最终方案 + UI 稳定性
 
 > 第二轮验收修复，解决排序下拉框随机失效、右栏跳动、列表无框选等遗留问题。
 
@@ -72,52 +190,6 @@
 - 卡片视图显式 `setSelectionRectVisible(True)`（IconMode 默认启用，显式表达一致性）
 
 **测试**：新增 3 个测试（列表视图类型检查、卡片视图 rubber band、全字段切换回归）。全量回归：1080 passed, 3 skipped, ruff check + format 全通过。
-
-### Stage 5 Task 2 验收修复：排序/卡片/批量取消 6 项问题
-
-**问题 1：排序下拉框"名称"需两次点击**
-- 根因：`currentIndexChanged` 在索引未变化时不触发信号
-- 修复：改用 `activated` 信号（仅用户交互触发，程序化 setCurrentIndex 不触发）
-
-**问题 2：排序方向按钮蓝色高亮**
-- 根因：`setCheckable(True)` 的 checked 状态有蓝色背景
-- 修复：移除 checkable，方向由文本 ▲/▼ 表达；`setFocusPolicy(NoFocus)` 去除焦点高亮
-
-**问题 3：卡片模式文件名过长撑大卡片**
-- 修复：`CardListModel._elide_name` 用 `QFontMetrics.elidedText` 截断长文件名
-- `_card_view.setGridSize` 固定网格单元尺寸 + `setUniformItemSizes(True)` + `setWordWrap(False)`
-
-**问题 4：卡片预览图比例影响卡片形状**
-- 修复：`CardListModel._crop_to_square` 居中裁剪为 icon_size × icon_size 方形（Q1=A）
-- 用 `KeepAspectRatioByExpanding` 填满后居中 crop，横竖图统一外框
-
-**问题 5：批量取消内容单元标记缺失**
-- 新增 `_on_batch_unmark_content_unit` handler，容错策略与批量标记一致
-- 多选且至少一个已标记时显示菜单项（Q2:A）
-
-**问题 6：右键菜单命名统一**
-- `取消标记` → `取消内容单元标记`
-- `把每个文件标记为内容单元` → `批量标记为内容单元`（Q3:A）
-- 新增 `批量取消内容单元标记`
-
-**测试**：新增 11 个测试。全量回归：1076 passed, 3 skipped, ruff check + format 全通过。
-
-### Stage 5 Task 2：排序 UI + 前进/后退目录导航
-
-**排序 UI**（在阶段 3 Task 2 已有 `FileListModel.set_sort_key` 基础上补齐）：
-- `FileListModel.headerData` 当前排序列追加 ▲/▼ 方向指示（Q1=A 文本方案）
-- `set_sort_key` 发射 `headerDataChanged` 刷新列头显示
-- 视图切换栏新增排序字段下拉框 + 升降序方向按钮（Q2=A 列表/卡片视图共享）
-- 列头点击与下拉框双向同步
-
-**前进/后退目录导航**（用户验收时新增需求，类似资源管理器）：
-- 视图切换栏左侧新增 ←/→ 按钮
-- 维护浏览历史栈（back_stack + forward_stack + current_nav_path）
-- 仅浏览模式记录历史，整理模式不记录
-- 相邻相同路径去重，进入新目录清空前进栈（标准浏览器行为）
-- 历史导航触发的切换不再入栈，避免循环
-
-**测试**：新增 10 个测试（列头方向指示 3 + 排序下拉框同步 4 + 前进后退导航 4）。全量回归：1065 passed, 3 skipped, ruff check + format 全通过。
 
 ### 修复：卡片→列表视图切换选中状态丢失（Task 1b 回归修复）
 

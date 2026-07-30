@@ -109,6 +109,35 @@ MENU_NEW_FOLDER_SUCCESS = "已创建文件夹：{name}"
 MENU_RENAME_SUCCESS = "已重命名为：{name}"
 MENU_OPERATION_FAILED = "操作失败：{error}"
 
+# === Stage 5 Task 6：操作历史与撤销 ===
+TOOLBAR_OPERATION_HISTORY = "操作历史"
+OPERATION_HISTORY_DIALOG_TITLE = "操作历史"
+OPERATION_HISTORY_REFRESH = "刷新"
+OPERATION_HISTORY_UNDO = "撤销选中"
+OPERATION_HISTORY_CLOSE = "关闭"
+OPERATION_HISTORY_UNDO_CONFIRM_TITLE = "确认撤销"
+OPERATION_HISTORY_UNDO_CONFIRM_TEXT = (
+    "确定要撤销以下操作？\n\n{desc}\n\n此操作将还原文件到操作前的状态。"
+)
+# 历史记录描述格式
+HISTORY_DESC_NEW_FOLDER = "新建文件夹：{target}"
+HISTORY_DESC_RENAME = "重命名：{source} → {target}"
+HISTORY_DESC_MOVE = "移动：{source} → {target}"
+HISTORY_DESC_DELETE = "删除：{source}（不可撤销）"
+HISTORY_DESC_UNDO = "撤销操作：原记录 {source}"
+HISTORY_DESC_UNKNOWN = "未知操作：{op}"
+# 状态显示
+HISTORY_STATUS_CAN_UNDO = "可撤销"
+HISTORY_STATUS_CANNOT_UNDO = "不可撤销"
+HISTORY_STATUS_UNDONE = "已撤销"
+# 撤销结果
+UNDO_SUCCESS = "已撤销：{desc}"
+UNDO_NOT_ALLOWED = "该操作不可撤销"
+UNDO_DELETE_NOT_ALLOWED = "删除操作不可撤销，请从 Windows 回收站手动还原"
+UNDO_FAILED = "撤销失败：{error}"
+UNDO_SAFETY_FAILED = "无法撤销：{reason}"
+UNDO_ALREADY_UNDONE = "该操作已被撤销，不可重复撤销"
+
 # 创建 Mod 组对话框
 CREATE_MOD_GROUP_DIALOG_TITLE = "创建 Mod 组"
 CREATE_MOD_GROUP_DIALOG_LABEL = "请选择或输入 Mod 组名称："
