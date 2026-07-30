@@ -10,6 +10,48 @@
 
 ---
 
+## [0.39.0] - 2026-07-30
+
+Stage 5 Task 5：「移动到...」快捷对话框
+
+为 Task 3a/3b 的文件操作补齐「选中条目 → 选择目标目录 → 批量移动」的快捷对话框入口，支持中栏 + 目录树双入口及 Ctrl+M 快捷键。schema_version 维持 9，无数据库迁移。
+
+**新增功能**
+
+- 新增 [MoveToDialog](src/app/move_to_dialog.py)：内嵌独立 FolderTreeModel 的目录选择对话框
+  - 顶部提示移动条目数量（Q1=A 多选支持）
+  - 中间 QTreeView 惰性加载目录树，显示暂存区标记 `[S]`（Q8=A）
+  - 底部路径回显 + 确定/取消按钮，确定按钮初始禁用，选中合法目标后启用
+  - R1：选中源自身或子目录时确定按钮禁用 + 提示「不能移动到自身或子目录，请选择其他目录」
+  - R2：对话框创建独立 FolderTreeModel 实例，不共享主窗口 model
+  - Q6=B：不提供「新建文件夹」入口
+  - Q7=A：默认展开源所在目录的父目录并选中
+  - 程序化测试接口：`select_target_by_path` / `click_ok_button` / `click_cancel_button` / `is_ok_button_enabled` / `selected_target_path` / `src_count`
+- [MainWindow](src/app/main_window.py) 集成「移动到...」入口：
+  - 中栏右键菜单添加「移动到...」项（Q4=A 中栏 + 目录树均添加）
+  - 目录树右键菜单添加「移动到...」项
+  - 注册 Ctrl+M 快捷键（Q3=B 中栏 + 目录树 WidgetShortcut 上下文）
+  - `_on_move_to` / `_on_move_to_tree`：收集源路径 + 默认展开路径，弹出对话框
+  - `_perform_move_to`：复用 ConflictResolutionService 检测冲突 → ConflictResolutionDialog 用户决策 → FileOperationService.move 执行（跨盘剪切拒绝、源自身/子目录阻止、覆盖模式传递 overwrite 参数）
+  - Q9=A：对话框本身即确认，无二次确认弹窗
+- [ui_constants.py](src/app/ui_constants.py) 新增文案：MENU_MOVE_TO / SHORTCUT_MOVE_TO_* / MOVE_TO_DIALOG_*
+
+**设计要点**
+
+- **对话框只收集选择，不执行文件操作**：MoveToDialog 仅返回目标路径，由 MainWindow 调用 FileOperationService.move 执行，符合 UI 层不直接操作文件系统的约束
+- **复用 ConflictResolutionService**：与 Task 3b 的粘贴流程共用冲突检测/解决逻辑，保持行为一致
+- **源自身/子目录校验**：使用 make_path_key 归一化比较（AGENTS 规则 9），尾部加分隔符前缀判断避免 `D:/abc` 误匹配 `D:/abcd`
+- **独立 FolderTreeModel 实例**：避免对话框刷新影响主窗口目录树状态
+- **快捷键上下文分离**：Ctrl+M 仅需 FileOperationService，与 Ctrl+C/X/V（需 ClipboardService）独立 gating
+
+**测试**
+
+- 新增 [test_move_to_dialog.py](tests/test_move_to_dialog.py) 18 个用例：初始状态 / 选中目标 / 源自身子目录校验 / 确定取消按钮 / 默认展开 / 独立 model 实例
+- 新增 [test_main_window_move_to.py](tests/test_main_window_move_to.py) 13 个用例：Ctrl+M 中栏（无选中/移动文件/取消/多选） / Ctrl+M 目录树（移动目录/无选中） / 冲突解决（覆盖/取消） / 快捷键注册（注入/未注入 FileOperationService） / 右键菜单包含项 / 移动后 UI 刷新
+- 全量回归：1293 passed, 5 skipped, ruff check + format 全通过
+
+---
+
 ## [0.38.0] - 2026-07-30
 
 Stage 5 Task 3b：应用内文件复制/剪切/粘贴 + 冲突解决 + 操作历史自动清理

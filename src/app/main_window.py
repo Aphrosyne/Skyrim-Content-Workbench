@@ -1428,6 +1428,8 @@ class MainWindow(QMainWindow):
         copy_action = None
         cut_action = None
         paste_action = None
+        # 移动到...（Stage 5 Task 5，仅需 FileOperationService）
+        move_to_action = None
         if self._file_operation_service is not None:
             menu.addSeparator()
             new_folder_action = menu.addAction(ui.MENU_NEW_FOLDER)
@@ -1437,6 +1439,7 @@ class MainWindow(QMainWindow):
                 # 粘贴项仅在剪贴板非空时启用
                 paste_action = menu.addAction(ui.MENU_PASTE)
                 paste_action.setEnabled(self._clipboard_service.get() is not None)
+            move_to_action = menu.addAction(ui.MENU_MOVE_TO)
             delete_action = menu.addAction(ui.MENU_DELETE)
         # 在资源管理器中打开（Stage 5 Task 1，始终显示）
         explorer_action = menu.addAction(ui.MENU_OPEN_IN_EXPLORER)
@@ -1457,6 +1460,8 @@ class MainWindow(QMainWindow):
             self._on_shortcut_cut_tree()
         elif paste_action is not None and chosen is paste_action:
             self._on_shortcut_paste_tree()
+        elif move_to_action is not None and chosen is move_to_action:
+            self._on_move_to_tree(node)
         elif delete_action is not None and chosen is delete_action:
             self._on_shortcut_delete_tree()
         elif chosen is explorer_action:
@@ -1683,6 +1688,7 @@ class MainWindow(QMainWindow):
 
         # Stage 5 Task 3a：新建文件夹 / 重命名 / 删除（仅需 FileOperationService）
         # Stage 5 Task 3b：复制 / 剪切（需 FileOperationService + ClipboardService）
+        # Stage 5 Task 5：移动到...（仅需 FileOperationService）
         if self._file_operation_service is not None:
             # 新建文件夹：单选时基于该条目所在目录；列表空白区域另处理
             # 这里仅在选中条目时显示（空白区域由 _on_content_context_menu 处理）
@@ -1698,6 +1704,8 @@ class MainWindow(QMainWindow):
             if self._clipboard_service is not None:
                 actions.append((ui.MENU_COPY, lambda: self._on_shortcut_copy(), True))
                 actions.append((ui.MENU_CUT, lambda: self._on_shortcut_cut(), True))
+            # Stage 5 Task 5：移动到...（Q4=A 中栏 + 目录树均添加）
+            actions.append((ui.MENU_MOVE_TO, lambda: self._on_move_to(entries), True))
             # 删除：单选或批量
             actions.append((ui.MENU_DELETE, lambda: self._on_delete_entries(entries), True))
 
@@ -2461,6 +2469,15 @@ class MainWindow(QMainWindow):
             self._shortcut_delete_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
             self._shortcut_delete_tree.activated.connect(self._on_shortcut_delete_tree)
 
+            # Stage 5 Task 5：Ctrl+M 移动到...（Q3=B 中栏 + 目录树 WidgetShortcut）
+            self._shortcut_move_to = QShortcut(QKeySequence("Ctrl+M"), self._content_view)
+            self._shortcut_move_to.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._shortcut_move_to.activated.connect(self._on_shortcut_move_to)
+
+            self._shortcut_move_to_tree = QShortcut(QKeySequence("Ctrl+M"), self._tree_view)
+            self._shortcut_move_to_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._shortcut_move_to_tree.activated.connect(self._on_shortcut_move_to_tree)
+
         # Ctrl+C / Ctrl+X / Ctrl+V 依赖 FileOperationService + ClipboardService
         if self._file_operation_service is not None and self._clipboard_service is not None:
             # 中栏 Ctrl+C / Ctrl+X / Ctrl+V（Task 3b 真实逻辑）
@@ -2817,6 +2834,173 @@ class MainWindow(QMainWindow):
                 self,
                 ui.CONFLICT_DIALOG_TITLE,
                 ui.SHORTCUT_PASTE_PARTIAL.format(ok=ok_count, fail=fail_count)
+                + "\n\n"
+                + "\n".join(errors[:5]),
+            )
+
+    # === Stage 5 Task 5：「移动到……」快捷对话框 ===
+
+    def _on_shortcut_move_to(self) -> None:
+        """Ctrl+M 中栏：触发移动到对话框。"""
+        entries = self._get_selected_entries()
+        if not entries:
+            self.statusBar().showMessage(ui.SHORTCUT_MOVE_TO_NO_SELECTION, 2000)
+            return
+        self._on_move_to(entries)
+
+    def _on_shortcut_move_to_tree(self) -> None:
+        """Ctrl+M 目录树：触发移动到对话框。"""
+        sm = self._tree_view.selectionModel()
+        if sm is None:
+            return
+        indexes = sm.selectedIndexes()
+        if not indexes:
+            self.statusBar().showMessage(ui.SHORTCUT_MOVE_TO_NO_SELECTION, 2000)
+            return
+        node = self._tree_model.node_at(indexes[0])
+        if node is None:
+            return
+        self._on_move_to_tree(node)
+
+    def _on_move_to(self, entries: list[FileEntry]) -> None:
+        """中栏右键「移动到...」入口。
+
+        Args:
+            entries: 选中的文件/文件夹条目列表。
+        """
+        if self._file_operation_service is None:
+            return
+        if not entries:
+            self.statusBar().showMessage(ui.SHORTCUT_MOVE_TO_NO_SELECTION, 2000)
+            return
+        src_paths = [Path(e.path) for e in entries]
+        # Q7=A：默认展开源所在目录的父目录
+        default_expand = Path(entries[0].path).parent
+        self._open_move_to_dialog(src_paths, default_expand)
+
+    def _on_move_to_tree(self, node) -> None:
+        """目录树右键「移动到...」入口。
+
+        Args:
+            node: 选中的 TreeNode。
+        """
+        if self._file_operation_service is None:
+            return
+        src_path = Path(node.real_path)
+        # Q7=A：默认展开源所在目录的父目录
+        default_expand = src_path.parent
+        self._open_move_to_dialog([src_path], default_expand)
+
+    def _open_move_to_dialog(self, src_paths: list[Path], default_expand: Path | None) -> None:
+        """打开「移动到...」对话框并处理结果。
+
+        Args:
+            src_paths: 待移动的源路径列表。
+            default_expand: 对话框默认展开的目录路径。
+        """
+        from app.move_to_dialog import MoveToDialog  # noqa: PLC0415
+
+        dialog = MoveToDialog(
+            folder_tree_service=self._tree_service,
+            src_paths=src_paths,
+            default_expand_path=default_expand,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.statusBar().showMessage(ui.SHORTCUT_MOVE_TO_CANCELLED, 2000)
+            return
+        target_dir = dialog.selected_target_path()
+        if target_dir is None:
+            self.statusBar().showMessage(ui.SHORTCUT_MOVE_TO_NO_TARGET, 2000)
+            return
+        self._perform_move_to(src_paths, target_dir)
+
+    def _perform_move_to(self, src_paths: list[Path], target_dir: Path) -> None:
+        """执行移动到目标目录（复用 ConflictResolutionService 处理冲突）。
+
+        流程与 _perform_paste 类似，但 operation 固定为 'cut'（移动），
+        且不涉及剪贴板清理。
+
+        Args:
+            src_paths: 源路径列表。
+            target_dir: 目标目录。
+        """
+        from application.conflict_resolution_service import (  # noqa: PLC0415
+            ConflictResolutionService,
+            has_conflict,
+            has_cross_drive_cut,
+        )
+        from application.errors import (  # noqa: PLC0415
+            ConflictError,
+            CrossDriveError,
+            FileOperationError,
+            SelfSubdirectoryError,
+            SourceNotFoundError,
+        )
+
+        conflict_service = ConflictResolutionService()
+        conflicts = conflict_service.scan_conflicts(src_paths, target_dir, operation="cut")
+
+        # 跨盘剪切检测（Q7=B 拒绝）
+        if has_cross_drive_cut(conflicts):
+            QMessageBox.warning(self, ui.MOVE_TO_DIALOG_TITLE, ui.SHORTCUT_MOVE_TO_CROSS_DRIVE)
+            return
+
+        # 冲突解决（Q5=A 复用 ConflictResolutionDialog）
+        if has_conflict(conflicts):
+            from app.conflict_resolution_dialog import ConflictResolutionDialog  # noqa: PLC0415
+
+            conflict_dialog = ConflictResolutionDialog(conflicts, self)
+            if conflict_dialog.exec() != QDialog.DialogCode.Accepted:
+                return  # 用户取消
+            decisions = conflict_dialog.decisions()
+        else:
+            # 无冲突，全部用默认目标路径
+            decisions = ["overwrite"] * len(conflicts)
+
+        actions = conflict_service.resolve(conflicts, decisions)
+
+        # 执行 move
+        ok_count = 0
+        fail_count = 0
+        errors: list[str] = []
+        for action in actions:
+            if action.skipped:
+                continue
+            try:
+                self._file_operation_service.move(
+                    action.src, action.dst, overwrite=action.overwrite
+                )
+                ok_count += 1
+            except SourceNotFoundError:
+                fail_count += 1
+                errors.append(ui.SHORTCUT_MOVE_TO_SRC_NOT_FOUND.format(name=action.src.name))
+            except SelfSubdirectoryError:
+                fail_count += 1
+                errors.append(ui.SHORTCUT_MOVE_TO_SELF_SUBDIR)
+            except CrossDriveError:
+                fail_count += 1
+                errors.append(ui.SHORTCUT_MOVE_TO_CROSS_DRIVE)
+            except (ConflictError, FileOperationError) as e:
+                fail_count += 1
+                errors.append(ui.SHORTCUT_MOVE_TO_FAILED.format(error=str(e)))
+
+        # 提交事务 + 刷新 UI
+        self._commit()
+        self._refresh_tree()
+        self._refresh_content_list_for_current_mode()
+
+        # 状态栏提示
+        if fail_count == 0:
+            self.statusBar().showMessage(
+                ui.SHORTCUT_MOVE_TO_OK.format(n=ok_count, dir_name=target_dir.name),
+                3000,
+            )
+        else:
+            QMessageBox.information(
+                self,
+                ui.MOVE_TO_DIALOG_TITLE,
+                ui.SHORTCUT_MOVE_TO_PARTIAL.format(ok=ok_count, fail=fail_count)
                 + "\n\n"
                 + "\n".join(errors[:5]),
             )

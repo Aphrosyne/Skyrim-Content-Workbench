@@ -644,8 +644,10 @@
 - [x] 覆盖/跳过/重命名冲突解决正常
 - [x] 操作历史自动清理，不造成数据库膨胀
 
-### Task 5：「移动到……」快捷对话框
+### Task 5：「移动到……」快捷对话框 ✅
 
+> 完成于 2026-07-30，版本 v0.39.0。
+>
 > 快速插入解决了暂存区→分类目录的场景，但常规文件管理还需要一个通用的"移动到任意目录"入口。
 
 - 选中文件/文件夹 → 右键或快捷键触发 → 弹出目录树选择对话框
@@ -653,12 +655,23 @@
 - 选目标目录 → 确认 → 文件/文件夹移动到目标位置
 - 移动安全规则与现有保持一致（确认弹窗、冲突处理、跨盘提示、子目录阻止）
 
+**设计决策（Q1-Q10 用户确认）：**
+- Q1=A 多选支持 / Q3=B Ctrl+M 中栏+目录树 WidgetShortcut / Q4=A 中栏+目录树均添加右键菜单
+- Q5=A 复用 ConflictResolutionDialog / Q6=B 不提供「新建文件夹」入口 / Q7=A 默认展开源父目录
+- Q8=A 显示暂存区标记 `[S]` / Q9=A 对话框本身即确认，无二次确认
+
+**实现说明：**
+- 新增 [MoveToDialog](src/app/move_to_dialog.py)：独立 FolderTreeModel 实例（R2），源自身/子目录校验（R1），程序化测试接口
+- [MainWindow](src/app/main_window.py) 集成中栏 + 目录树右键菜单、Ctrl+M 快捷键、`_perform_move_to` 复用 ConflictResolutionService 处理冲突
+- 复用 Task 3b 的 FileOperationService.move（含 overwrite 参数）+ ConflictResolutionDialog，无新增 schema 迁移
+
 **验收：**
-- [ ] 对话框展示完整的目录树（来自 FolderCache）
-- [ ] 选中目标后正确移动文件
-- [ ] 移动安全规则生效
-- [ ] ContentUnit.path 同步更新
-- [ ] 操作写入 operation_history
+- [x] 对话框展示完整的目录树（来自 FolderCache）
+- [x] 选中目标后正确移动文件
+- [x] 移动安全规则生效（源自身/子目录阻止、跨盘剪切拒绝、冲突覆盖/跳过/重命名）
+- [x] ContentUnit.path 同步更新（FileOperationService._sync_on_move）
+- [x] 操作写入 operation_history（FileOperationService.move 默认 can_undo=True）
+- [x] 全量回归：1293 passed, 5 skipped, ruff 全通过
 
 ### Task 3c：应用外重命名/删除后的路径丢失检测与手动重新关联
 

@@ -178,6 +178,26 @@ MENU_COPY = "复制"
 MENU_CUT = "剪切"
 MENU_PASTE = "粘贴"
 
+# Stage 5 Task 5：「移动到……」对话框
+MENU_MOVE_TO = "移动到..."
+SHORTCUT_MOVE_TO_NO_SELECTION = "未选中任何条目"
+SHORTCUT_MOVE_TO_CANCELLED = "已取消移动"
+SHORTCUT_MOVE_TO_NO_TARGET = "未选择目标目录"
+SHORTCUT_MOVE_TO_OK = "已移动 {n} 项到 {dir_name}"
+SHORTCUT_MOVE_TO_PARTIAL = "部分移动失败：成功 {ok} 项，失败 {fail} 项"
+SHORTCUT_MOVE_TO_SRC_NOT_FOUND = "源文件不存在，可能已被外部删除：{name}"
+SHORTCUT_MOVE_TO_FAILED = "移动失败：{error}"
+SHORTCUT_MOVE_TO_CROSS_DRIVE = "跨盘移动暂不支持"
+SHORTCUT_MOVE_TO_SELF_SUBDIR = "不能移动到自身或子目录"
+
+MOVE_TO_DIALOG_TITLE = "移动到..."
+MOVE_TO_DIALOG_HINT = "请选择目标目录（将移动 {n} 项）："
+MOVE_TO_DIALOG_NO_SELECTION = "未选择目标目录"
+MOVE_TO_DIALOG_SELECTED = "目标：{path}"
+MOVE_TO_DIALOG_INVALID_TARGET = "不能移动到自身或子目录，请选择其他目录"
+MOVE_TO_DIALOG_OK = "确定"
+MOVE_TO_DIALOG_CANCEL = "取消"
+
 # 创建 Mod 组对话框
 CREATE_MOD_GROUP_DIALOG_TITLE = "创建 Mod 组"
 CREATE_MOD_GROUP_DIALOG_LABEL = "请选择或输入 Mod 组名称："
