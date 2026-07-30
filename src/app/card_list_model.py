@@ -4,14 +4,16 @@
 两个视图（QTableView + QListView）共用同一份 FileEntry 列表，切换不丢失数据。
 
 Task 1b 修正：直接加载原图，不走缓存 provider。
-- 有封面 → QPixmap 加载原图，按 icon_size 缩放显示
-- 无封面或非内容单元 → 返回 None（view 用 Qt 标准图标占位）
-- 内存缓存 unit_id → QPixmap（按 icon_size 缩放后的），避免 data() 高频调用重复加载
+Task 2 验收修复：
+- 有封面 → QPixmap 加载原图，居中裁剪为 icon_size × icon_size 方形（统一外框）
+- 无封面或非内容单元 → 返回 Qt 标准图标（委托 FileListModel）
+- 内存缓存 unit_id → QPixmap（方形裁剪后的），避免 data() 高频调用重复加载
+- DisplayRole 长文件名 elide 省略号（避免撑大卡片宽度）
 
 数据角色：
-- DisplayRole：entry.name（不含 [内容单元] 标记，Q6:B 决策）
-- DecorationRole：原图缩放到 icon_size 返回 QPixmap
-- ToolTipRole：路径 + 内容单元状态（Q6:B 决策，卡片空间有限，标记通过 ToolTip 承载）
+- DisplayRole：entry.name（elide 截断，Q6:B 不含 [内容单元] 标记）
+- DecorationRole：方形裁剪后的 QPixmap（icon_size × icon_size）
+- ToolTipRole：路径 + 内容单元状态（Q6:B 决策，完整信息通过 ToolTip 承载）
 - UserRole：返回 FileEntry（与 FileListModel 一致，便于 handler 复用）
 
 数据变更响应：
@@ -84,7 +86,8 @@ class CardListModel(QAbstractListModel):
 
         if role == Qt.DisplayRole:
             # Q6:B：卡片名称不含 [内容单元] 标记
-            return entry.name
+            # Task 2 验收修复：长文件名 elide 省略号，避免撑大卡片宽度
+            return self._elide_name(entry.name)
         if role == Qt.ToolTipRole:
             # Q6:B：路径 + 内容单元状态
             return _build_tooltip(entry)
@@ -94,10 +97,24 @@ class CardListModel(QAbstractListModel):
             return self._get_decoration(entry)
         return None
 
-    def _get_decoration(self, entry: FileEntry) -> QPixmap | QIcon | None:
-        """获取卡片装饰图（Task 1b 修正：直接加载原图，无封面回退标准图标）。
+    def _elide_name(self, name: str) -> str:
+        """长文件名 elide 省略号，限制最大显示宽度 = icon_size - padding。
 
-        - 有封面的内容单元 → 加载原图，缩放到 icon_size 返回
+        避免 QListView IconMode 下长文件名换行撑宽卡片，破坏网格布局。
+        """
+        # 使用固定 font metrics 计算 elide 宽度
+        from PySide6.QtGui import QFont, QFontMetrics
+
+        # 文本宽度 = icon_size - 左右 padding
+        text_width = max(20, self._icon_size - ui.CARD_TEXT_PADDING_H)
+        metrics = QFontMetrics(QFont())
+        return metrics.elidedText(name, Qt.TextElideMode.ElideRight, text_width)
+
+    def _get_decoration(self, entry: FileEntry) -> QPixmap | QIcon | None:
+        """获取卡片装饰图（Task 2 验收修复：方形裁剪统一外框）。
+
+        - 有封面的内容单元 → 加载原图，居中裁剪为 icon_size × icon_size 方形
+          （Q1=A 居中裁剪，类似 Instagram 缩略图；横竖图统一外框）
         - 无封面或非内容单元 → 回退到 Qt 标准文件夹/文件图标（委托 FileListModel）
         """
         if entry.content_unit is None or not entry.content_unit.cover_path:
@@ -121,20 +138,33 @@ class CardListModel(QAbstractListModel):
         # 加载原图
         pixmap = self._load_original_pixmap(entry)
         if pixmap is not None:
-            # 缩放到 icon_size
-            scaled = pixmap.scaled(
-                self._icon_size,
-                self._icon_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self._pixmap_cache[unit_id] = scaled
-            return scaled
+            # Task 2 验收修复：方形裁剪（居中 crop），统一外框
+            cropped = self._crop_to_square(pixmap)
+            self._pixmap_cache[unit_id] = cropped
+            return cropped
         # 加载失败 → 缓存 None 避免重复加载，回退标准图标
         self._pixmap_cache[unit_id] = None
         if self._source is not None:
             return self._source.icon_for(entry)
         return None
+
+    def _crop_to_square(self, pixmap: QPixmap) -> QPixmap:
+        """将 pixmap 居中裁剪为 icon_size × icon_size 方形（Q1=A）。
+
+        步骤：
+        1. 先按短边等比放大填满 icon_size（KeepAspectRatioByExpanding）
+        2. 居中裁剪多余部分，输出严格方形 pixmap
+        """
+        scaled = pixmap.scaled(
+            self._icon_size,
+            self._icon_size,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        # 居中裁剪到严格 icon_size × icon_size
+        x = max(0, (scaled.width() - self._icon_size) // 2)
+        y = max(0, (scaled.height() - self._icon_size) // 2)
+        return scaled.copy(x, y, self._icon_size, self._icon_size)
 
     def _load_original_pixmap(self, entry: FileEntry) -> QPixmap | None:
         """加载原图（Task 1b 修正：不走缓存，直接读文件）。

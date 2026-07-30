@@ -190,7 +190,12 @@ class FileListModel(QAbstractTableModel):
             return None
         if section < 0 or section >= COLUMN_COUNT:
             return None
-        return ui.FILE_LIST_COLUMN_HEADERS[section]
+        # Stage 5 Task 2：当前排序列追加 ▲/▼ 方向指示（Q1=A 文本方案）
+        header = ui.FILE_LIST_COLUMN_HEADERS[section]
+        if section == self._sort_section():
+            direction = ui.SORT_ASC_SYMBOL if self._sort_ascending else ui.SORT_DESC_SYMBOL
+            return f"{header} {direction}"
+        return header
 
     # --- 刷新 ---
 
@@ -207,11 +212,18 @@ class FileListModel(QAbstractTableModel):
         """切换排序键与方向，重新对现有条目排序。"""
         if sort_key not in (SORT_NAME, SORT_TYPE, SORT_SIZE, SORT_MODIFIED):
             return
+        old_section = self._sort_section()
         self.beginResetModel()
         self._sort_key = sort_key
         self._sort_ascending = ascending
         self._apply_sort()
         self.endResetModel()
+        # Stage 5 Task 2：刷新列头方向指示（Q1=A 文本方案）
+        new_section = self._sort_section()
+        if old_section != new_section and old_section >= 0:
+            self.headerDataChanged.emit(old_section, old_section, [Qt.DisplayRole])
+        if new_section >= 0:
+            self.headerDataChanged.emit(new_section, new_section, [Qt.DisplayRole])
 
     def current_sort_key(self) -> str:
         """返回当前排序键（供测试）。"""
@@ -220,6 +232,15 @@ class FileListModel(QAbstractTableModel):
     def is_sort_ascending(self) -> bool:
         """返回当前是否升序（供测试）。"""
         return self._sort_ascending
+
+    def _sort_section(self) -> int:
+        """返回当前排序键对应的列索引（用于 headerData 方向指示）。"""
+        return {
+            SORT_NAME: COL_NAME,
+            SORT_TYPE: COL_TYPE,
+            SORT_SIZE: COL_SIZE,
+            SORT_MODIFIED: COL_MODIFIED,
+        }.get(self._sort_key, COL_NAME)
 
     def _apply_sort(self) -> None:
         """对 self._entries 应用当前排序。

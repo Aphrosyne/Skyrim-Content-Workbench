@@ -512,19 +512,50 @@
 - [x] 右键 → "在资源管理器中打开" 可正常打开 Explorer 并选中文件
 - [x] 全量回归：1055 passed, 3 skipped, ruff 全通过（含 `test_selection_preserved_card_to_list` 回归测试）
 
-### Task 2：排序 UI
+### Task 2：排序 UI ✅
 
-- 列头点击切换排序字段（名称 / 修改日期 / 类型 / 大小）
-- 二次点击同一列头切换正序/倒序
-- 列头显示 ▲/▼ 方向指示
-- 排序状态在切换目录后保留（同会话内）
+> 完成于 2026-07-30。在阶段 3 Task 2 已有 `FileListModel.set_sort_key` 基础上补齐 UI 层可视化反馈与卡片视图排序入口。
+> 2026-07-30 验收修复 2：排序下拉框最终方案 + UI 稳定性（详见 CHANGELOG.md Unreleased）。
+
+**实现要点**：
+
+- `FileListModel.headerData` 在当前排序列追加 ▲/▼ 方向指示（Q1=A 文本方案）
+- `set_sort_key` 发射 `headerDataChanged` 刷新列头显示
+- 视图切换栏新增排序字段下拉框 + 升降序方向按钮（Q2=A 列表/卡片视图共享）
+  - 下拉框选项：名称 / 类型 / 大小 / 修改日期
+  - 方向按钮显示 ▲/▼，点击翻转方向
+- 列头点击与下拉框双向同步（点击列头后下拉框跟随，反之亦然）
+- 前进/后退目录导航（用户验收时新增需求，类似资源管理器）
+  - 维护浏览历史栈（back_stack + forward_stack + current_nav_path）
+  - 仅浏览模式记录历史，整理模式不记录
+  - 相邻相同路径去重，进入新目录清空前进栈（标准浏览器行为）
+  - 历史导航触发的切换不再入栈，避免循环
+
+**不实现**：
+- 跨会话排序状态持久化（roadmap 明确"同会话内"）
+- "状态"字段排序（Q3=A，遵循 roadmap 4 字段）
+- 拼音排序（Q4=A，保持 Unicode 码点排序，零依赖）
+
+**验收修复 2（2026-07-30 第二轮）**：
+- 排序下拉框：双信号 deduplication 边界失效 → 回归单 `activated` 信号方案，放弃"选当前项重新排序"功能
+- 排序下拉框 popup：取消当前项蓝色高亮（stylesheet 覆盖 `::item:selected`）
+- 右栏元数据：`_path_value` / `_cover_value` 改用 `_ElidedLabel`（`QSizePolicy.Ignored` + ElideMiddle + ToolTip），解决长路径换行撑大右栏宽度
+- 列表视图：新增 `_RubberBandTableView` 子类实现空白区域拖动框选（QTableView 不支持 `setSelectionRectVisible`）
 
 **验收：**
-- [ ] 各排序字段正常工作
-- [ ] 正序/倒序切换正确
-- [ ] 列头方向指示正确
-- [ ] 切换目录后排序状态保留
-- [ ] 中文名称排序合理
+- [x] 各排序字段正常工作（一次点击必生效）
+- [x] 正序/倒序切换正确
+- [x] 列头方向指示正确
+- [x] 切换目录后排序状态保留
+- [x] 中文名称排序合理（Unicode 码点顺序）
+- [x] 卡片视图可通过下拉框切换排序
+- [x] 前进/后退按钮在浏览多目录后可用
+- [x] 后退后再进入新目录，前进栈清空
+- [x] 整理模式不记录导航历史
+- [x] 排序下拉框 popup 当前项无蓝色高亮
+- [x] 右栏元数据路径/封面路径 elide 省略显示，右栏宽度不跳动
+- [x] 列表视图空白区域拖动出现 rubber band 框选
+- [x] 全量回归：1080 passed, 3 skipped, ruff check + format 全通过
 
 ### Task 3a：新建文件夹 + 重命名 + 删除
 

@@ -8,6 +8,83 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### Stage 5 Task 2 验收修复 2：排序最终方案 + UI 稳定性
+
+> 第二轮验收修复，解决排序下拉框随机失效、右栏跳动、列表无框选等遗留问题。
+
+**问题 1：排序下拉框随机需要两次点击**（核心修复）
+- 根因：`currentIndexChanged + activated` 双信号 + deduplication 在 Qt popup 关闭顺序不确定时存在边界失效
+- 修复：回归单 `activated` 信号方案，移除 `_sort_field_processing` / `_sort_field_last_index` 状态
+- "选当前项重新触发排序"无产品意义，不予支持
+- 依赖 `FileListModel.set_sort_key` 内部幂等保护作为重复调用兜底
+
+**问题 2：排序下拉框 popup 当前项蓝色高亮**
+- 修复：通过 stylesheet 取消 `QComboBox::item:selected` 蓝色背景，hover 保留浅色提示
+  ```css
+  QComboBox::item:selected { background: transparent; color: black; }
+  QComboBox::item:hover { background: #e0e0e0; }
+  ```
+
+**问题 3：右栏元数据路径撑大右栏宽度**（根因）
+- 根因：`metadata_panel._path_value.setWordWrap(True)` 与 `_cover_value.setWordWrap(True)` 导致长路径换行撑大 QSplitter
+- 修复：新增 `_ElidedLabel` 类（`QSizePolicy.Ignored` + `ElideMiddle` + `ToolTip` 显示完整文本）
+- `_path_value` 与 `_cover_value` 改用 `_ElidedLabel`，与左栏目录树路径省略策略一致
+- `cover_path_text()` / `_get_form_cover_path()` 改用 `fullText()` 读取完整文本（避免 elide 后的省略形式）
+
+**问题 4：列表视图无 rubber band 框选**
+- 根因：`QTableView` 不支持 `setSelectionRectVisible`（仅 QListView 有）
+- 修复：新增 `_RubberBandTableView` 子类，自定义 `mousePress/Drag/Release` + `QRubberBand` 实现框选
+- 空白区域左键拖动 → 启动 rubber band + 选中范围内所有行（`ClearAndSelect | Rows`）
+- 卡片视图显式 `setSelectionRectVisible(True)`（IconMode 默认启用，显式表达一致性）
+
+**测试**：新增 3 个测试（列表视图类型检查、卡片视图 rubber band、全字段切换回归）。全量回归：1080 passed, 3 skipped, ruff check + format 全通过。
+
+### Stage 5 Task 2 验收修复：排序/卡片/批量取消 6 项问题
+
+**问题 1：排序下拉框"名称"需两次点击**
+- 根因：`currentIndexChanged` 在索引未变化时不触发信号
+- 修复：改用 `activated` 信号（仅用户交互触发，程序化 setCurrentIndex 不触发）
+
+**问题 2：排序方向按钮蓝色高亮**
+- 根因：`setCheckable(True)` 的 checked 状态有蓝色背景
+- 修复：移除 checkable，方向由文本 ▲/▼ 表达；`setFocusPolicy(NoFocus)` 去除焦点高亮
+
+**问题 3：卡片模式文件名过长撑大卡片**
+- 修复：`CardListModel._elide_name` 用 `QFontMetrics.elidedText` 截断长文件名
+- `_card_view.setGridSize` 固定网格单元尺寸 + `setUniformItemSizes(True)` + `setWordWrap(False)`
+
+**问题 4：卡片预览图比例影响卡片形状**
+- 修复：`CardListModel._crop_to_square` 居中裁剪为 icon_size × icon_size 方形（Q1=A）
+- 用 `KeepAspectRatioByExpanding` 填满后居中 crop，横竖图统一外框
+
+**问题 5：批量取消内容单元标记缺失**
+- 新增 `_on_batch_unmark_content_unit` handler，容错策略与批量标记一致
+- 多选且至少一个已标记时显示菜单项（Q2:A）
+
+**问题 6：右键菜单命名统一**
+- `取消标记` → `取消内容单元标记`
+- `把每个文件标记为内容单元` → `批量标记为内容单元`（Q3:A）
+- 新增 `批量取消内容单元标记`
+
+**测试**：新增 11 个测试。全量回归：1076 passed, 3 skipped, ruff check + format 全通过。
+
+### Stage 5 Task 2：排序 UI + 前进/后退目录导航
+
+**排序 UI**（在阶段 3 Task 2 已有 `FileListModel.set_sort_key` 基础上补齐）：
+- `FileListModel.headerData` 当前排序列追加 ▲/▼ 方向指示（Q1=A 文本方案）
+- `set_sort_key` 发射 `headerDataChanged` 刷新列头显示
+- 视图切换栏新增排序字段下拉框 + 升降序方向按钮（Q2=A 列表/卡片视图共享）
+- 列头点击与下拉框双向同步
+
+**前进/后退目录导航**（用户验收时新增需求，类似资源管理器）：
+- 视图切换栏左侧新增 ←/→ 按钮
+- 维护浏览历史栈（back_stack + forward_stack + current_nav_path）
+- 仅浏览模式记录历史，整理模式不记录
+- 相邻相同路径去重，进入新目录清空前进栈（标准浏览器行为）
+- 历史导航触发的切换不再入栈，避免循环
+
+**测试**：新增 10 个测试（列头方向指示 3 + 排序下拉框同步 4 + 前进后退导航 4）。全量回归：1065 passed, 3 skipped, ruff check + format 全通过。
+
 ### 修复：卡片→列表视图切换选中状态丢失（Task 1b 回归修复）
 
 **问题**：v0.33.0 Task 1b 验收时漏测卡片→列表方向。原实现 `_switch_view` 中 `target_sm.select(idx, SelectionFlag.Select)` 仅选中 `(row, 0)` 单元格，QTableView 多列场景下 `selectedRows()` 返回空（需要整行被选中才算），导致从卡片视图选中切回列表视图时选中丢失。列表→卡片方向因 QListView 单列而侥幸通过。

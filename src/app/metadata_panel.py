@@ -45,7 +45,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QPainter, QPixmap
+from PySide6.QtGui import QFontMetrics, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCompleter,
@@ -73,6 +73,50 @@ from application.tag_service import TagService
 from domain.models import ContentUnit, Tag
 
 logger = logging.getLogger(__name__)
+
+
+class _ElidedLabel(QLabel):
+    """文本超长时显示省略号（ElideMiddle），不撑大父容器宽度。
+
+    Stage 5 Task 2 验收修复：用于元数据面板的路径/封面值显示。
+    与左栏目录树路径省略策略一致：ElideMiddle + ToolTip 显示完整文本。
+    QSizePolicy.Ignored 让 label 不参与父容器宽度计算，避免长路径撑大右栏。
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full_text = ""
+        self.setWordWrap(False)
+        # Ignored 策略：label 不撑大父容器，宽度由布局分配
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(0)
+
+    def setText(self, text: str) -> None:  # noqa: N802 (Qt 命名)
+        """设置完整文本，自动 elide 显示并更新 tooltip。"""
+        self._full_text = text
+        self._update_elided()
+        # tooltip 显示完整原文
+        self.setToolTip(text)
+
+    def fullText(self) -> str:  # noqa: N802 (Qt 命名)
+        """返回完整文本（未经 elide）。"""
+        return self._full_text
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        """尺寸变化时重新 elide。"""
+        super().resizeEvent(event)
+        self._update_elided()
+
+    def _update_elided(self) -> None:
+        """按当前宽度计算 elide 显示。"""
+        if not self._full_text:
+            super().setText("")
+            return
+        fm = QFontMetrics(self.font())
+        # 减去内边距，预留 8px 余量
+        max_width = max(20, self.width() - 8)
+        elided = fm.elidedText(self._full_text, Qt.TextElideMode.ElideMiddle, max_width)
+        super().setText(elided)
 
 
 class _ResizableImageLabel(QWidget):
@@ -207,11 +251,10 @@ class MetadataPanel(QWidget):
         self._title_edit.setPlaceholderText(ui.METADATA_PANEL_TITLE_PLACEHOLDER)
         layout.addWidget(self._title_edit)
 
-        # 路径（只读）
+        # 路径（只读，ElideMiddle 省略显示，不撑大右栏）
         self._path_label = QLabel(ui.METADATA_PATH_LABEL)
         layout.addWidget(self._path_label)
-        self._path_value = QLabel("")
-        self._path_value.setWordWrap(True)
+        self._path_value = _ElidedLabel()
         self._path_value.setStyleSheet("color: #555;")
         layout.addWidget(self._path_value)
 
@@ -292,12 +335,12 @@ class MetadataPanel(QWidget):
         self._notes_edit.setFixedHeight(80)
         layout.addWidget(self._notes_edit)
 
-        # 封面预览 + 按钮
+        # 封面预览 + 按钮（封面路径 ElideMiddle 省略显示）
         cover_row = QHBoxLayout()
         cover_row.addWidget(QLabel(ui.METADATA_PANEL_COVER_LABEL))
-        self._cover_value = QLabel(ui.METADATA_PANEL_COVER_NONE)
+        self._cover_value = _ElidedLabel()
         self._cover_value.setStyleSheet("color: #555;")
-        self._cover_value.setWordWrap(True)
+        self._cover_value.setText(ui.METADATA_PANEL_COVER_NONE)
         cover_row.addWidget(self._cover_value, stretch=1)
         layout.addLayout(cover_row)
 
@@ -423,9 +466,10 @@ class MetadataPanel(QWidget):
         if self._current_unit is None:
             return ""
         # cover_path 由 load_unit 或 set_cover_path 设置后通过 _cover_value 显示
-        if self._cover_value.text() == ui.METADATA_PANEL_COVER_NONE:
+        # 使用 fullText() 获取完整文本（避免 elide 后的省略形式）
+        if self._cover_value.fullText() == ui.METADATA_PANEL_COVER_NONE:
             return ""
-        return self._cover_value.text()
+        return self._cover_value.fullText()
 
     def tag_chips(self) -> list[str]:
         """返回当前 chip 列表中的标签名（供测试）。"""
@@ -758,7 +802,8 @@ class MetadataPanel(QWidget):
         """
         if self._current_unit is None:
             return None
-        text = self._cover_value.text()
+        # 使用 fullText() 获取完整路径（避免 elide 后的省略形式）
+        text = self._cover_value.fullText()
         if text == ui.METADATA_PANEL_COVER_NONE:
             # 表单中无封面
             if self._current_unit.cover_path:

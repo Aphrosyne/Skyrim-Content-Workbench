@@ -42,7 +42,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QPoint, QSettings, QSize, Qt, QThread
+from PySide6.QtCore import QItemSelectionModel, QPoint, QRect, QSettings, QSize, Qt, QThread
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QRubberBand,
     QSplitter,
     QStackedWidget,
     QTableView,
@@ -76,7 +77,13 @@ from app.assembly_panel import AssemblyPanel
 from app.batch_tag_dialog import BatchTagDialog
 from app.card_list_model import CardListModel
 from app.cover_picker_dialog import CoverPickerDialog
-from app.file_list_model import FileListModel
+from app.file_list_model import (
+    SORT_MODIFIED,
+    SORT_NAME,
+    SORT_SIZE,
+    SORT_TYPE,
+    FileListModel,
+)
 from app.folder_tree_model import FolderTreeModel
 from app.metadata_panel import MetadataPanel
 from app.mode_manager import ModeManager
@@ -120,6 +127,83 @@ VIEW_INDEX_CARD = 1
 
 # 详情区路径 / 元数据路径字段在 Elide 时保留的左右字符比例参考
 # 详情区第 2 行为路径，元数据面板第 2 行为路径（详见 _apply_elide）
+
+
+class _RubberBandTableView(QTableView):
+    """支持空白区域拖动框选的 QTableView。
+
+    Stage 5 Task 2 验收修复（决策 3A）：QTableView 不支持 setSelectionRectVisible
+    （仅 QListView 有），通过自定义 mousePress/Drag/Release + QRubberBand 实现
+    与 Windows Explorer 一致的空白区域拖动框选行为。
+
+    交互规则：
+    - 在空白区域（非任何 item 上）按下左键 → 启动 rubber band
+    - 拖动 → 更新 rubber band 矩形，选中范围内所有行（替换选择）
+    - 松开 → 隐藏 rubber band
+    - 在 item 上按下 → 交给父类处理（保留单击/Ctrl/Shift 选择行为）
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._rubber_band: QRubberBand | None = None
+        self._origin = QPoint()
+        self._drag_selecting = False
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if event.button() == Qt.MouseButton.LeftButton:
+            index = self.indexAt(event.pos())
+            if not index.isValid():
+                # 空白区域：启动 rubber band 框选
+                self._origin = event.pos()
+                self._drag_selecting = True
+                if self._rubber_band is None:
+                    self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
+                self._rubber_band.setGeometry(QRect(self._origin, QSize()))
+                self._rubber_band.show()
+                # 清空当前选择（与 Explorer 行为一致：空白拖动开始新选择）
+                self.selectionModel().clear()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if self._drag_selecting and self._rubber_band is not None:
+            rect = QRect(self._origin, event.pos()).normalized()
+            self._rubber_band.setGeometry(rect)
+            self._select_rows_in_rect(rect)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if self._drag_selecting:
+            self._drag_selecting = False
+            if self._rubber_band is not None:
+                self._rubber_band.hide()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _select_rows_in_rect(self, rect: QRect) -> None:
+        """根据 rubber band 矩形选中相交的行（替换选择）。"""
+        from PySide6.QtCore import QItemSelection
+
+        # 计算矩形覆盖的行范围
+        top_row = self.rowAt(rect.top())
+        bottom_row = self.rowAt(rect.bottom())
+        # 若矩形超出可见区域上方/下方，扩展到首末行
+        if top_row == -1 and rect.top() < 0:
+            top_row = 0
+        if bottom_row == -1 and rect.bottom() > self.height():
+            bottom_row = self.model().rowCount() - 1 if self.model() else -1
+        if top_row == -1 or bottom_row == -1 or top_row > bottom_row:
+            return
+        # 选中范围内的所有行（ClearAndSelect 替换当前选择）
+        top_index = self.model().index(top_row, 0)
+        bottom_index = self.model().index(bottom_row, 0)
+        sel = QItemSelection(top_index, bottom_index)
+        self.selectionModel().select(
+            sel,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
 
 
 class MainWindow(QMainWindow):
@@ -175,6 +259,13 @@ class MainWindow(QMainWindow):
         self._current_view_index: int = VIEW_INDEX_LIST  # 默认列表视图
         self._card_icon_size: int = ui.ZOOM_SLIDER_DEFAULT
 
+        # Stage 5 Task 2：目录导航历史栈（仅浏览模式记录）
+        self._nav_back_stack: list[str] = []
+        self._nav_forward_stack: list[str] = []
+        self._current_nav_path: str | None = None
+        # 历史导航触发的切换标记，防止 _refresh_content_list 再次入栈导致循环
+        self._navigating_from_history: bool = False
+
         self.setWindowTitle(ui.APP_TITLE)
         self.resize(ui.WINDOW_DEFAULT_WIDTH, ui.WINDOW_DEFAULT_HEIGHT)
 
@@ -188,6 +279,9 @@ class MainWindow(QMainWindow):
 
         # Stage 5 Task 1：从 QSettings 恢复缩放值与视图模式
         self._restore_view_state()
+
+        # Stage 5 Task 2：同步排序控件初始状态（与 FileListModel 默认值一致）
+        self._sync_sort_controls()
 
     def _init_thumbnail_coordinator(self) -> None:
         """初始化缩略图调度器并连接信号。
@@ -427,9 +521,27 @@ class MainWindow(QMainWindow):
         content_layout = QVBoxLayout(self._content_group)
 
         # 视图切换栏（Stage 5 Task 1，Q1=A：独立一行，在 TagFilterBar 之上）
+        # Stage 5 Task 2：左侧增加前进/后退导航按钮 + 排序下拉框
         self._view_switch_bar = QWidget()
         view_switch_layout = QHBoxLayout(self._view_switch_bar)
         view_switch_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 前进/后退导航按钮（Stage 5 Task 2，类似资源管理器）
+        self._nav_back_button = QPushButton("←")
+        self._nav_back_button.setToolTip(ui.NAV_BACK_TOOLTIP)
+        self._nav_back_button.setFixedWidth(32)
+        self._nav_back_button.setEnabled(False)
+        self._nav_back_button.clicked.connect(self._on_nav_back_clicked)
+        view_switch_layout.addWidget(self._nav_back_button)
+
+        self._nav_forward_button = QPushButton("→")
+        self._nav_forward_button.setToolTip(ui.NAV_FORWARD_TOOLTIP)
+        self._nav_forward_button.setFixedWidth(32)
+        self._nav_forward_button.setEnabled(False)
+        self._nav_forward_button.clicked.connect(self._on_nav_forward_clicked)
+        view_switch_layout.addWidget(self._nav_forward_button)
+
+        view_switch_layout.addSpacing(8)
 
         view_label = QLabel(ui.VIEW_SWITCH_GROUP_LABEL)
         view_switch_layout.addWidget(view_label)
@@ -454,6 +566,40 @@ class MainWindow(QMainWindow):
         self._view_button_group.addButton(self._view_card_button)
 
         view_switch_layout.addStretch(1)
+
+        # 排序字段下拉框 + 方向按钮（Stage 5 Task 2，Q2=A 列表/卡片视图共享）
+        sort_label = QLabel(ui.SORT_FIELD_LABEL)
+        view_switch_layout.addWidget(sort_label)
+        self._sort_field_combo = QComboBox()
+        self._sort_field_combo.addItem(ui.SORT_FIELD_NAME, SORT_NAME)
+        self._sort_field_combo.addItem(ui.SORT_FIELD_TYPE, SORT_TYPE)
+        self._sort_field_combo.addItem(ui.SORT_FIELD_SIZE, SORT_SIZE)
+        self._sort_field_combo.addItem(ui.SORT_FIELD_MODIFIED, SORT_MODIFIED)
+        self._sort_field_combo.setToolTip(ui.SORT_FIELD_TOOLTIP)
+        self._sort_field_combo.setFixedWidth(90)
+        # Stage 5 Task 2 验收修复：取消 popup 当前项的蓝色高亮背景，
+        # 避免"当前选中项"在视觉上误导用户以为需要先取消高亮才能选择。
+        # hover 仍保留浅色提示，selected 改为透明（与未选中视觉一致）。
+        self._sort_field_combo.setStyleSheet(
+            "QComboBox::item:selected { background: transparent; color: black; }"
+            "QComboBox::item:hover { background: #e0e0e0; }"
+        )
+        # Stage 5 Task 2 验收修复（最终版）：仅用 activated 信号。
+        # 放弃 currentIndexChanged + activated 双信号方案：双信号在 Qt popup 关闭顺序
+        # 不确定时存在 deduplication 边界失效，导致重复执行或漏执行。
+        # activated 在用户主动点击下拉项时触发，程序化 setCurrentIndex 不触发（避免
+        # _sync_sort_controls 同步时死循环）。“选当前项重新排序”无产品意义，不予支持。
+        self._sort_field_combo.activated.connect(self._on_sort_field_activated)
+        view_switch_layout.addWidget(self._sort_field_combo)
+
+        # 升降序切换按钮：文本显示 ▲/▼，点击翻转
+        # 不用 checkable：checked 状态会有蓝色高亮，方向由文本 ▲/▼ 表达即可
+        self._sort_dir_button = QPushButton(ui.SORT_ASC_SYMBOL)
+        self._sort_dir_button.setToolTip(ui.SORT_DIRECTION_ASC_TOOLTIP)
+        self._sort_dir_button.setFixedWidth(32)
+        self._sort_dir_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._sort_dir_button.clicked.connect(self._on_sort_direction_clicked)
+        view_switch_layout.addWidget(self._sort_dir_button)
 
         # 缩放下拉框（Task 1b 修正：滑块改为预选尺寸下拉框，避免拖动频繁重绘原图）
         zoom_label = QLabel(ui.ZOOM_SLIDER_LABEL)
@@ -489,8 +635,8 @@ class MainWindow(QMainWindow):
         # QStackedWidget 切换两种视图（Stage 5 Task 1）
         self._content_stack = QStackedWidget()
 
-        # 列表视图（QTableView，原 _content_view）
-        self._content_view = QTableView()
+        # 列表视图（_RubberBandTableView，支持空白区域拖动框选，决策 3A）
+        self._content_view = _RubberBandTableView()
         self._content_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._content_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._content_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -518,12 +664,18 @@ class MainWindow(QMainWindow):
         self._card_view = QListView()
         self._card_view.setViewMode(QListView.ViewMode.IconMode)
         self._card_view.setIconSize(QSize(ui.ZOOM_SLIDER_DEFAULT, ui.ZOOM_SLIDER_DEFAULT))
+        # Task 2 验收修复：固定 gridSize 避免长文件名撑大卡片
+        self._card_view.setGridSize(
+            QSize(
+                ui.ZOOM_SLIDER_DEFAULT + ui.CARD_GRID_PADDING_H,
+                ui.ZOOM_SLIDER_DEFAULT + ui.CARD_GRID_PADDING_V,
+            )
+        )
         self._card_view.setResizeMode(QListView.ResizeMode.Adjust)
         self._card_view.setMovement(QListView.Movement.Static)
-        self._card_view.setWordWrap(True)
-        # 注意：setUniformItemSizes(True) 会缓存 item 尺寸，导致动态调整 iconSize
-        # 时卡片不重排。缩放滑块需要动态尺寸，故设为 False。
-        self._card_view.setUniformItemSizes(False)
+        self._card_view.setWordWrap(False)  # 长文件名 elide 不换行
+        # Task 2 验收修复：尺寸固定后启用 uniformItemSizes 提升布局性能
+        self._card_view.setUniformItemSizes(True)
         self._card_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._card_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._card_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -535,6 +687,8 @@ class MainWindow(QMainWindow):
         self._card_view.selectionModel().selectionChanged.connect(
             self._on_content_selection_changed
         )
+        # 卡片视图显式启用 rubber band（IconMode 默认启用，显式设置以保持一致）
+        self._card_view.setSelectionRectVisible(True)
         self._content_stack.addWidget(self._card_view)  # index 1
 
         self._content_stack.setCurrentIndex(VIEW_INDEX_LIST)  # 默认列表视图
@@ -756,6 +910,8 @@ class MainWindow(QMainWindow):
                 self._content_empty_hint.setText(ui.CONTENT_LIST_EMPTY_HINT)
         else:
             self._content_empty_hint.setText("")
+        # Stage 5 Task 2：记录目录导航历史
+        self._record_nav_history(dir_path)
 
     def _refresh_staging_content_list(self, staging_path: str) -> None:
         """刷新暂存区文件列表（递归遍历暂存区下所有文件与子目录）。
@@ -946,14 +1102,8 @@ class MainWindow(QMainWindow):
         """文件列表列头点击：切换排序键，同列再点切换升降序。
 
         阶段 3 Task 2：列头排序。点击不同列切换排序键；点击同列切换升降序。
+        Stage 5 Task 2：同步排序下拉框与方向按钮状态。
         """
-        from app.file_list_model import (
-            SORT_MODIFIED,
-            SORT_NAME,
-            SORT_SIZE,
-            SORT_TYPE,
-        )
-
         key_map = {
             0: SORT_NAME,
             1: SORT_TYPE,
@@ -972,6 +1122,142 @@ class MainWindow(QMainWindow):
         else:
             # 不同列：切换排序键，默认升序
             self._content_list_model.set_sort_key(new_key, True)
+        self._sync_sort_controls()
+
+    # --- Stage 5 Task 2：排序下拉框 + 方向按钮 ---
+
+    _SORT_KEY_TO_INDEX = {
+        SORT_NAME: 0,
+        SORT_TYPE: 1,
+        SORT_SIZE: 2,
+        SORT_MODIFIED: 3,
+    }
+
+    def _on_sort_field_activated(self, combo_index: int) -> None:
+        """排序字段下拉框 activated 信号：用户主动点击下拉项时触发。
+
+        Stage 5 Task 2 验收修复（最终版）：仅用 activated 单信号。
+        - activated 在用户点击下拉项时触发，程序化 setCurrentIndex 不触发
+          （避免 _sync_sort_controls 同步时死循环）
+        - “选当前项重新排序”无产品意义，不予支持（currentIndex 不变时
+          Qt 不会触发 activated，此场景下排序不变是预期行为）
+        - 幂等保护：若 sort_key 与当前一致且方向也未变，set_sort_key 内部
+          会提前返回，避免重复 reset model 造成 view 异常
+        """
+        sort_key = self._sort_field_combo.itemData(combo_index)
+        if sort_key is None:
+            return
+        ascending = self._content_list_model.is_sort_ascending()
+        self._content_list_model.set_sort_key(sort_key, ascending)
+        self._sync_sort_direction_button(ascending)
+
+    def _on_sort_direction_clicked(self) -> None:
+        """升降序按钮点击：翻转方向（不依赖 checked 状态，从 model 读取当前方向取反）。"""
+        ascending = not self._content_list_model.is_sort_ascending()
+        current_key = self._content_list_model.current_sort_key()
+        self._content_list_model.set_sort_key(current_key, ascending)
+        self._sync_sort_direction_button(ascending)
+
+    def _sync_sort_controls(self) -> None:
+        """同步排序下拉框与方向按钮到 FileListModel 当前状态。
+
+        Stage 5 Task 2 验收修复（最终版）：activated 不受 blockSignals 影响
+        （程序化 setCurrentIndex 本就不触发 activated），blockSignals 仅用于
+        阻止 currentIndexChanged——当前已不连接该信号，保留 blockSignals 作为
+        防御性措施，避免未来误连接其他信号时死循环。
+        """
+        current_key = self._content_list_model.current_sort_key()
+        ascending = self._content_list_model.is_sort_ascending()
+        target_index = self._SORT_KEY_TO_INDEX.get(current_key, 0)
+        if self._sort_field_combo.currentIndex() != target_index:
+            self._sort_field_combo.blockSignals(True)
+            self._sort_field_combo.setCurrentIndex(target_index)
+            self._sort_field_combo.blockSignals(False)
+        self._sync_sort_direction_button(ascending)
+
+    def _sync_sort_direction_button(self, ascending: bool) -> None:
+        """同步方向按钮文本与 tooltip（不使用 checked 状态）。"""
+        if ascending:
+            self._sort_dir_button.setText(ui.SORT_ASC_SYMBOL)
+            self._sort_dir_button.setToolTip(ui.SORT_DIRECTION_ASC_TOOLTIP)
+        else:
+            self._sort_dir_button.setText(ui.SORT_DESC_SYMBOL)
+            self._sort_dir_button.setToolTip(ui.SORT_DIRECTION_DESC_TOOLTIP)
+
+    # --- Stage 5 Task 2：前进/后退目录导航 ---
+
+    def _on_nav_back_clicked(self) -> None:
+        """后退按钮：切换到上一个浏览目录。"""
+        if not self._nav_back_stack:
+            return
+        current = self._current_nav_path
+        target = self._nav_back_stack.pop()
+        if current is not None:
+            self._nav_forward_stack.append(current)
+        self._navigating_from_history = True
+        try:
+            self._navigate_to_directory(target)
+            # _record_nav_history 被 navigating_from_history 跳过，需手动更新
+            self._current_nav_path = target
+        finally:
+            self._navigating_from_history = False
+        self._update_nav_buttons()
+
+    def _on_nav_forward_clicked(self) -> None:
+        """前进按钮：切换到下一个浏览目录。"""
+        if not self._nav_forward_stack:
+            return
+        current = self._current_nav_path
+        target = self._nav_forward_stack.pop()
+        if current is not None:
+            self._nav_back_stack.append(current)
+        self._navigating_from_history = True
+        try:
+            self._navigate_to_directory(target)
+            # _record_nav_history 被 navigating_from_history 跳过，需手动更新
+            self._current_nav_path = target
+        finally:
+            self._navigating_from_history = False
+        self._update_nav_buttons()
+
+    def _navigate_to_directory(self, dir_path: str) -> None:
+        """切换到指定目录（通过目录树选中触发，复用既有刷新链路）。
+
+        未在目录树中找到节点时回退到直接刷新文件列表。
+        """
+        target_idx = self._tree_model.find_index_by_path(self._tree_view, dir_path)
+        if target_idx.isValid():
+            self._tree_view.setCurrentIndex(target_idx)
+        else:
+            # 未扫描的子目录：直接刷新中栏（不走 tree selection 链路）
+            self._refresh_content_list(dir_path)
+            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+
+    def _record_nav_history(self, dir_path: str) -> None:
+        """记录浏览历史（仅浏览模式 + 非历史导航时调用）。
+
+        - 相邻相同路径不入栈（避免重复）
+        - 整理模式不记录
+        - 历史导航触发的切换不记录（避免循环）
+        """
+        if self._navigating_from_history:
+            return
+        if not self._mode_manager.is_browse():
+            return
+        # 相邻相同路径去重
+        if self._current_nav_path == dir_path:
+            return
+        if self._current_nav_path is not None:
+            self._nav_back_stack.append(self._current_nav_path)
+        # 进入新目录时清空前进栈（标准浏览器行为）
+        self._nav_forward_stack.clear()
+        self._current_nav_path = dir_path
+        self._update_nav_buttons()
+
+    def _update_nav_buttons(self) -> None:
+        """根据栈状态更新前进/后退按钮可用性。"""
+        self._nav_back_button.setEnabled(len(self._nav_back_stack) > 0)
+        self._nav_forward_button.setEnabled(len(self._nav_forward_stack) > 0)
 
     # --- Stage 5 Task 1：视图切换 + 缩放 ---
 
@@ -1038,6 +1324,13 @@ class MainWindow(QMainWindow):
         """应用缩放值：调整卡片图标尺寸并持久化。"""
         self._card_icon_size = value
         self._card_view.setIconSize(QSize(value, value))
+        # Task 2 验收修复：iconSize 变化时同步 gridSize，保持固定网格
+        self._card_view.setGridSize(
+            QSize(
+                value + ui.CARD_GRID_PADDING_H,
+                value + ui.CARD_GRID_PADDING_V,
+            )
+        )
         self._card_list_model.set_icon_size(value)
         self._card_view.doItemsLayout()
         self._qsettings.setValue(QSETTINGS_KEY_ZOOM, value)
@@ -1049,6 +1342,13 @@ class MainWindow(QMainWindow):
             index = ui.ZOOM_PRESET_SIZES.index(zoom)
             self._zoom_combo.setCurrentIndex(index)
             self._card_view.setIconSize(QSize(zoom, zoom))
+            # Task 2 验收修复：恢复时同步 gridSize
+            self._card_view.setGridSize(
+                QSize(
+                    zoom + ui.CARD_GRID_PADDING_H,
+                    zoom + ui.CARD_GRID_PADDING_V,
+                )
+            )
             self._card_list_model.set_icon_size(zoom)
             self._card_view.doItemsLayout()
             self._card_icon_size = zoom
@@ -1257,14 +1557,28 @@ class MainWindow(QMainWindow):
                     )
                 )
         else:
-            # 多选：始终显示批量标记（已标记项在 handler 内跳过）
-            actions.append(
-                (
-                    ui.MENU_BATCH_MARK_CONTENT_UNIT,
-                    lambda: self._on_batch_mark_content_unit(entries),
-                    True,
+            # 多选：根据选中项状态动态显示批量操作
+            # - 全部未标记：仅显示"批量标记"
+            # - 全部已标记：仅显示"批量取消"
+            # - 混合状态：同时显示两个（handler 内部各自跳过不适用项）
+            has_any_marked = any(e.content_unit is not None for e in entries)
+            has_any_unmarked = any(e.content_unit is None for e in entries)
+            if has_any_unmarked:
+                actions.append(
+                    (
+                        ui.MENU_BATCH_MARK_CONTENT_UNIT,
+                        lambda: self._on_batch_mark_content_unit(entries),
+                        True,
+                    )
                 )
-            )
+            if has_any_marked:
+                actions.append(
+                    (
+                        ui.MENU_BATCH_UNMARK_CONTENT_UNIT,
+                        lambda: self._on_batch_unmark_content_unit(entries),
+                        True,
+                    )
+                )
 
         # 批量打标签（Stage 4 Task 2）：多选且至少一个内容单元 + 注入了 TagService
         if self._tag_service is not None and len(entries) > 1:
@@ -1466,6 +1780,39 @@ class MainWindow(QMainWindow):
                 self,
                 ui.BATCH_MARK_CONTENT_UNIT_FAILED,
                 f"{failure_count} 个文件标记失败，请查看日志。",
+            )
+
+    def _on_batch_unmark_content_unit(self, entries: list[FileEntry]) -> None:
+        """批量取消多个条目的内容单元标记（各自独立，未标记项跳过）。
+
+        容错策略与批量标记一致：循环内单条失败仅计数不中断。
+        unmark_content_unit 是单步写方法，未使用 UoW，每条独立 commit。
+        """
+        success_count = 0
+        failure_count = 0
+        for entry in entries:
+            if entry.content_unit is None:
+                continue  # 未标记，跳过
+            try:
+                self._content_service.unmark_content_unit(entry.content_unit.id)
+                # unmark_content_unit 未使用 UoW，调用方需显式提交
+                self._commit()
+                success_count += 1
+            except Exception:  # noqa: BLE001
+                logger.exception("批量取消标记失败：path=%s", entry.path)
+                failure_count += 1
+                # 单条失败时回滚该条事务（避免未提交残留）
+                self._rollback()
+        if success_count > 0:
+            self._refresh_content_list_for_current_mode()
+            self.statusBar().showMessage(
+                ui.BATCH_UNMARK_CONTENT_UNIT_OK.format(count=success_count), 3000
+            )
+        if failure_count > 0:
+            QMessageBox.warning(
+                self,
+                ui.BATCH_UNMARK_CONTENT_UNIT_FAILED,
+                f"{failure_count} 个内容单元取消标记失败，请查看日志。",
             )
 
     def _refresh_content_list_for_current_mode(self) -> None:

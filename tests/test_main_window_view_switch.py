@@ -341,3 +341,260 @@ def test_card_list_model_shares_data_with_file_list_model(qapp, main_window_env)
         assert file_entry is not None
         assert card_entry is not None
         assert file_entry.path == card_entry.path
+
+
+# === Stage 5 Task 2：排序下拉框 + 列头方向指示 ===
+
+
+def test_sort_field_combo_initial_state(main_window_env) -> None:
+    """初始化时排序下拉框默认为名称，方向按钮显示 ▲。"""
+    window, _, _ = main_window_env
+    from app import ui_constants as ui
+    from app.file_list_model import SORT_NAME
+
+    assert window._sort_field_combo.currentData() == SORT_NAME  # noqa: SLF001
+    assert window._sort_dir_button.text() == ui.SORT_ASC_SYMBOL  # noqa: SLF001
+
+
+def test_sort_field_combo_changes_model_sort(qapp, main_window_env) -> None:
+    """下拉框切换排序字段后 FileListModel 同步。
+
+    Stage 5 Task 2 验收修复（最终版）：仅用 activated 信号，程序化 setCurrentIndex
+    不触发 activated，需手动调 _on_sort_field_activated 模拟用户交互。
+    """
+    window, _, _ = main_window_env
+    from app.file_list_model import SORT_SIZE
+
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    # 程序化 setCurrentIndex 不触发 activated，需手动调 handler
+    idx = window._sort_field_combo.findData(SORT_SIZE)  # noqa: SLF001
+    window._sort_field_combo.setCurrentIndex(idx)  # noqa: SLF001
+    window._on_sort_field_activated(idx)  # noqa: SLF001
+    qapp.processEvents()
+
+    assert window._content_list_model.current_sort_key() == SORT_SIZE  # noqa: SLF001
+
+
+def test_sort_direction_button_toggles(qapp, main_window_env) -> None:
+    """方向按钮点击后翻转方向，文本在 ▲/▼ 间切换。"""
+    window, _, _ = main_window_env
+    from app import ui_constants as ui
+
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    # 默认升序 ▲
+    assert window._sort_dir_button.text() == ui.SORT_ASC_SYMBOL  # noqa: SLF001
+    assert window._content_list_model.is_sort_ascending() is True  # noqa: SLF001
+
+    # 点击 → 降序 ▼
+    window._sort_dir_button.click()  # noqa: SLF001
+    qapp.processEvents()
+    assert window._sort_dir_button.text() == ui.SORT_DESC_SYMBOL  # noqa: SLF001
+    assert window._content_list_model.is_sort_ascending() is False  # noqa: SLF001
+
+    # 再点击 → 升序 ▲
+    window._sort_dir_button.click()  # noqa: SLF001
+    qapp.processEvents()
+    assert window._sort_dir_button.text() == ui.SORT_ASC_SYMBOL  # noqa: SLF001
+    assert window._content_list_model.is_sort_ascending() is True  # noqa: SLF001
+
+
+def test_header_click_syncs_sort_controls(qapp, main_window_env) -> None:
+    """点击列头排序后下拉框与方向按钮同步。"""
+    window, _, _ = main_window_env
+    from app.file_list_model import SORT_SIZE
+
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    # 点击大小列头（列索引 2）
+    window._on_content_header_clicked(2)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 下拉框同步到大小
+    assert window._sort_field_combo.currentData() == SORT_SIZE  # noqa: SLF001
+    # 方向按钮默认升序 ▲
+    from app import ui_constants as ui
+
+    assert window._sort_dir_button.text() == ui.SORT_ASC_SYMBOL  # noqa: SLF001
+
+    # 再次点击同列 → 降序，方向按钮显示 ▼
+    window._on_content_header_clicked(2)  # noqa: SLF001
+    qapp.processEvents()
+    assert window._sort_dir_button.text() == ui.SORT_DESC_SYMBOL  # noqa: SLF001
+
+
+def test_sort_field_combo_activated_on_same_item(qapp, main_window_env) -> None:
+    """Stage 5 Task 2 验收修复（最终版）：选当前项不会重新触发排序。
+
+    单 activated 信号方案下，"选当前项"无产品意义且 Qt 不会触发 activated
+    （currentIndex 不变），此测试验证 handler 在被手动调用时仍能正常执行
+    （幂等：相同 sort_key 调用不报错，方向保持）。
+    """
+    window, _, _ = main_window_env
+    from app.file_list_model import SORT_NAME
+
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    # 默认是名称升序
+    name_idx = window._sort_field_combo.findData(SORT_NAME)  # noqa: SLF001
+    assert window._sort_field_combo.currentIndex() == name_idx  # noqa: SLF001
+
+    # 手动调 handler（模拟 activated 触发，currentIndex 已是 name_idx）
+    # 验证幂等：不抛异常，sort_key 仍为 SORT_NAME，方向不变
+    window._on_sort_field_activated(name_idx)  # noqa: SLF001
+    qapp.processEvents()
+
+    assert window._content_list_model.current_sort_key() == SORT_NAME  # noqa: SLF001
+    assert window._content_list_model.is_sort_ascending() is True  # noqa: SLF001
+
+
+def test_sort_field_combo_switch_all_fields(qapp, main_window_env) -> None:
+    """Stage 5 Task 2 验收修复（最终版）：验证所有字段切换均一次生效。
+
+    回归测试：确保单 activated 信号方案下，名称→类型→大小→时间→名称
+    每次切换都立即生效（无"需两次点击"问题）。
+    """
+    window, _, _ = main_window_env
+    from app.file_list_model import SORT_MODIFIED, SORT_NAME, SORT_SIZE, SORT_TYPE
+
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    # 依次切换所有字段
+    for sort_key in [SORT_TYPE, SORT_SIZE, SORT_MODIFIED, SORT_NAME]:
+        idx = window._sort_field_combo.findData(sort_key)  # noqa: SLF001
+        window._sort_field_combo.setCurrentIndex(idx)  # noqa: SLF001
+        window._on_sort_field_activated(idx)  # noqa: SLF001
+        qapp.processEvents()
+        # 立即验证生效
+        assert window._content_list_model.current_sort_key() == sort_key  # noqa: SLF001
+
+
+def test_sort_direction_button_not_checkable(main_window_env) -> None:
+    """Task 2 验收修复：方向按钮不使用 checkable（避免蓝色高亮）。"""
+    window, _, _ = main_window_env
+    assert window._sort_dir_button.isCheckable() is False  # noqa: SLF001
+    assert window._sort_dir_button.isChecked() is False  # noqa: SLF001
+
+
+def test_card_grid_size_set(main_window_env) -> None:
+    """Task 2 验收修复：卡片视图 gridSize 已设置（非空）。"""
+    window, _, _ = main_window_env
+    grid = window._card_view.gridSize()  # noqa: SLF001
+    assert grid is not None
+    assert grid.width() > 0
+    assert grid.height() > 0
+
+
+def test_list_view_is_rubber_band_table_view(main_window_env) -> None:
+    """Stage 5 Task 2 验收修复（决策 3A）：列表视图使用 _RubberBandTableView 支持框选。"""
+    from app.main_window import _RubberBandTableView
+
+    window, _, _ = main_window_env
+    assert isinstance(window._content_view, _RubberBandTableView)  # noqa: SLF001
+
+
+def test_card_view_rubber_band_visible(main_window_env) -> None:
+    """Stage 5 Task 2 验收修复（决策 3A）：卡片视图显式启用 rubber band。"""
+    window, _, _ = main_window_env
+    assert window._card_view.isSelectionRectVisible() is True  # noqa: SLF001
+
+
+# === Stage 5 Task 2：前进/后退目录导航 ===
+
+
+def test_nav_buttons_disabled_initially(main_window_env) -> None:
+    """初始状态无历史，前进/后退按钮均禁用。"""
+    window, _, _ = main_window_env
+    assert window._nav_back_button.isEnabled() is False  # noqa: SLF001
+    assert window._nav_forward_button.isEnabled() is False  # noqa: SLF001
+
+
+def test_nav_back_forward_navigates_history(qapp, main_window_env) -> None:
+    """浏览多个目录后后退/前进可在历史间切换。"""
+    window, _, root_dir = main_window_env
+
+    # 选中根节点 → 记录根路径
+    _select_root(qapp, window)
+    qapp.processEvents()
+    root_path = str(root_dir)
+    assert window._current_nav_path == root_path  # noqa: SLF001
+    assert window._nav_back_button.isEnabled() is False  # noqa: SLF001
+
+    # 双击 armor 子目录进入
+    armor_path = str(root_dir / "armor")
+    idx_row = _find_entry_index(window, "armor")
+    model_idx = window._content_list_model.index(idx_row, 0)  # noqa: SLF001
+    window._on_entry_activated(model_idx)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 后退按钮启用，前进禁用
+    assert window._nav_back_button.isEnabled() is True  # noqa: SLF001
+    assert window._nav_forward_button.isEnabled() is False  # noqa: SLF001
+    assert window._current_nav_path == armor_path  # noqa: SLF001
+
+    # 点击后退 → 回到根目录
+    window._on_nav_back_clicked()  # noqa: SLF001
+    qapp.processEvents()
+    assert window._current_nav_path == root_path  # noqa: SLF001
+    # 后退禁用，前进启用
+    assert window._nav_back_button.isEnabled() is False  # noqa: SLF001
+    assert window._nav_forward_button.isEnabled() is True  # noqa: SLF001
+
+    # 点击前进 → 回到 armor
+    window._on_nav_forward_clicked()  # noqa: SLF001
+    qapp.processEvents()
+    assert window._current_nav_path == armor_path  # noqa: SLF001
+    assert window._nav_back_button.isEnabled() is True  # noqa: SLF001
+    assert window._nav_forward_button.isEnabled() is False  # noqa: SLF001
+
+
+def test_nav_forward_stack_cleared_on_new_navigation(qapp, main_window_env) -> None:
+    """后退后再进入新目录，前进栈应清空（标准浏览器行为）。"""
+    window, _, root_dir = main_window_env
+
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    # 进入 armor
+    idx_row = _find_entry_index(window, "armor")
+    model_idx = window._content_list_model.index(idx_row, 0)  # noqa: SLF001
+    window._on_entry_activated(model_idx)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 后退到根目录
+    window._on_nav_back_clicked()  # noqa: SLF001
+    qapp.processEvents()
+    assert window._nav_forward_button.isEnabled() is True  # noqa: SLF001
+
+    # 进入中文文件夹（新导航，应清空前进栈）
+    idx_row = _find_entry_index(window, "中文文件夹")
+    model_idx = window._content_list_model.index(idx_row, 0)  # noqa: SLF001
+    window._on_entry_activated(model_idx)  # noqa: SLF001
+    qapp.processEvents()
+    # 前进栈应清空
+    assert window._nav_forward_stack == []  # noqa: SLF001
+    assert window._nav_forward_button.isEnabled() is False  # noqa: SLF001
+
+
+def test_nav_history_not_recorded_in_organize_mode(qapp, main_window_env) -> None:
+    """整理模式不记录导航历史。"""
+    from domain.models import AppMode
+
+    window, _, _ = main_window_env
+    # 切到整理模式
+    window._set_mode(AppMode.organize)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 整理模式下选中暂存区
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    # 不应记录历史
+    assert window._current_nav_path is None  # noqa: SLF001
+    assert window._nav_back_stack == []  # noqa: SLF001

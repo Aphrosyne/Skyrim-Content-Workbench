@@ -122,14 +122,43 @@ class TestRefresh:
 
 
 class TestHeaderData:
-    def test_horizontal_headers(self, qapp) -> None:  # noqa: ANN001
+    def test_horizontal_headers_default_sort_indicator(self, qapp) -> None:  # noqa: ANN001
+        """默认排序为名称升序，名称列显示 ▲，其他列无指示符。"""
         from PySide6.QtCore import Qt
 
+        from app import ui_constants as ui
+
         model = FileListModel()
-        assert model.headerData(0, Qt.Orientation.Horizontal) == "名称"
+        # 默认 SORT_NAME 升序 → 名称列带 ▲
+        assert model.headerData(0, Qt.Orientation.Horizontal) == f"名称 {ui.SORT_ASC_SYMBOL}"
+        # 其他列无指示符
         assert model.headerData(1, Qt.Orientation.Horizontal) == "类型"
         assert model.headerData(2, Qt.Orientation.Horizontal) == "大小"
         assert model.headerData(3, Qt.Orientation.Horizontal) == "修改日期"
+
+    def test_header_shows_desc_symbol_after_toggle(self, qapp) -> None:  # noqa: ANN001
+        """名称列降序时显示 ▼。"""
+        from PySide6.QtCore import Qt
+
+        from app import ui_constants as ui
+
+        model = FileListModel()
+        model.set_sort_key(SORT_NAME, ascending=False)
+        assert model.headerData(0, Qt.Orientation.Horizontal) == f"名称 {ui.SORT_DESC_SYMBOL}"
+
+    def test_header_indicator_moves_to_selected_column(self, qapp) -> None:  # noqa: ANN001
+        """切换排序列后指示符移到新列。"""
+        from PySide6.QtCore import Qt
+
+        from app import ui_constants as ui
+
+        model = FileListModel()
+        # 切换到大小列升序
+        model.set_sort_key(SORT_SIZE, ascending=True)
+        # 名称列不再有指示符
+        assert model.headerData(0, Qt.Orientation.Horizontal) == "名称"
+        # 大小列显示 ▲
+        assert model.headerData(2, Qt.Orientation.Horizontal) == f"大小 {ui.SORT_ASC_SYMBOL}"
 
     def test_vertical_headers_none(self, qapp) -> None:  # noqa: ANN001
         from PySide6.QtCore import Qt

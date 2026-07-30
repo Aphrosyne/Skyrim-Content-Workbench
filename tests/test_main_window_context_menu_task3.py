@@ -2,8 +2,8 @@
 
 覆盖：
 - 创建 Mod 组菜单项仅在整理模式 + 单选文件 + 注入 ModGroupService 时显示
-- 标记为内容单元 / 取消标记 菜单项根据 entry.content_unit 切换
-- 多选显示"把每个文件标记为内容单元"
+- 标记为内容单元 / 取消内容单元标记 菜单项根据 entry.content_unit 切换
+- 多选显示"批量标记为内容单元"
 - 复制路径始终显示
 - 创建 Mod 组完整流程（对话框 + 文件夹创建 + 文件移动 + ContentUnit 创建 + 列表刷新）
 - 标记/取消标记后列表刷新
@@ -448,6 +448,160 @@ def test_batch_mark_multiple_files(qapp, main_window_env) -> None:
     for e in target_entries:
         unit = window._content_service.get_by_path(e.path)  # noqa: SLF001
         assert unit is not None
+
+
+def test_batch_unmark_content_unit(qapp, main_window_env) -> None:
+    """Task 2 验收修复：多选含已标记项 → 批量取消 → 全部取消标记。"""
+    window, conn, _, _ = main_window_env
+    _select_staging(qapp, window)
+    window._set_mode(AppMode.organize)  # noqa: SLF001
+    qapp.processEvents()
+
+    # SkyUI 已被扫描自动标记，preview.jpg 需手动标记
+    model = window._content_list_model  # noqa: SLF001
+    for row in range(model.entry_count()):
+        entry = model.entry_at(row)
+        if entry is not None and entry.name == "preview.jpg" and entry.content_unit is None:
+            window._on_mark_content_unit(entry)  # noqa: SLF001
+            qapp.processEvents()
+            break
+
+    # 重新读取已标记的条目
+    target_entries = []
+    for row in range(model.entry_count()):
+        entry = model.entry_at(row)
+        if entry is not None and entry.name in ("preview.jpg", "SkyUI 5.1 SE.zip"):
+            target_entries.append(entry)
+
+    assert all(e.content_unit is not None for e in target_entries), "前置：所有条目应已标记"
+
+    window._on_batch_unmark_content_unit(target_entries)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 所有条目应取消标记（status 变为 unmarked）
+    for e in target_entries:
+        unit = window._content_service.get_by_path(e.path)  # noqa: SLF001
+        assert unit is not None, "取消标记不删除记录"
+        assert unit.status == "unmarked", f"{e.name} 状态应为 unmarked"
+
+
+def test_batch_unmark_skips_unmarked_entries(qapp, main_window_env) -> None:
+    """Task 2 验收修复：批量取消时未标记项跳过，不报错。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    window._set_mode(AppMode.organize)  # noqa: SLF001
+    qapp.processEvents()
+
+    # SkyUI 已标记，preview.jpg 未标记
+    model = window._content_list_model  # noqa: SLF001
+    target_entries = []
+    for row in range(model.entry_count()):
+        entry = model.entry_at(row)
+        if entry is not None and entry.name in ("preview.jpg", "SkyUI 5.1 SE.zip"):
+            target_entries.append(entry)
+
+    # 前置：SkyUI 已标记，preview.jpg 未标记
+    has_marked = any(e.content_unit is not None for e in target_entries)
+    has_unmarked = any(e.content_unit is None for e in target_entries)
+    assert has_marked and has_unmarked, "前置：应同时有已标记和未标记项"
+
+    # 批量取消不应抛异常
+    window._on_batch_unmark_content_unit(target_entries)  # noqa: SLF001
+    qapp.processEvents()
+
+
+def test_batch_unmark_menu_visible_when_any_marked(qapp, main_window_env) -> None:
+    """Task 2 验收修复：多选且至少一个已标记时，右键菜单显示批量取消项。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    window._set_mode(AppMode.organize)  # noqa: SLF001
+    qapp.processEvents()
+
+    model = window._content_list_model  # noqa: SLF001
+    target_entries = []
+    for row in range(model.entry_count()):
+        entry = model.entry_at(row)
+        if entry is not None and entry.name in ("preview.jpg", "SkyUI 5.1 SE.zip"):
+            target_entries.append(entry)
+
+    # 至少一个已标记（SkyUI）
+    has_any_marked = any(e.content_unit is not None for e in target_entries)
+    assert has_any_marked, "前置：应至少一个已标记"
+
+    # 调用菜单构建
+    actions = window._build_content_menu_actions(target_entries)  # noqa: SLF001
+    labels = [a[0] for a in actions]
+    from app import ui_constants as ui
+
+    assert ui.MENU_BATCH_MARK_CONTENT_UNIT in labels, "应显示批量标记"
+    assert ui.MENU_BATCH_UNMARK_CONTENT_UNIT in labels, "应显示批量取消"
+
+
+def test_batch_unmark_menu_hidden_when_none_marked(qapp, main_window_env) -> None:
+    """Task 2 验收修复：多选且全部未标记时，右键菜单仅显示批量标记，不显示批量取消。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    window._set_mode(AppMode.organize)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 先取消所有标记
+    model = window._content_list_model  # noqa: SLF001
+    for row in range(model.entry_count()):
+        entry = model.entry_at(row)
+        if entry is not None and entry.content_unit is not None:
+            window._on_unmark_content_unit(entry)  # noqa: SLF001
+            qapp.processEvents()
+
+    # 重新读取未标记的条目
+    target_entries = []
+    for row in range(model.entry_count()):
+        entry = model.entry_at(row)
+        if entry is not None and entry.name in ("preview.jpg", "SkyUI 5.1 SE.zip"):
+            target_entries.append(entry)
+
+    assert all(e.content_unit is None for e in target_entries), "前置：应全部未标记"
+
+    actions = window._build_content_menu_actions(target_entries)  # noqa: SLF001
+    labels = [a[0] for a in actions]
+    from app import ui_constants as ui
+
+    assert ui.MENU_BATCH_MARK_CONTENT_UNIT in labels, "应显示批量标记"
+    assert ui.MENU_BATCH_UNMARK_CONTENT_UNIT not in labels, "不应显示批量取消"
+
+
+def test_batch_mark_menu_hidden_when_all_marked(qapp, main_window_env) -> None:
+    """Stage 5 Task 2 验收修复：多选且全部已标记时，仅显示批量取消，不显示批量标记。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    window._set_mode(AppMode.organize)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 把暂存区所有条目都标记为内容单元
+    model = window._content_list_model  # noqa: SLF001
+    target_entries = []
+    for row in range(model.entry_count()):
+        entry = model.entry_at(row)
+        if entry is not None and entry.name in ("preview.jpg", "SkyUI 5.1 SE.zip"):
+            target_entries.append(entry)
+            if entry.content_unit is None:
+                window._on_mark_content_unit(entry)  # noqa: SLF001
+                qapp.processEvents()
+
+    # 重新读取已标记的条目
+    target_entries = []
+    for row in range(model.entry_count()):
+        entry = model.entry_at(row)
+        if entry is not None and entry.name in ("preview.jpg", "SkyUI 5.1 SE.zip"):
+            target_entries.append(entry)
+
+    assert all(e.content_unit is not None for e in target_entries), "前置：应全部已标记"
+
+    actions = window._build_content_menu_actions(target_entries)  # noqa: SLF001
+    labels = [a[0] for a in actions]
+    from app import ui_constants as ui
+
+    assert ui.MENU_BATCH_UNMARK_CONTENT_UNIT in labels, "应显示批量取消"
+    assert ui.MENU_BATCH_MARK_CONTENT_UNIT not in labels, "不应显示批量标记（全部已标记）"
 
 
 def test_chinese_filename_mod_group(qapp, main_window_env) -> None:

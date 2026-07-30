@@ -79,8 +79,9 @@ CONTEXT_MENU_COPY_PATH_OK = "路径已复制到剪贴板。"
 # 文件列表右键菜单（阶段 3 Task 3）
 MENU_CREATE_MOD_GROUP = "创建 Mod 组"
 MENU_MARK_CONTENT_UNIT = "标记为内容单元"
-MENU_UNMARK_CONTENT_UNIT = "取消标记"
-MENU_BATCH_MARK_CONTENT_UNIT = "把每个文件标记为内容单元"
+MENU_UNMARK_CONTENT_UNIT = "取消内容单元标记"
+MENU_BATCH_MARK_CONTENT_UNIT = "批量标记为内容单元"
+MENU_BATCH_UNMARK_CONTENT_UNIT = "批量取消内容单元标记"
 MENU_BATCH_TAG = "批量打标签"
 MENU_ADD_TO_ASSEMBLY = "加入装配"
 MENU_QUICK_SET_COVER = "快速设置封面"
@@ -100,11 +101,13 @@ CREATE_MOD_GROUP_FAILED = "创建 Mod 组失败"
 
 # 标记/取消标记状态提示
 MARK_CONTENT_UNIT_OK = "已标记为内容单元"
-UNMARK_CONTENT_UNIT_OK = "已取消标记"
+UNMARK_CONTENT_UNIT_OK = "已取消内容单元标记"
 BATCH_MARK_CONTENT_UNIT_OK = "已批量标记 {count} 个文件"
+BATCH_UNMARK_CONTENT_UNIT_OK = "已批量取消 {count} 个内容单元标记"
 MARK_CONTENT_UNIT_FAILED = "标记失败"
 UNMARK_CONTENT_UNIT_FAILED = "取消标记失败"
 BATCH_MARK_CONTENT_UNIT_FAILED = "批量标记失败"
+BATCH_UNMARK_CONTENT_UNIT_FAILED = "批量取消标记失败"
 
 # 装配面板（阶段 3 Task 4）
 ASSEMBLY_PANEL_TITLE = "装配面板"
@@ -361,3 +364,29 @@ COVER_PREVIEW_PLACEHOLDER_HEIGHT = 64  # 无图时占位高度（显示边框）
 # CardListModel 卡片名称 ToolTip 中内容单元状态文本（Stage 5 Task 1，Q6:B）
 CARD_TOOLTIP_CONTENT_UNIT_STATUS = "内容单元状态：{status}"
 CARD_TOOLTIP_SEPARATOR = " | "
+
+# Stage 5 Task 2：列头方向指示符号（Q1=A 文本方案）
+SORT_ASC_SYMBOL = "▲"
+SORT_DESC_SYMBOL = "▼"
+
+# Stage 5 Task 2：排序下拉框（Q2=A 列表/卡片视图共享）
+SORT_FIELD_LABEL = "排序"
+SORT_FIELD_TOOLTIP = "选择排序字段（列表/卡片视图共享）"
+SORT_FIELD_NAME = "名称"
+SORT_FIELD_TYPE = "类型"
+SORT_FIELD_SIZE = "大小"
+SORT_FIELD_MODIFIED = "修改日期"
+# 排序方向按钮
+SORT_DIRECTION_ASC_TOOLTIP = "升序（点击切换为降序）"
+SORT_DIRECTION_DESC_TOOLTIP = "降序（点击切换为升序）"
+
+# Stage 5 Task 2：前进/后退目录导航
+NAV_BACK_TOOLTIP = "后退（上一个目录）"
+NAV_FORWARD_TOOLTIP = "前进（下一个目录）"
+
+# Stage 5 Task 2 验收修复：卡片固定尺寸 + 文本 elide
+# 卡片网格单元尺寸 = icon_size + 水平/垂直 padding
+CARD_GRID_PADDING_H = 24  # 文本左右内边距合计
+CARD_GRID_PADDING_V = 32  # 文本区域高度 + 上下内边距
+# 文本 elide 宽度 = icon_size - 文本左右 padding
+CARD_TEXT_PADDING_H = 8  # 文本两侧 padding 合计

@@ -214,3 +214,150 @@ def test_entry_count_matches_row_count(file_list_model_with_entries) -> None:
     card = CardListModel()
     card.set_source(source)
     assert card.entry_count() == card.rowCount()
+
+
+# === Stage 5 Task 2 验收修复：方形裁剪 + elide ===
+
+
+@pytest.fixture
+def file_list_model_with_cover_image(qapp, tmp_path: Path) -> tuple[FileListModel, list[FileEntry]]:
+    """构造含真实图片封面的内容单元（横向图 + 竖向图）。"""
+    from PIL import Image  # noqa: PLC0415
+
+    from application.content_service import ContentService  # noqa: PLC0415
+    from application.managed_root_service import ManagedRootService  # noqa: PLC0415
+    from application.scan_service import ScanService  # noqa: PLC0415
+    from infrastructure.db import get_connection, init_db  # noqa: PLC0415
+    from infrastructure.repositories.content_unit import ContentUnitRepository  # noqa: PLC0415
+    from infrastructure.repositories.folder_cache import FolderCacheRepository  # noqa: PLC0415
+    from infrastructure.repositories.managed_root import ManagedRootRepository  # noqa: PLC0415
+
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    # 横向图 200x100
+    h_dir = mods / "h_pack"
+    h_dir.mkdir()
+    Image.new("RGB", (200, 100), "red").save(h_dir / "cover.jpg")
+    # 竖向图 100x200
+    v_dir = mods / "v_pack"
+    v_dir.mkdir()
+    Image.new("RGB", (100, 200), "blue").save(v_dir / "cover.jpg")
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    conn = get_connection(db_path)
+    conn.row_factory = sqlite3.Row
+    counter = {"n": 0}
+
+    def fake_uuid() -> str:
+        counter["n"] += 1
+        return f"id-{counter['n']}"
+
+    managed_service = ManagedRootService(
+        ManagedRootRepository(conn),
+        now_provider=lambda: "2026-07-12T00:00:00Z",
+        uuid_provider=fake_uuid,
+    )
+    content_service = ContentService(ContentUnitRepository(conn))
+    scan_service = ScanService(
+        managed_root_repo=ManagedRootRepository(conn),
+        folder_cache_repo=FolderCacheRepository(conn),
+        content_unit_repo=ContentUnitRepository(conn),
+        now_provider=lambda: "2026-07-12T00:00:00Z",
+        uuid_provider=fake_uuid,
+    )
+    root = managed_service.add_root(mods)
+    scan_service.scan_root(root.id, incremental=False)
+    # 标记为内容单元（自动设置封面为第一张图片）
+    content_service.mark_as_content_unit(h_dir)
+    content_service.mark_as_content_unit(v_dir)
+    conn.commit()
+
+    entries = content_service.list_directory_entries(str(mods))
+    model = FileListModel()
+    model.refresh(entries)
+    conn.close()
+    return model, entries
+
+
+def test_card_decoration_is_square_pixmap(file_list_model_with_cover_image) -> None:
+    """有封面的内容单元 DecorationRole 返回方形 QPixmap（icon_size × icon_size）。"""
+    from PySide6.QtGui import QPixmap  # noqa: PLC0415
+
+    source, entries = file_list_model_with_cover_image
+    card = CardListModel()
+    card.set_source(source)
+    card.set_icon_size(128)
+
+    for entry in entries:
+        if entry.content_unit is None or not entry.content_unit.cover_path:
+            continue
+        row = next(i for i, e in enumerate(entries) if e.path == entry.path)
+        idx = card.index(row, 0)
+        decoration = card.data(idx, Qt.DecorationRole)
+        assert isinstance(decoration, QPixmap), f"{entry.name} 应返回 QPixmap"
+        assert decoration.width() == 128, f"{entry.name} 宽度应为 128"
+        assert decoration.height() == 128, f"{entry.name} 高度应为 128"
+
+
+def test_card_decoration_crops_horizontal_image(file_list_model_with_cover_image) -> None:
+    """横向图（200×100）裁剪为方形后，宽度 = 高度 = icon_size。"""
+    from PySide6.QtGui import QPixmap  # noqa: PLC0415
+
+    source, entries = file_list_model_with_cover_image
+    card = CardListModel()
+    card.set_source(source)
+    card.set_icon_size(128)
+
+    h_entry = next(e for e in entries if e.name == "h_pack")
+    row = next(i for i, e in enumerate(entries) if e.path == h_entry.path)
+    decoration = card.data(card.index(row, 0), Qt.DecorationRole)
+    assert isinstance(decoration, QPixmap)
+    # 方形裁剪后宽高相等
+    assert decoration.width() == decoration.height() == 128
+
+
+def test_card_decoration_crops_vertical_image(file_list_model_with_cover_image) -> None:
+    """竖向图（100×200）裁剪为方形后，宽度 = 高度 = icon_size。"""
+    from PySide6.QtGui import QPixmap  # noqa: PLC0415
+
+    source, entries = file_list_model_with_cover_image
+    card = CardListModel()
+    card.set_source(source)
+    card.set_icon_size(128)
+
+    v_entry = next(e for e in entries if e.name == "v_pack")
+    row = next(i for i, e in enumerate(entries) if e.path == v_entry.path)
+    decoration = card.data(card.index(row, 0), Qt.DecorationRole)
+    assert isinstance(decoration, QPixmap)
+    assert decoration.width() == decoration.height() == 128
+
+
+def test_card_name_elided_when_too_long(qapp) -> None:
+    """长文件名 DisplayRole 被 elide 截断（含省略号）。"""
+    from PySide6.QtCore import Qt  # noqa: PLC0415
+
+    from app.card_list_model import CardListModel  # noqa: PLC0415
+    from app.file_list_model import FileListModel  # noqa: PLC0415
+    from domain.models import FileEntry  # noqa: PLC0415
+
+    # 构造一个超长文件名条目
+    long_name = "这是一个非常非常非常非常非常非常非常非常长的文件名.txt"
+    entry = FileEntry(
+        path=f"/test/{long_name}",
+        name=long_name,
+        is_dir=False,
+        size=100,
+        modified_at="2026-07-29",
+        content_unit=None,
+    )
+    source = FileListModel()
+    source.refresh([entry])
+    card = CardListModel()
+    card.set_source(source)
+    card.set_icon_size(128)
+
+    idx = card.index(0, 0)
+    display = card.data(idx, Qt.DisplayRole)
+    assert display != long_name, "长文件名应被截断"
+    assert "…" in display, "截断后应含省略号"
