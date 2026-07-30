@@ -557,9 +557,10 @@
 - [x] 列表视图空白区域拖动出现 rubber band 框选
 - [x] 全量回归：1080 passed, 3 skipped, ruff check + format 全通过
 
-### Task 3a：新建文件夹 + 重命名 + 删除
+### Task 3a：新建文件夹 + 重命名 + 删除 ✅
 
 > 原 Task 3 拆分的第一部分，覆盖最基础的文件 CRUD。为 Task 6 undo 框架做铺垫。
+> 完成于 2026-07-30。schema_version 维持 7，无数据库迁移。
 
 - **新建文件夹**：目录树或文件列表右键 → "新建文件夹" → 输入名称 → 真实创建 + 同步 folder_cache
 - **重命名**：右键重命名（真实改名 + 同步更新 content_unit.path）
@@ -567,11 +568,11 @@
 - 三类操作均写入 operation_history（delete 的 can_undo=False，TD-L19 已校验）
 
 **验收：**
-- [ ] 新建文件夹可创建并同步 folder_cache
-- [ ] 重命名同时修改真实文件名和 content_unit.path
-- [ ] 删除操作将文件移至 Windows 回收站
-- [ ] 三类操作均写入 operation_history
-- [ ] 中文路径正常工作
+- [x] 新建文件夹可创建并同步 folder_cache（含目录树右键菜单，验收 A 部分修复）
+- [x] 重命名同时修改真实文件名和 content_unit.path
+- [x] 删除操作将文件移至 Windows 回收站
+- [x] 三类操作均写入 operation_history
+- [x] 中文路径正常工作
 
 ### Task 6：操作历史与撤销
 

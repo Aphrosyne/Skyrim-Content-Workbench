@@ -55,6 +55,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QListView,
     QListWidget,
@@ -109,6 +110,7 @@ from application.scan_service import ScanSummary
 from application.staging_service import StagingService
 from application.tag_service import TagService
 from domain.models import AppMode, ContentUnit, FileEntry, ManagedRoot
+from infrastructure.file_operation_service import FileOperationService
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +229,7 @@ class MainWindow(QMainWindow):
         rollback_callback: Callable[[], None] | None = None,
         tag_service: TagService | None = None,
         thumbnail_coordinator: ThumbnailCoordinator | None = None,
+        file_operation_service: FileOperationService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -241,6 +244,8 @@ class MainWindow(QMainWindow):
         self._assembly_service = assembly_service
         self._quick_insert_service = quick_insert_service
         self._tag_service = tag_service
+        # Stage 5 Task 3a：文件操作服务（new_folder / rename / delete）
+        self._file_operation_service = file_operation_service
         # Stage 4 Task 4：缩略图调度器（可选注入，便于测试）
         self._thumbnail_coordinator = thumbnail_coordinator
         self._thread: QThread | None = None
@@ -1377,9 +1382,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, ui.MENU_OPEN_IN_EXPLORER, ui.MENU_OPEN_IN_EXPLORER_FAILED)
 
     def _on_tree_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
-        """目录树右键菜单：标记/取消暂存区 + 在资源管理器中打开。
+        """目录树右键菜单：标记/取消暂存区 + 新建文件夹 + 在资源管理器中打开。
 
         Stage 5 Task 1：新增「在资源管理器中打开」项，无论是否注入 StagingService 都可用。
+        Stage 5 Task 3a：新增「新建文件夹」项，仅注入 FileOperationService 时显示。
+            选中节点即在其目录下创建子文件夹，与中栏右键入口行为一致。
         """
         index = self._tree_view.indexAt(pos)
         if not index.isValid():
@@ -1396,6 +1403,11 @@ class MainWindow(QMainWindow):
                 staging_action = menu.addAction(ui.MENU_UNMARK_STAGING)
             else:
                 staging_action = menu.addAction(ui.MENU_MARK_STAGING)
+        # 新建文件夹（Stage 5 Task 3a，仅注入 FileOperationService 时显示）
+        new_folder_action = None
+        if self._file_operation_service is not None:
+            menu.addSeparator()
+            new_folder_action = menu.addAction(ui.MENU_NEW_FOLDER)
         # 在资源管理器中打开（Stage 5 Task 1，始终显示）
         explorer_action = menu.addAction(ui.MENU_OPEN_IN_EXPLORER)
 
@@ -1407,6 +1419,8 @@ class MainWindow(QMainWindow):
                 self._unmark_staging_from_node(node)
             else:
                 self._mark_staging_from_node(node)
+        elif new_folder_action is not None and chosen is new_folder_action:
+            self._on_new_folder_in_dir(node.real_path)
         elif chosen is explorer_action:
             self._on_open_in_explorer(node.real_path)
 
@@ -1450,6 +1464,7 @@ class MainWindow(QMainWindow):
         """文件列表右键菜单：根据选中条目与模式动态构造。
 
         Stage 5 Task 1：支持列表视图和卡片视图，根据当前活动视图获取选中条目。
+        Stage 5 Task 3a：空白区域右键显示"新建文件夹"（基于当前目录）。
 
         菜单项：
         - 创建 Mod 组：仅整理模式 + 单选文件 + 注入了 ModGroupService 时显示。
@@ -1457,6 +1472,7 @@ class MainWindow(QMainWindow):
         - 标记为内容单元 / 把每个文件标记为内容单元：未标记条目。
         - 取消标记：已标记 ContentUnit。
         - 快速设置封面：已标记文件夹内容单元（压缩包内容单元灰显）。
+        - 新建文件夹 / 重命名 / 删除（Stage 5 Task 3a）。
         - 在资源管理器中打开：始终显示（Stage 5 Task 1）。
         - 复制路径：始终显示。
         """
@@ -1473,15 +1489,16 @@ class MainWindow(QMainWindow):
         if sm is None:
             return
         selected_rows = sm.selectedRows()
-        if not selected_rows:
-            return
 
         entries: list[FileEntry] = []
         for idx in selected_rows:
             entry = active_model.entry_at(idx.row())
             if entry is not None:
                 entries.append(entry)
+
+        # Stage 5 Task 3a：空白区域右键 → 显示"新建文件夹"（基于当前目录）
         if not entries:
+            self._show_empty_area_context_menu(active_view, pos)
             return
 
         actions = self._build_content_menu_actions(entries)
@@ -1500,6 +1517,23 @@ class MainWindow(QMainWindow):
             if chosen.text() == label:
                 handler()
                 break
+
+    def _show_empty_area_context_menu(self, active_view, pos: QPoint) -> None:
+        """空白区域右键菜单（Stage 5 Task 3a）。
+
+        仅显示"新建文件夹"（基于当前显示的目录）。需注入 FileOperationService。
+        """
+        if self._file_operation_service is None:
+            return
+        # 获取当前显示的目录路径
+        current_dir = self._current_displayed_dir()
+        if current_dir is None:
+            return
+        menu = QMenu(self)
+        new_folder_action = menu.addAction(ui.MENU_NEW_FOLDER)
+        chosen = menu.exec(active_view.viewport().mapToGlobal(pos))
+        if chosen is new_folder_action:
+            self._on_new_folder_in_dir(current_dir)
 
     def _build_content_menu_actions(
         self, entries: list[FileEntry]
@@ -1598,6 +1632,22 @@ class MainWindow(QMainWindow):
                     enabled,
                 )
             )
+
+        # Stage 5 Task 3a：新建文件夹 / 重命名 / 删除
+        # 仅当注入了 FileOperationService 时显示
+        if self._file_operation_service is not None:
+            # 新建文件夹：单选时基于该条目所在目录；列表空白区域另处理
+            # 这里仅在选中条目时显示（空白区域由 _on_content_context_menu 处理）
+            if len(entries) == 1:
+                entry = entries[0]
+                # 新建文件夹：基于选中条目的父目录创建子文件夹
+                actions.append(
+                    (ui.MENU_NEW_FOLDER, lambda: self._on_new_folder_for_entry(entry), True)
+                )
+                # 重命名：单选
+                actions.append((ui.MENU_RENAME, lambda: self._on_rename_entry(entry), True))
+            # 删除：单选或批量
+            actions.append((ui.MENU_DELETE, lambda: self._on_delete_entries(entries), True))
 
         # 在资源管理器中打开（Stage 5 Task 1，始终显示，单选时可用）
         if len(entries) == 1:
@@ -1831,6 +1881,158 @@ class MainWindow(QMainWindow):
             node = self._tree_model.node_at(indexes[0])
             if node is not None:
                 self._refresh_content_list(node.real_path)
+
+    def _current_displayed_dir(self) -> str | None:
+        """获取当前中栏显示的目录路径（Stage 5 Task 3a）。
+
+        - 浏览模式：取目录树当前选中节点的 real_path
+        - 整理模式：取 _organize_workarea_path
+        """
+        if self._mode_manager.is_organize():
+            return self._organize_workarea_path
+        sm = self._tree_view.selectionModel()
+        if sm is None:
+            return None
+        indexes = sm.selectedIndexes()
+        if not indexes:
+            return None
+        node = self._tree_model.node_at(indexes[0])
+        if node is None:
+            return None
+        return node.real_path
+
+    def _refresh_content_list_after_file_op(self, dir_path: str | None) -> None:
+        """文件操作后刷新中栏（Stage 5 Task 3a）。
+
+        _refresh_tree 会 reset tree 模型，浏览模式下 selectionModel 可能暂时
+        无选中节点，此时 _refresh_content_list_for_current_mode 不会刷新列表。
+        本方法直接用传入的 dir_path 刷新，避免依赖 selection 状态。
+
+        - 整理模式：刷新暂存区列表（dir_path 应为暂存区路径）
+        - 浏览模式：刷新指定目录文件列表
+        """
+        if dir_path is None:
+            return
+        if self._mode_manager.is_organize():
+            self._refresh_staging_content_list(dir_path)
+        else:
+            self._refresh_content_list(dir_path)
+
+    # === Stage 5 Task 3a：文件操作 handler ===
+
+    def _on_new_folder_for_entry(self, entry: FileEntry) -> None:
+        """右键条目 → 新建文件夹（基于该条目所在父目录）。"""
+        # 父目录：文件所在目录或文件夹本身的父目录
+        target_dir = str(Path(entry.path).parent)
+        self._on_new_folder_in_dir(target_dir)
+
+    def _on_new_folder_in_dir(self, dir_path: str) -> None:
+        """在指定目录下新建文件夹。"""
+        if self._file_operation_service is None:
+            return
+        # 弹出输入对话框，默认填"新建文件夹"
+        name, ok = QInputDialog.getText(
+            self,
+            ui.MENU_NEW_FOLDER_DIALOG_TITLE,
+            ui.MENU_NEW_FOLDER_DIALOG_LABEL,
+            text=ui.MENU_NEW_FOLDER_DEFAULT_NAME,
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        try:
+            new_path = Path(dir_path) / name
+            self._file_operation_service.new_folder(new_path)
+            self._commit()
+            self._refresh_tree()
+            # _refresh_tree 会清空列表，必须用保存的 dir_path 直接刷新
+            # （_refresh_content_list_for_current_mode 依赖 selection 可能失效）
+            self._refresh_content_list_after_file_op(dir_path)
+            self.statusBar().showMessage(ui.MENU_NEW_FOLDER_SUCCESS.format(name=name), 3000)
+        except Exception as e:  # noqa: BLE001
+            self._handle_service_error(e, ui.MENU_OPERATION_FAILED.format(error=str(e)))
+
+    def _on_rename_entry(self, entry: FileEntry) -> None:
+        """右键条目 → 重命名。"""
+        if self._file_operation_service is None:
+            return
+        # 弹出输入对话框，预填当前名称并全选
+        old_path = Path(entry.path)
+        old_name = old_path.name
+        # 保存父目录路径：rename 后 _refresh_tree 会清空列表，需用此路径直接刷新
+        dir_path = str(old_path.parent)
+        name, ok = QInputDialog.getText(
+            self,
+            ui.MENU_RENAME_DIALOG_TITLE,
+            ui.MENU_RENAME_DIALOG_LABEL,
+            text=old_name,
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        # 同名跳过（无变化）
+        if name == old_name:
+            return
+        try:
+            self._file_operation_service.rename(old_path, name)
+            self._commit()
+            self._refresh_tree()
+            self._refresh_content_list_after_file_op(dir_path)
+            self.statusBar().showMessage(ui.MENU_RENAME_SUCCESS.format(name=name), 3000)
+        except Exception as e:  # noqa: BLE001
+            self._handle_service_error(e, ui.MENU_OPERATION_FAILED.format(error=str(e)))
+
+    def _on_delete_entries(self, entries: list[FileEntry]) -> None:
+        """右键条目 → 删除（移至回收站）。"""
+        if self._file_operation_service is None:
+            return
+        # 确认对话框
+        n = len(entries)
+        if n == 1:
+            text = ui.MENU_DELETE_CONFIRM_TEXT_SINGLE
+        else:
+            text = ui.MENU_DELETE_CONFIRM_TEXT_MULTI.format(n=n)
+        reply = QMessageBox.question(
+            self,
+            ui.MENU_DELETE_CONFIRM_TITLE,
+            text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        # 批量删除
+        paths = [Path(e.path) for e in entries]
+        # 保存删除条目所在父目录路径（取第一个条目的父目录）：
+        # _refresh_tree 后 selection 可能失效，用此路径直接刷新列表
+        dir_path = str(paths[0].parent) if paths else None
+        try:
+            # delete_to_recycle_bin 返回 (histories, sync_errors)：
+            # - SHFileOperation 失败时抛 FileOperationError（文件未删除，可 rollback）
+            # - 同步失败时返回 sync_errors（文件已删除，需 commit 保留历史）
+            histories, sync_errors = self._file_operation_service.delete_to_recycle_bin(paths)
+            self._commit()
+            self._refresh_tree()
+            self._refresh_content_list_after_file_op(dir_path)
+            ok_count = len(histories)
+            fail_count = n - ok_count
+            if sync_errors:
+                # 同步有错误但文件已删除：弹窗提示部分成功 + 错误明细
+                QMessageBox.information(
+                    self,
+                    ui.MENU_DELETE_CONFIRM_TITLE,
+                    ui.MENU_DELETE_PARTIAL.format(ok=ok_count, fail=fail_count),
+                )
+            elif fail_count == 0:
+                self.statusBar().showMessage(ui.MENU_DELETE_SUCCESS.format(n=ok_count), 3000)
+            else:
+                QMessageBox.information(
+                    self,
+                    ui.MENU_DELETE_CONFIRM_TITLE,
+                    ui.MENU_DELETE_PARTIAL.format(ok=ok_count, fail=fail_count),
+                )
+        except Exception as e:  # noqa: BLE001
+            self._handle_service_error(e, ui.MENU_OPERATION_FAILED.format(error=str(e)))
 
     # --- 装配面板（阶段 3 Task 4） ---
 

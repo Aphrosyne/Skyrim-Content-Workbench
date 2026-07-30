@@ -8,6 +8,40 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+### Stage 5 Task 3a：新建文件夹 + 重命名 + 删除（移至回收站）
+
+> 原 Task 3 拆分的第一部分，覆盖最基础的文件 CRUD。为 Task 6 undo 框架做铺垫。
+> 完成于 2026-07-30。schema_version 维持 7，无数据库迁移。
+
+**新增功能**
+
+- 新增 [windows_recycle_bin.py](src/infrastructure/windows_recycle_bin.py)：ctypes 封装 `SHFileOperationW` 实现 Windows 回收站操作（Q1: B，不引入 send2trash 第三方依赖）。批量路径一次性提交给 SHFileOperation，使用 `FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI` 标志。仅 Windows 平台可用，非 Windows 抛 `RecycleBinError`。
+- 扩展 [FileOperationService](src/infrastructure/file_operation_service.py)：
+  - `new_folder`：已存在的最小实现（Stage 3 Task 3），本次确认注入 helper 后自动同步 folder_cache
+  - 新增 `rename(old_path, new_name)`：真实重命名 + 同步 folder_cache + ContentUnit.path 前缀重写 + 写 operation_history
+  - 新增 `delete_to_recycle_bin(paths) -> (histories, sync_errors)`：批量移至回收站 + 同步 folder_cache（删除目录及子节点）+ 删除关联 ContentUnit + 写 operation_history
+- [ui_constants.py](src/app/ui_constants.py) 新增菜单项与对话框文案：MENU_NEW_FOLDER / MENU_RENAME / MENU_DELETE / 删除确认对话框 / 部分成功提示 / 操作成功状态栏文案
+- [main_window.py](src/app/main_window.py)：
+  - 新增 `_refresh_content_list_after_file_op(dir_path)`：文件操作后 `_refresh_tree` 会 reset tree 模型，浏览模式下 selectionModel 可能暂时失效，此方法用保存的 dir_path 直接刷新列表
+  - 新增 `_on_new_folder_for_entry` / `_on_new_folder_in_dir`：右键条目新建文件夹（在父目录下创建）+ 目录树右键菜单新增「新建文件夹」项（在选中节点目录下创建）
+  - 新增 `_on_rename_entry`：右键重命名 + 对话框 + 同名校验 + 调用 service.rename + 刷新
+  - 新增 `_on_delete_entries`：右键删除 + 确认对话框（单条/多条文案）+ 调用 service.delete_to_recycle_bin + 部分成功弹窗
+  - `_on_tree_context_menu` 新增「新建文件夹」项（注入 FileOperationService 时显示，加分隔符）
+
+**设计要点**
+
+- **rename 校验顺序**（测试中发现并修复）：必须先校验 `.` / `..` 再校验尾随空格/点（strip 之前），最后校验非法字符。否则 strip 后尾随空格已被去除，校验失效。
+- **delete_to_recycle_bin 返回 (histories, sync_errors) 元组**（Q1=A）：SHFileOperation 失败时抛 FileOperationError（文件未删除，可 rollback）；同步失败时返回 sync_errors（文件已删除，需 commit 保留历史）。调用方先 commit 保留历史，再展示同步错误。
+- **目录树右键菜单「新建文件夹」**：Stage 5 Task 3a 验收 A 部分发现缺失，修复后注入 FileOperationService 时显示，行为与中栏右键入口一致。
+
+**测试**
+
+- 新增 [test_windows_recycle_bin.py](tests/test_windows_recycle_bin.py)：单文件/目录/批量删除、非 Windows 平台异常路径跳过
+- 扩展 [test_file_operation_service.py](tests/test_file_operation_service.py)：rename（含校验、同名跳过、跨盘、中文路径、自动同步 folder_cache + ContentUnit.path）/ delete_to_recycle_bin（单条/批量/空列表/不存在跳过）
+- 新增 [test_main_window_file_ops_task3a.py](tests/test_main_window_file_ops_task3a.py)：菜单项显示规则、新建文件夹（中栏 + 目录树右键 + 取消 + 空名 + 重名 + 中文路径 + 刷新）、重命名（成功 + 取消 + 同名跳过 + 非法名称 + 刷新）、删除（单条 + 批量 + 取消 + ContentUnit 同步 + 整理模式）
+
+全量回归：1140 passed, 5 skipped, ruff check + format 全通过。
+
 ### Stage 5 Task 2 验收修复 2：排序最终方案 + UI 稳定性
 
 > 第二轮验收修复，解决排序下拉框随机失效、右栏跳动、列表无框选等遗留问题。

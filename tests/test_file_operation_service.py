@@ -40,10 +40,18 @@ def service(tmp_path: Path) -> tuple[FileOperationService, sqlite3.Connection]:
     conn = get_connection(db_path)
     conn.row_factory = sqlite3.Row
     repo = OperationHistoryRepository(conn)
+    # 批量操作（如 delete_to_recycle_bin）会多次调用 uuid_provider，
+    # 使用计数器确保每次返回唯一 ID，避免 UNIQUE 约束冲突。
+    counter = {"n": 0}
+
+    def fake_uuid() -> str:
+        counter["n"] += 1
+        return f"uuid-test-{counter['n']}"
+
     svc = FileOperationService(
         repo,
         now_provider=lambda: "2026-07-14T00:00:00Z",
-        uuid_provider=lambda: "uuid-test",
+        uuid_provider=fake_uuid,
     )
     yield svc, conn
     conn.close()
@@ -584,6 +592,592 @@ class TestMoveWithoutSync:
         dst = tmp_path / "dst.7z"
 
         svc.move(src, dst)
+        conn.commit()
+
+        # folder_cache 表为空（无 helper 注入，不写）
+        assert folder_cache_repo.list_all() == []
+
+        conn.close()
+
+
+# === Stage 5 Task 3a：rename ===
+
+
+class TestRename:
+    """rename：文件 / 目录 / 名称校验 / 冲突 / 历史写入 / 中文路径。"""
+
+    def test_rename_file(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        src = tmp_path / "old_name.txt"
+        src.write_bytes(b"data")
+
+        history = svc.rename(src, "new_name.txt")
+
+        assert not src.exists()
+        assert (tmp_path / "new_name.txt").is_file()
+        assert history.operation_type == "rename"
+        assert history.source_path == str(src)
+        assert history.target_path == str(tmp_path / "new_name.txt")
+        assert history.can_undo is True
+
+    def test_rename_directory(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        src = tmp_path / "old_dir"
+        src.mkdir()
+        (src / "inner.txt").write_text("data", encoding="utf-8")
+
+        svc.rename(src, "new_dir")
+
+        assert not src.exists()
+        assert (tmp_path / "new_dir").is_dir()
+        assert ((tmp_path / "new_dir") / "inner.txt").read_text(encoding="utf-8") == "data"
+
+    def test_rejects_missing_source(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        src = tmp_path / "nonexistent.txt"
+
+        with pytest.raises(SourceNotFoundError):
+            svc.rename(src, "new_name.txt")
+
+    def test_rejects_existing_target(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_bytes(b"data")
+        (tmp_path / "dst.txt").write_bytes(b"existing")
+
+        with pytest.raises(ConflictError):
+            svc.rename(src, "dst.txt")
+
+    def test_rejects_empty_name(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_bytes(b"data")
+
+        with pytest.raises(FileOperationError, match="新名称不能为空"):
+            svc.rename(src, "")
+
+    def test_rejects_whitespace_only_name(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_bytes(b"data")
+
+        with pytest.raises(FileOperationError, match="新名称不能为空"):
+            svc.rename(src, "   ")
+
+    def test_rejects_dot_name(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_bytes(b"data")
+
+        with pytest.raises(FileOperationError, match="新名称不能为"):
+            svc.rename(src, ".")
+
+    def test_rejects_double_dot_name(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_bytes(b"data")
+
+        with pytest.raises(FileOperationError, match="新名称不能为"):
+            svc.rename(src, "..")
+
+    def test_rejects_invalid_chars(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_bytes(b"data")
+
+        for c in '<>:"/\\|?*':
+            with pytest.raises(FileOperationError, match="非法字符"):
+                svc.rename(src, f"a{c}b")
+
+    def test_rejects_trailing_space(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_bytes(b"data")
+
+        with pytest.raises(FileOperationError, match="不能以空格或点结尾"):
+            svc.rename(src, "new_name ")
+
+    def test_rejects_trailing_dot(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        src = tmp_path / "src.txt"
+        src.write_bytes(b"data")
+
+        with pytest.raises(FileOperationError, match="不能以空格或点结尾"):
+            svc.rename(src, "new_name.")
+
+    def test_writes_operation_history(self, service, tmp_path: Path) -> None:
+        svc, conn = service
+        src = tmp_path / "old.txt"
+        src.write_bytes(b"data")
+
+        svc.rename(src, "new.txt")
+        conn.commit()
+
+        rows = conn.execute("SELECT * FROM operation_history").fetchall()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["operation_type"] == "rename"
+        assert row["source_path"] == str(src)
+        assert row["target_path"] == str(tmp_path / "new.txt")
+        assert row["can_undo"] == 1
+
+    def test_chinese_path(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        src = tmp_path / "旧名称.txt"
+        src.write_bytes(b"data")
+
+        history = svc.rename(src, "新名称.txt")
+
+        assert not src.exists()
+        assert (tmp_path / "新名称.txt").is_file()
+        assert "新名称" in history.target_path
+
+    def test_same_name_is_noop(self, service, tmp_path: Path) -> None:
+        """同名重命名：当前 handler 层会跳过，但 service 层应抛 ConflictError
+        （因为目标已存在 == 源）。
+
+        handler 层（_on_rename_entry）在调用 service 前会比较新旧名称相同则提前 return。
+        """
+        svc, _ = service
+        src = tmp_path / "same.txt"
+        src.write_bytes(b"data")
+
+        with pytest.raises(ConflictError):
+            svc.rename(src, "same.txt")
+
+
+# === Stage 5 Task 3a：rename 自动同步 ===
+
+
+class TestRenameAutoSync:
+    """rename 注入 helper + repo 后自动同步 folder_cache + ContentUnit.path。"""
+
+    def test_rename_directory_syncs_folder_cache(self, service_with_sync, tmp_path: Path) -> None:
+        """重命名目录：删除旧 folder_cache + 插入新 folder_cache + 更新父 mtime。"""
+        svc, conn, folder_cache_repo, _ = service_with_sync
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        src = parent / "OldName"
+        src.mkdir()
+
+        from domain.models import FolderCache
+
+        parent_fc = folder_cache_repo.create(
+            FolderCache(
+                id="fc-parent",
+                path=str(parent),
+                parent_id=None,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+        folder_cache_repo.create(
+            FolderCache(
+                id="fc-src",
+                path=str(src),
+                parent_id=parent_fc.id,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+
+        svc.rename(src, "NewName")
+        conn.commit()
+
+        # 旧 folder_cache 已删除
+        assert folder_cache_repo.get_by_path(str(src)) is None
+        # 新 folder_cache 已插入
+        new_fc = folder_cache_repo.get_by_path(str(parent / "NewName"))
+        assert new_fc is not None
+        assert new_fc.parent_id == parent_fc.id
+
+    def test_rename_directory_updates_content_unit_paths(
+        self, service_with_sync, tmp_path: Path
+    ) -> None:
+        """重命名目录时更新 ContentUnit.path（精确匹配 + 子路径重写）。"""
+        svc, conn, _, content_unit_repo = service_with_sync
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        src = parent / "OldMod"
+        src.mkdir()
+        (src / "sub.7z").write_bytes(b"data")
+
+        # 预置 ContentUnit
+        unit_folder = _seed_content_unit(content_unit_repo, "cu-folder", str(src))
+        unit_child = _seed_content_unit(content_unit_repo, "cu-child", str(src / "sub.7z"))
+
+        dst = parent / "NewMod"
+        svc.rename(src, "NewMod")
+        conn.commit()
+
+        # folder 的 path 已更新
+        updated_folder = content_unit_repo.get_by_id(unit_folder.id)
+        assert updated_folder is not None
+        assert make_path_key(updated_folder.path) == make_path_key(str(dst))
+
+        # child 的 path 已更新
+        updated_child = content_unit_repo.get_by_id(unit_child.id)
+        assert updated_child is not None
+        assert make_path_key(updated_child.path) == make_path_key(str(dst / "sub.7z"))
+
+    def test_rename_file_updates_parent_mtime(self, service_with_sync, tmp_path: Path) -> None:
+        """重命名文件：仅更新父目录 mtime（folder_cache 只记录目录）。"""
+        svc, conn, folder_cache_repo, _ = service_with_sync
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        src = parent / "old.txt"
+        src.write_bytes(b"data")
+
+        from domain.models import FolderCache
+
+        folder_cache_repo.create(
+            FolderCache(
+                id="fc-parent",
+                path=str(parent),
+                parent_id=None,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+
+        svc.rename(src, "new.txt")
+        conn.commit()
+
+        parent_after = folder_cache_repo.get_by_path(str(parent))
+        assert parent_after.last_scanned_mtime != 1000.0
+
+
+class TestRenameWithoutSync:
+    """未注入 helper/repo 时 rename 不同步（向后兼容）。"""
+
+    def test_rename_without_helper_no_sync(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        init_db(db_path)
+        conn = get_connection(db_path)
+        conn.row_factory = sqlite3.Row
+        svc = FileOperationService(
+            OperationHistoryRepository(conn),
+            now_provider=lambda: "2026-07-28T00:00:00Z",
+            uuid_provider=lambda: "uuid-no-sync",
+        )
+        folder_cache_repo = FolderCacheRepository(conn)
+
+        src = tmp_path / "old.txt"
+        src.write_bytes(b"data")
+
+        svc.rename(src, "new.txt")
+        conn.commit()
+
+        # folder_cache 表为空（无 helper 注入，不写）
+        assert folder_cache_repo.list_all() == []
+
+        conn.close()
+
+
+# === Stage 5 Task 3a：delete_to_recycle_bin ===
+
+
+@pytest.fixture
+def service_with_sync_delete(
+    tmp_path: Path,
+) -> tuple[FileOperationService, sqlite3.Connection, FolderCacheRepository, ContentUnitRepository]:
+    """构造注入了 helper + content_unit_repo 的 FileOperationService（用于 delete 测试）。"""
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    conn = get_connection(db_path)
+    conn.row_factory = sqlite3.Row
+    history_repo = OperationHistoryRepository(conn)
+    folder_cache_repo = FolderCacheRepository(conn)
+    content_unit_repo = ContentUnitRepository(conn)
+    helper = FolderCacheSyncHelper(
+        folder_cache_repo,
+        now_provider=lambda: "2026-07-28T00:00:00Z",
+        uuid_provider=lambda: "fc-sync-id",
+    )
+    svc = FileOperationService(
+        history_repo,
+        now_provider=lambda: "2026-07-28T00:00:00Z",
+        uuid_provider=lambda: "uuid-delete",
+        folder_cache_helper=helper,
+        content_unit_repo=content_unit_repo,
+    )
+    yield svc, conn, folder_cache_repo, content_unit_repo
+    conn.close()
+
+
+class TestDeleteToRecycleBin:
+    """delete_to_recycle_bin：基本删除 / 历史写入 / 空列表 / 同步。"""
+
+    def test_delete_single_file_returns_histories(self, service, tmp_path: Path) -> None:
+        """删除单个文件：返回 (histories, sync_errors)，histories 含 1 条 delete 记录。"""
+        svc, _ = service
+        f = tmp_path / "to_delete.txt"
+        f.write_bytes(b"data")
+
+        histories, sync_errors = svc.delete_to_recycle_bin([f])
+
+        assert not f.exists()
+        assert len(histories) == 1
+        assert histories[0].operation_type == "delete"
+        assert histories[0].source_path == str(f)
+        assert histories[0].target_path is None
+        assert histories[0].can_undo is False
+        assert sync_errors == []
+
+    def test_delete_multiple_paths(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        f1 = tmp_path / "f1.txt"
+        f1.write_bytes(b"1")
+        f2 = tmp_path / "f2.txt"
+        f2.write_bytes(b"2")
+        d = tmp_path / "dir"
+        d.mkdir()
+        (d / "inner.txt").write_text("data", encoding="utf-8")
+
+        histories, sync_errors = svc.delete_to_recycle_bin([f1, f2, d])
+
+        assert not f1.exists()
+        assert not f2.exists()
+        assert not d.exists()
+        assert len(histories) == 3
+        assert sync_errors == []
+
+    def test_delete_empty_list_returns_empty(self, service) -> None:
+        """空列表返回 ([], [])。"""
+        svc, _ = service
+        histories, sync_errors = svc.delete_to_recycle_bin([])
+
+        assert histories == []
+        assert sync_errors == []
+
+    def test_delete_skips_nonexistent_path(self, service, tmp_path: Path) -> None:
+        """不存在的路径被过滤，不报错。"""
+        svc, _ = service
+        nonexistent = tmp_path / "does_not_exist.txt"
+        # 同时包含一个存在的文件
+        existing = tmp_path / "exists.txt"
+        existing.write_bytes(b"data")
+
+        histories, sync_errors = svc.delete_to_recycle_bin([nonexistent, existing])
+
+        assert not existing.exists()
+        assert len(histories) == 1
+        assert histories[0].source_path == str(existing)
+        assert sync_errors == []
+
+    def test_delete_writes_operation_history(self, service, tmp_path: Path) -> None:
+        """删除后写 operation_history（type='delete', can_undo=False）。"""
+        svc, conn = service
+        f = tmp_path / "to_delete.txt"
+        f.write_bytes(b"data")
+
+        svc.delete_to_recycle_bin([f])
+        conn.commit()
+
+        rows = conn.execute("SELECT * FROM operation_history").fetchall()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["operation_type"] == "delete"
+        assert row["source_path"] == str(f)
+        assert row["target_path"] is None
+        assert row["can_undo"] == 0
+
+    def test_delete_chinese_path(self, service, tmp_path: Path) -> None:
+        svc, _ = service
+        f = tmp_path / "中文文件.txt"
+        f.write_bytes(b"data")
+
+        histories, _ = svc.delete_to_recycle_bin([f])
+
+        assert not f.exists()
+        assert len(histories) == 1
+        assert "中文文件" in histories[0].source_path
+
+
+class TestDeleteAutoSync:
+    """delete 注入 helper + repo 后自动同步 folder_cache + ContentUnit。"""
+
+    def test_delete_directory_syncs_folder_cache(
+        self, service_with_sync_delete, tmp_path: Path
+    ) -> None:
+        """删除目录：删除该节点及子节点的 folder_cache 记录。"""
+        svc, conn, folder_cache_repo, _ = service_with_sync_delete
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        target = parent / "ToDelete"
+        target.mkdir()
+        (target / "sub_dir").mkdir()
+        (target / "sub_dir" / "file.txt").write_text("data", encoding="utf-8")
+
+        from domain.models import FolderCache
+
+        folder_cache_repo.create(
+            FolderCache(
+                id="fc-parent",
+                path=str(parent),
+                parent_id=None,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+        folder_cache_repo.create(
+            FolderCache(
+                id="fc-target",
+                path=str(target),
+                parent_id="fc-parent",
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+        folder_cache_repo.create(
+            FolderCache(
+                id="fc-sub",
+                path=str(target / "sub_dir"),
+                parent_id="fc-target",
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+
+        svc.delete_to_recycle_bin([target])
+        conn.commit()
+
+        # 目录及子节点的 folder_cache 已删除
+        assert folder_cache_repo.get_by_path(str(target)) is None
+        assert folder_cache_repo.get_by_path(str(target / "sub_dir")) is None
+        # 父目录保留（仅更新 mtime）
+        assert folder_cache_repo.get_by_path(str(parent)) is not None
+
+    def test_delete_directory_removes_content_units(
+        self, service_with_sync_delete, tmp_path: Path
+    ) -> None:
+        """删除目录：删除路径前缀匹配的 ContentUnit 记录（含子文件）。"""
+        svc, conn, _, content_unit_repo = service_with_sync_delete
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        target = parent / "Mod"
+        target.mkdir()
+        (target / "sub.7z").write_bytes(b"data")
+
+        # 预置 ContentUnit
+        unit_folder = _seed_content_unit(content_unit_repo, "cu-folder", str(target))
+        unit_child = _seed_content_unit(content_unit_repo, "cu-child", str(target / "sub.7z"))
+        # 不在删除范围内的 ContentUnit（不应被删除）
+        unit_unrelated = _seed_content_unit(
+            content_unit_repo, "cu-other", str(parent / "Other.txt")
+        )
+
+        svc.delete_to_recycle_bin([target])
+        conn.commit()
+
+        # 关联的 ContentUnit 已删除
+        assert content_unit_repo.get_by_id(unit_folder.id) is None
+        assert content_unit_repo.get_by_id(unit_child.id) is None
+        # 无关的 ContentUnit 保留
+        assert content_unit_repo.get_by_id(unit_unrelated.id) is not None
+
+    def test_delete_file_updates_parent_mtime(
+        self, service_with_sync_delete, tmp_path: Path
+    ) -> None:
+        """删除文件：仅更新父目录 mtime（folder_cache 只记录目录）。"""
+        svc, conn, folder_cache_repo, _ = service_with_sync_delete
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        f = parent / "to_delete.txt"
+        f.write_bytes(b"data")
+
+        from domain.models import FolderCache
+
+        folder_cache_repo.create(
+            FolderCache(
+                id="fc-parent",
+                path=str(parent),
+                parent_id=None,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+
+        svc.delete_to_recycle_bin([f])
+        conn.commit()
+
+        parent_after = folder_cache_repo.get_by_path(str(parent))
+        assert parent_after.last_scanned_mtime != 1000.0
+
+    def test_delete_returns_sync_errors_on_failure(
+        self, service_with_sync_delete, tmp_path: Path
+    ) -> None:
+        """同步失败时返回 sync_errors（文件已删除，历史已写入）。"""
+        svc, conn, folder_cache_repo, _ = service_with_sync_delete
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        target = parent / "ToDelete"
+        target.mkdir()
+
+        from domain.models import FolderCache
+
+        folder_cache_repo.create(
+            FolderCache(
+                id="fc-parent",
+                path=str(parent),
+                parent_id=None,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+        folder_cache_repo.create(
+            FolderCache(
+                id="fc-target",
+                path=str(target),
+                parent_id="fc-parent",
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+
+        # 让 _sync_on_delete 抛异常：替换 _sync_on_delete 方法
+        original_sync = svc._sync_on_delete  # noqa: SLF001
+        call_count = {"n": 0}
+
+        def fake_sync(path):
+            call_count["n"] += 1
+            raise FileOperationError("模拟同步失败")
+
+        svc._sync_on_delete = fake_sync  # noqa: SLF001
+
+        try:
+            histories, sync_errors = svc.delete_to_recycle_bin([target])
+        finally:
+            svc._sync_on_delete = original_sync  # noqa: SLF001
+
+        # 文件已删除
+        assert not target.exists()
+        # 历史已写入（即使同步失败）
+        assert len(histories) == 1
+        # sync_errors 非空
+        assert len(sync_errors) == 1
+        assert "模拟同步失败" in sync_errors[0]
+
+
+class TestDeleteWithoutSync:
+    """未注入 helper/repo 时 delete 不同步（向后兼容）。"""
+
+    def test_delete_without_helper_no_sync(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        init_db(db_path)
+        conn = get_connection(db_path)
+        conn.row_factory = sqlite3.Row
+        svc = FileOperationService(
+            OperationHistoryRepository(conn),
+            now_provider=lambda: "2026-07-28T00:00:00Z",
+            uuid_provider=lambda: "uuid-no-sync",
+        )
+        folder_cache_repo = FolderCacheRepository(conn)
+
+        f = tmp_path / "to_delete.txt"
+        f.write_bytes(b"data")
+
+        svc.delete_to_recycle_bin([f])
         conn.commit()
 
         # folder_cache 表为空（无 helper 注入，不写）

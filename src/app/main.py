@@ -190,6 +190,7 @@ def main() -> int:
         rollback_callback=conn.rollback,
         tag_service=tag_service,
         thumbnail_coordinator=thumbnail_coordinator,
+        file_operation_service=file_operation_service,
     )
     window.show()
     exit_code = app.exec()
