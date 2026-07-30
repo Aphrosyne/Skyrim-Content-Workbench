@@ -593,21 +593,29 @@
 - [x] 撤销后文件回到操作前位置
 - [x] delete 操作在列表中标注「不可撤销」
 
-### Task 4：键盘快捷键
+### Task 4：键盘快捷键 ✅
 
-- `F2`：重命名（依赖 Task 3a）
-- `Delete`：删除（依赖 Task 3a）
-- `Ctrl+C / Ctrl+X / Ctrl+V`：复制/剪切/粘贴（依赖 Task 3b）
-- `Ctrl+Z`：撤销（依赖 Task 6）
-- `Ctrl+A`：全选
-- 快捷键仅在应用获得焦点时生效
+> 完成于 2026-07-30，版本 v0.37.0。schema_version 维持 8，无数据库迁移。
+>
+> Task 4 在 Task 3b 之前完成，因此 Ctrl+C/X/V 当前为静默占位（Q4: C），待 Task 3b 实现后接入真实剪贴板逻辑。其余快捷键（F2 / Delete / Ctrl+Z / Ctrl+A）已完整可用。
+
+- `F2`（中栏）：重命名选中条目（Q1: A 多选取第一个）
+- `F2`（目录树）：重命名选中目录树节点（用户补充需求：目录树也需要重命名快捷键）
+- `Delete`（中栏）：删除选中条目（移至回收站）
+- `Ctrl+Z`（窗口级）：撤销最近一条可撤销操作（Q2: A 二次确认；Q3: B 跳过 delete/已撤销/undo 记录）
+- `Ctrl+A`（中栏）：全选
+- `Ctrl+C / Ctrl+X / Ctrl+V`（中栏）：静默占位（Q4: C），Task 3b 接入真实逻辑
+- 快捷键上下文（Q5: A）：中栏 F2/Delete/Ctrl+A/Ctrl+C/X/V 为 WidgetShortcut，仅中栏聚焦生效；目录树 F2 为 WidgetShortcut，仅目录树聚焦生效；Ctrl+Z 为 WindowShortcut，任意位置聚焦均可触发
+- F2 / Delete / 目录树 F2 仅在注入 FileOperationService 时注册；Ctrl+Z 仅在注入 UndoService 时注册；Ctrl+A / Ctrl+C/X/V 始终注册
 
 **验收：**
-- [ ] F2 可重命名选中项
-- [ ] Delete 可删除选中项
-- [ ] Ctrl+C/X/V 可复制/剪切/粘贴
-- [ ] Ctrl+Z 可撤销最近操作
-- [ ] Ctrl+A 可全选列表内容
+- [x] F2 可重命名选中项（中栏 + 目录树）
+- [x] Delete 可删除选中项
+- [x] Ctrl+Z 可撤销最近操作（含二次确认 + 跳过 delete/已撤销）
+- [x] Ctrl+A 可全选列表内容
+- [x] Ctrl+C/X/V 占位不报错（待 Task 3b 实现）
+- [x] 快捷键上下文范围正确（中栏/目录树/窗口级）
+- [x] 未注入对应 Service 时快捷键不注册
 
 ### Task 3b：复制/剪切/粘贴 + 任意目录间移动
 

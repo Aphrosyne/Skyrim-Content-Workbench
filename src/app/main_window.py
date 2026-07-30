@@ -43,7 +43,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QPoint, QRect, QSettings, QSize, Qt, QThread
-from PySide6.QtGui import QFontMetrics
+from PySide6.QtGui import QFontMetrics, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -282,6 +282,8 @@ class MainWindow(QMainWindow):
         self._mode_manager.mode_changed.connect(self._on_mode_changed)
         self._refresh_root_list()
         self._refresh_tree()
+        # Stage 5 Task 4：注册键盘快捷键
+        self._setup_shortcuts()
 
         # Stage 4 Task 4：初始化缩略图调度器
         self._init_thumbnail_coordinator()
@@ -2348,6 +2350,217 @@ class MainWindow(QMainWindow):
             self._refresh_tree()
             self._refresh_content_list_for_current_mode()
             self.statusBar().showMessage("已撤销操作", 3000)
+
+    # === Stage 5 Task 4：键盘快捷键 ===
+
+    def _get_selected_entries(self) -> list[FileEntry]:
+        """获取中栏当前活动视图中选中的条目（列表视图或卡片视图）。
+
+        Stage 5 Task 4：供快捷键 handler 复用，避免重复实现选中逻辑。
+        """
+        active_view = (
+            self._card_view if self._current_view_index == VIEW_INDEX_CARD else self._content_view
+        )
+        active_model = (
+            self._card_list_model
+            if self._current_view_index == VIEW_INDEX_CARD
+            else self._content_list_model
+        )
+        sm = active_view.selectionModel()
+        if sm is None:
+            return []
+        entries: list[FileEntry] = []
+        for idx in sm.selectedRows():
+            entry = active_model.entry_at(idx.row())
+            if entry is not None:
+                entries.append(entry)
+        return entries
+
+    def _setup_shortcuts(self) -> None:
+        """注册键盘快捷键。
+
+        Q5=A：context=WidgetShortcut，仅在该控件聚焦时生效。
+        特例：目录树 F2 重命名（用户补充：目录树也需要重命名快捷键）。
+
+        快捷键列表：
+        - F2（中栏）：重命名选中条目（Q1=A：多选取第一个）
+        - F2（目录树）：重命名选中目录树节点
+        - Delete（中栏）：删除选中条目
+        - Ctrl+Z：撤销最近可撤销操作（Q2=A 二次确认；Q3=B 跳过不可撤销/已撤销）
+        - Ctrl+A（中栏）：全选
+        - Ctrl+C/X/V（中栏）：占位，Q4=C 静默忽略
+        """
+        # 中栏 Ctrl+A / Ctrl+C/X/V 始终注册（不依赖 FileOperationService）
+        self._shortcut_select_all = QShortcut(QKeySequence("Ctrl+A"), self._content_view)
+        self._shortcut_select_all.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self._shortcut_select_all.activated.connect(self._on_shortcut_select_all)
+
+        # Ctrl+C/X/V 占位（Q4=C 静默忽略，不提示）
+        self._shortcut_copy = QShortcut(QKeySequence("Ctrl+C"), self._content_view)
+        self._shortcut_copy.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self._shortcut_copy.activated.connect(lambda: None)
+
+        self._shortcut_cut = QShortcut(QKeySequence("Ctrl+X"), self._content_view)
+        self._shortcut_cut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self._shortcut_cut.activated.connect(lambda: None)
+
+        self._shortcut_paste = QShortcut(QKeySequence("Ctrl+V"), self._content_view)
+        self._shortcut_paste.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self._shortcut_paste.activated.connect(lambda: None)
+
+        # Ctrl+Z：窗口级（任意位置聚焦均可触发，因为撤销是全局操作）
+        # 仅在注入 UndoService 时注册
+        if self._undo_service is not None:
+            self._shortcut_undo = QShortcut(QKeySequence("Ctrl+Z"), self)
+            self._shortcut_undo.setContext(Qt.ShortcutContext.WindowShortcut)
+            self._shortcut_undo.activated.connect(self._on_shortcut_undo)
+
+        # F2 / Delete 依赖 FileOperationService（未注入时不注册，避免误操作）
+        if self._file_operation_service is not None:
+            # 中栏 F2 重命名（Q1=A：多选取第一个）
+            self._shortcut_rename = QShortcut(QKeySequence("F2"), self._content_view)
+            self._shortcut_rename.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._shortcut_rename.activated.connect(self._on_shortcut_rename_content)
+
+            # 中栏 Delete 删除
+            self._shortcut_delete = QShortcut(QKeySequence("Delete"), self._content_view)
+            self._shortcut_delete.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._shortcut_delete.activated.connect(self._on_shortcut_delete)
+
+            # 目录树 F2 重命名（用户补充：目录树也需要重命名快捷键）
+            self._shortcut_rename_tree = QShortcut(QKeySequence("F2"), self._tree_view)
+            self._shortcut_rename_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._shortcut_rename_tree.activated.connect(self._on_shortcut_rename_tree)
+
+    def _on_shortcut_rename_content(self) -> None:
+        """F2：重命名中栏选中条目（Q1=A：多选取第一个）。"""
+        if self._file_operation_service is None:
+            return
+        entries = self._get_selected_entries()
+        if not entries:
+            self.statusBar().showMessage(ui.SHORTCUT_NO_SELECTION, 2000)
+            return
+        # Q1=A：多选取第一个选中条目
+        self._on_rename_entry(entries[0])
+
+    def _on_shortcut_rename_tree(self) -> None:
+        """F2：重命名目录树选中节点（用户补充：目录树也需要重命名快捷键）。
+
+        复用 _on_rename_entry 逻辑，从目录树节点构造 FileEntry。
+        """
+        if self._file_operation_service is None:
+            return
+        # 获取目录树选中节点
+        sm = self._tree_view.selectionModel()
+        if sm is None:
+            return
+        indexes = sm.selectedIndexes()
+        if not indexes:
+            self.statusBar().showMessage(ui.SHORTCUT_NO_SELECTION, 2000)
+            return
+        node = self._tree_model.node_at(indexes[0])
+        if node is None:
+            return
+        # 构造 FileEntry 并复用 _on_rename_entry
+        from domain.models import FileEntry  # noqa: PLC0415
+
+        entry = FileEntry(
+            path=node.real_path,
+            name=Path(node.real_path).name,
+            is_dir=True,
+            size=0,
+            modified_at="1970-01-01T00:00:00Z",
+            content_unit=None,
+        )
+        self._on_rename_entry(entry)
+
+    def _on_shortcut_delete(self) -> None:
+        """Delete：删除中栏选中条目。"""
+        if self._file_operation_service is None:
+            return
+        entries = self._get_selected_entries()
+        if not entries:
+            self.statusBar().showMessage(ui.SHORTCUT_NO_SELECTION, 2000)
+            return
+        self._on_delete_entries(entries)
+
+    def _on_shortcut_select_all(self) -> None:
+        """Ctrl+A：全选中栏内容。"""
+        self._content_view.selectAll()
+
+    def _on_shortcut_undo(self) -> None:
+        """Ctrl+Z：撤销最近一条可撤销操作。
+
+        Q2=A：二次确认弹窗。
+        Q3=B：跳过 delete 和已撤销的记录，取第一条可撤销且未撤销的。
+        """
+        if self._undo_service is None:
+            return
+
+        # Q3=B：取 list_recent 中第一条 can_undo=True 且 undone_at IS NULL 的记录
+        try:
+            histories = self._undo_service.list_recent(limit=100)
+        except Exception as e:  # noqa: BLE001
+            self.statusBar().showMessage(ui.SHORTCUT_UNDO_FAILED.format(error=str(e)), 3000)
+            return
+
+        target = None
+        for h in histories:
+            if h.can_undo and h.undone_at is None and h.operation_type != "undo":
+                target = h
+                break
+
+        if target is None:
+            self.statusBar().showMessage(ui.SHORTCUT_NO_UNDOABLE, 2000)
+            return
+
+        # Q2=A：二次确认弹窗
+        from app.operation_history_dialog import _format_history_description  # noqa: PLC0415
+
+        desc = _format_history_description(target)
+        reply = QMessageBox.question(
+            self,
+            ui.SHORTCUT_UNDO_CONFIRM_TITLE,
+            ui.SHORTCUT_UNDO_CONFIRM_TEXT.format(desc=desc),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # 执行撤销
+        from application.errors import (  # noqa: PLC0415
+            UndoAlreadyUndoneError,
+            UndoNotAllowedError,
+            UndoSafetyError,
+        )
+
+        try:
+            self._undo_service.undo(target)
+            self._commit()
+            self._refresh_tree()
+            self._refresh_content_list_for_current_mode()
+            self.statusBar().showMessage(ui.SHORTCUT_UNDO_SUCCESS.format(desc=desc), 3000)
+        except UndoNotAllowedError:
+            QMessageBox.information(
+                self,
+                ui.SHORTCUT_UNDO_CONFIRM_TITLE,
+                ui.SHORTCUT_UNDO_NOT_ALLOWED,
+            )
+        except UndoAlreadyUndoneError:
+            self.statusBar().showMessage(ui.SHORTCUT_NO_UNDOABLE, 2000)
+        except UndoSafetyError as e:
+            QMessageBox.warning(
+                self,
+                ui.SHORTCUT_UNDO_CONFIRM_TITLE,
+                ui.SHORTCUT_UNDO_SAFETY_FAILED.format(reason=e.reason),
+            )
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(
+                self,
+                ui.SHORTCUT_UNDO_CONFIRM_TITLE,
+                ui.SHORTCUT_UNDO_FAILED.format(error=str(e)),
+            )
 
     def _update_metadata(self, unit: ContentUnit) -> None:
         """更新元数据面板。

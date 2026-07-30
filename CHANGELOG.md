@@ -10,6 +10,57 @@
 
 ---
 
+## [0.37.0] - 2026-07-30
+
+Stage 5 Task 4：键盘快捷键
+
+为 Task 3a 已实现的文件操作（new_folder / rename / delete）和 Task 6 的 undo 框架补齐键盘入口，提升高频操作效率。schema_version 维持 8，无数据库迁移。
+
+> Ctrl+C / Ctrl+X / Ctrl+V 当前为静默占位（Q4: C），真实剪贴板逻辑在 Task 3b 接入。
+
+**新增功能**
+
+- [MainWindow](src/app/main_window.py) 新增 `_setup_shortcuts` 方法注册快捷键：
+  - **F2（中栏）**：重命名选中条目，Q1=A 多选取第一个；WidgetShortcut 上下文，仅中栏聚焦生效
+  - **F2（目录树）**：重命名选中目录树节点（用户补充需求：目录树也需要重命名快捷键，其他快捷键暂不在目录树生效防止误操作）；WidgetShortcut 上下文
+  - **Delete（中栏）**：删除选中条目（移至回收站）；WidgetShortcut 上下文
+  - **Ctrl+Z（窗口级）**：撤销最近一条可撤销操作；WindowShortcut 上下文，任意位置聚焦均可触发
+  - **Ctrl+A（中栏）**：全选；WidgetShortcut 上下文
+  - **Ctrl+C / Ctrl+X / Ctrl+V（中栏）**：静默占位（Q4=C），Task 3b 接入真实逻辑；WidgetShortcut 上下文
+- 新增处理函数：
+  - `_on_shortcut_rename_content`：F2 中栏重命名，多选取第一个
+  - `_on_shortcut_rename_tree`：F2 目录树重命名，从目录树节点构造 FileEntry 复用 `_on_rename_entry`
+  - `_on_shortcut_delete`：Delete 删除，复用 `_on_delete_entries`
+  - `_on_shortcut_select_all`：Ctrl+A 全选
+  - `_on_shortcut_undo`：Ctrl+Z 撤销，Q2=A 二次确认弹窗；Q3=B 跳过 delete/undo/已撤销记录，取第一条可撤销的
+- 快捷键注册条件（避免误操作）：
+  - F2 / Delete / 目录树 F2 仅在注入 FileOperationService 时注册
+  - Ctrl+Z 仅在注入 UndoService 时注册
+  - Ctrl+A / Ctrl+C/X/V 始终注册
+- [ui_constants.py](src/app/ui_constants.py) 新增快捷键文案：SHORTCUT_NO_SELECTION / SHORTCUT_NO_UNDOABLE / SHORTCUT_UNDO_SUCCESS / SHORTCUT_UNDO_FAILED / SHORTCUT_UNDO_SAFETY_FAILED / SHORTCUT_UNDO_NOT_ALLOWED / SHORTCUT_UNDO_CONFIRM_TITLE / SHORTCUT_UNDO_CONFIRM_TEXT
+
+**设计要点**
+
+- **Q5=A WidgetShortcut 上下文**：中栏快捷键仅在中栏聚焦时触发，目录树快捷键仅在目录树聚焦时触发，避免误操作；Ctrl+Z 例外使用 WindowShortcut，因为撤销是全局操作
+- **Q3=B 跳过 delete/已撤销/undo 记录**：Ctrl+Z 遍历 `list_recent(100)` 取第一条 `can_undo=True and undone_at IS NULL and operation_type != 'undo'` 的记录，避免撤销 delete（实际撤销由回收站提供）和无限循环
+- **Q2=A 二次确认**：执行撤销前弹出 `QMessageBox.question` 显示操作描述，用户确认才执行
+- **目录树 F2 复用 `_on_rename_entry`**：构造 FileEntry（is_dir=True, modified_at 占位为 1970-01-01T00:00:00Z），与中栏 F2 走同一逻辑链路
+- **未注入对应 Service 时快捷键不注册**：测试中显式断言未注入 FileOperationService 时 `_shortcut_rename` / `_shortcut_rename_tree` / `_shortcut_delete` 不存在；未注入 UndoService 时 `_shortcut_undo` 不存在
+
+**测试**
+
+- 新增 [test_main_window_shortcuts.py](tests/test_main_window_shortcuts.py) 18 个用例：
+  - F2 中栏重命名（单选 / 多选取第一个 / 无选中状态栏提示）
+  - F2 目录树重命名（成功 / 无选中状态栏提示）
+  - Delete 删除（单选 / 无选中状态栏提示）
+  - Ctrl+Z 撤销（有可撤销 + 二次确认 / 无可撤销状态栏提示 / 跳过 delete 记录 / 二次确认取消）
+  - Ctrl+A 全选
+  - Ctrl+C/X/V 占位验证（快捷键已注册）
+  - 快捷键注册条件验证（注入 / 未注入 FileOperationService / UndoService）
+- 全量回归：1183 passed, 5 skipped, ruff check + format 全通过
+
+---
+
 ## [0.36.0] - 2026-07-30
 
 Stage 5 Task 6：操作历史与撤销框架

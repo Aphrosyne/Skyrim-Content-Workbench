@@ -138,6 +138,18 @@ UNDO_FAILED = "撤销失败：{error}"
 UNDO_SAFETY_FAILED = "无法撤销：{reason}"
 UNDO_ALREADY_UNDONE = "该操作已被撤销，不可重复撤销"
 
+# === Stage 5 Task 4：键盘快捷键 ===
+SHORTCUT_NO_SELECTION = "未选中任何条目"
+SHORTCUT_NO_UNDOABLE = "无可撤销操作"
+SHORTCUT_UNDO_SUCCESS = "已撤销：{desc}"
+SHORTCUT_UNDO_FAILED = "撤销失败：{error}"
+SHORTCUT_UNDO_SAFETY_FAILED = "无法撤销：{reason}"
+SHORTCUT_UNDO_NOT_ALLOWED = "该操作不可撤销"
+SHORTCUT_UNDO_CONFIRM_TITLE = "确认撤销"
+SHORTCUT_UNDO_CONFIRM_TEXT = "确定要撤销以下操作？\n\n{desc}\n\n此操作将还原文件到操作前的状态。"
+# Q4=C：Ctrl+C/X/V 静默忽略，不提示
+# （无文案，handler 直接 return）
+
 # 创建 Mod 组对话框
 CREATE_MOD_GROUP_DIALOG_TITLE = "创建 Mod 组"
 CREATE_MOD_GROUP_DIALOG_LABEL = "请选择或输入 Mod 组名称："
