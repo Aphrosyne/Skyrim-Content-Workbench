@@ -46,7 +46,7 @@ class TestCreateAndGet:
         fetched = repo.get_by_id("u-1")
         assert fetched is not None
         assert fetched.path == "/mods/armor"
-        assert fetched.status == "unorganized"
+        assert fetched.status == "organized"
 
     def test_get_by_id_not_exist(self, repo: ContentUnitRepository) -> None:
         assert repo.get_by_id("nonexistent") is None

@@ -31,7 +31,7 @@ class TestContentUnit:
         assert unit.id == "u-1"
         assert unit.path == "/mods/armor"
         assert unit.content_type == "mod"
-        assert unit.status == "unorganized"
+        assert unit.status == "organized"
         assert unit.title is None
 
     def test_create_with_all_fields(self) -> None:

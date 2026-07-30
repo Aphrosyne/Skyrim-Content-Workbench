@@ -68,9 +68,10 @@ COL_TYPE_FILE = "文件"
 STAGING_LIST_NO_STAGING_SELECTED = "整理模式：请在目录树中选中一个暂存区 [S] 节点。"
 STAGING_LIST_PATH_INVALID = "暂存区路径不存在或为空：{path}"
 
-# 文件列表项标记（roadmap Task 4 2026-07-13 设计修正）
-CONTENT_UNIT_MARKER_ORGANIZED = " [内容单元 ✓]"
-CONTENT_UNIT_MARKER_UNORGANIZED = " [内容单元]"
+# 文件列表项内容单元标记
+# Stage 5 Task 7 收尾：status 简化为两态（organized / unmarked），
+# unmarked 不显示标记，故仅需一个统一标记。
+CONTENT_UNIT_MARKER = " [内容单元]"
 
 # 右键菜单
 CONTEXT_MENU_COPY_PATH = "复制路径"
@@ -90,6 +91,7 @@ MENU_QUICK_SET_COVER_ALREADY_SET = "已设置封面，未覆盖"
 MENU_QUICK_SET_COVER_OK = "封面已设置"
 MENU_OPEN_IN_EXPLORER = "在资源管理器中打开"
 MENU_OPEN_IN_EXPLORER_FAILED = "无法打开资源管理器"
+MENU_COLLAPSE_ALL = "折叠全部"
 
 # Stage 5 Task 3a：文件操作菜单项
 MENU_NEW_FOLDER = "新建文件夹"
@@ -263,11 +265,8 @@ METADATA_TITLE_LABEL = "标题"
 METADATA_PATH_LABEL = "路径"
 METADATA_TYPE_LABEL = "类型"
 METADATA_SOURCE_URL_LABEL = "来源 URL"
-METADATA_STATUS_LABEL = "整理状态"
 METADATA_NOTES_LABEL = "备注"
 METADATA_CREATED_AT_LABEL = "创建时间"
-METADATA_STATUS_UNORGANIZED = "未整理"
-METADATA_STATUS_ORGANIZED = "已整理"
 METADATA_NOTES_EMPTY = "（无）"
 METADATA_SOURCE_URL_EMPTY = "（无）"
 
@@ -468,8 +467,9 @@ COVER_PREVIEW_DEFAULT_WIDTH = 256  # 初始宽度（resize 后跟随右栏）
 COVER_PREVIEW_MAX_HEIGHT = 512  # 最大高度（避免超长图占据整个右栏）
 COVER_PREVIEW_PLACEHOLDER_HEIGHT = 64  # 无图时占位高度（显示边框）
 
-# CardListModel 卡片名称 ToolTip 中内容单元状态文本（Stage 5 Task 1，Q6:B）
-CARD_TOOLTIP_CONTENT_UNIT_STATUS = "内容单元状态：{status}"
+# CardListModel 卡片名称 ToolTip 中内容单元标记文本
+# Stage 5 Task 7 收尾：status 仅 organized/unmarked 两态，unmarked 不显示标记。
+CARD_TOOLTIP_CONTENT_UNIT = "内容单元"
 CARD_TOOLTIP_SEPARATOR = " | "
 
 # Stage 5 Task 2：列头方向指示符号（Q1=A 文本方案）
@@ -497,3 +497,19 @@ CARD_GRID_PADDING_H = 24  # 文本左右内边距合计
 CARD_GRID_PADDING_V = 32  # 文本区域高度 + 上下内边距
 # 文本 elide 宽度 = icon_size - 文本左右 padding
 CARD_TEXT_PADDING_H = 8  # 文本两侧 padding 合计
+
+# Stage 5 Task 7：全局搜索
+SEARCH_BOX_PLACEHOLDER = "搜索标题、标签、备注…（回车搜索）"
+SEARCH_DIALOG_TITLE = "搜索结果"
+SEARCH_DIALOG_TITLE_WITH_QUERY = "搜索「{query}」结果（{count} 项）"
+SEARCH_DIALOG_EMPTY = "未找到匹配的内容单元"
+SEARCH_DIALOG_ERROR = "搜索失败：{error}"
+SEARCH_COL_TITLE = "标题"
+SEARCH_COL_PATH = "路径"
+SEARCH_COL_MATCHED_FIELD = "匹配字段"
+SEARCH_COL_TAGS = "标签"
+SEARCH_MATCHED_FIELD_TITLE = "标题"
+SEARCH_MATCHED_FIELD_TAG = "标签"
+SEARCH_MATCHED_FIELD_NOTES = "备注"
+SEARCH_JUMP_TOOLTIP = "双击跳转到所在目录"
+SEARCH_ORGANIZE_MODE_NO_JUMP = "整理模式下不跳转，请切换浏览模式后双击"

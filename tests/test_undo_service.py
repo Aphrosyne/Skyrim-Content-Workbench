@@ -207,7 +207,7 @@ class TestUndoRename:
             path=str(archive),
             title="mod",
             content_type="mod",
-            status="unorganized",
+            status="organized",
             created_at="2026-07-30T00:00:00Z",
             updated_at="2026-07-30T00:00:00Z",
         )
@@ -304,7 +304,7 @@ class TestUndoMove:
             path=str(archive),
             title="mod",
             content_type="mod",
-            status="unorganized",
+            status="organized",
             created_at="2026-07-30T00:00:00Z",
             updated_at="2026-07-30T00:00:00Z",
         )

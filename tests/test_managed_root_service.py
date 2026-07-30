@@ -309,7 +309,7 @@ def test_remove_root_does_not_clean_scan_records(db_connection, tmp_path: Path) 
     db_connection.execute(
         "INSERT INTO content_unit (id, path, title, content_type, status, "
         "created_at, updated_at) VALUES "
-        "('cu-1', ?, 'Mods', 'mod', 'unorganized', '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
+        "('cu-1', ?, 'Mods', 'mod', 'organized', '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
         (str(target),),
     )
     db_connection.execute(

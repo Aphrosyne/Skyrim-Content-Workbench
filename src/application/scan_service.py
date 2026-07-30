@@ -262,7 +262,7 @@ class ScanService:
                 path=archive_path,
                 title=Path(archive_path).name,
                 content_type="mod",
-                status="unorganized",
+                status="organized",
                 created_at=now,
                 updated_at=now,
             )

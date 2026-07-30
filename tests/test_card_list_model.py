@@ -113,7 +113,7 @@ def test_display_role_returns_name_without_marker(file_list_model_with_entries) 
 
 
 def test_tooltip_role_includes_path_and_status(file_list_model_with_entries) -> None:
-    """ToolTipRole 含路径 + 内容单元状态（Q6:B）。"""
+    """ToolTipRole 含路径 + 内容单元标记（Stage 5 Task 7 收尾：仅显示固定文案）。"""
     source, entries = file_list_model_with_entries
     card = CardListModel()
     card.set_source(source)
@@ -122,11 +122,11 @@ def test_tooltip_role_includes_path_and_status(file_list_model_with_entries) -> 
     idx = card.index(armor_row, 0)
     tooltip = card.data(idx, Qt.ToolTipRole)
     assert "armor" in tooltip
-    assert "内容单元状态" in tooltip  # Q6:B：含状态
+    assert "内容单元" in tooltip  # Stage 5 Task 7：统一显示"内容单元"标记
 
 
 def test_tooltip_role_for_non_content_unit(file_list_model_with_entries) -> None:
-    """非内容单元 ToolTip 只含路径，不含状态行。"""
+    """非内容单元 ToolTip 只含路径，不含内容单元标记。"""
     source, entries = file_list_model_with_entries
     card = CardListModel()
     card.set_source(source)
@@ -134,7 +134,7 @@ def test_tooltip_role_for_non_content_unit(file_list_model_with_entries) -> None
     idx = card.index(readme_row, 0)
     tooltip = card.data(idx, Qt.ToolTipRole)
     assert "readme.txt" in tooltip
-    assert "内容单元状态" not in tooltip
+    assert "内容单元" not in tooltip
 
 
 def test_user_role_returns_file_entry(file_list_model_with_entries) -> None:

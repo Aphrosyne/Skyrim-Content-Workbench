@@ -541,6 +541,14 @@
 - **推荐修复方案**: Stage 5 或后续迭代中实现，或从 spec 中移除。
 - **建议修复阶段**: **需用户决策后确定**（D7: C 登记为 TD）。
 
+### TD-L22: ContentUnit.status 字段可进一步重构为布尔字段 ✅ 已部分清理（Stage 5 Task 7）
+
+- **位置**: [models.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/domain/models.py) `ContentUnit.status`
+- **问题**: Stage 5 Task 7 收尾清理后，status 仅剩两态（`organized` / `unmarked`），语义等价于布尔 `is_marked`。使用字符串字段略显冗余，且 schema DEFAULT 仍为旧值 `unorganized`（SQLite 不便修改 DEFAULT，由应用层 ContentUnit 默认值接管）。
+- **现状处理**：已废弃 `unorganized` / `organized`（"已整理"）/ `missing` 三个取值，保留 `organized` / `unmarked` 两态。`unmarked` 承载核心业务逻辑（取消标记后阻止扫描器重建），不可删除。
+- **未来方向**：若需进一步简化，可将 status 重构为 `is_marked: bool` 并迁移 schema。属于破坏性重构，超出 Stage 5 冻结范围，留待日后评估。
+- **建议修复阶段**: 日后（当前两态已满足需求，无紧迫性）。
+
 ---
 
 ## 处理优先级建议

@@ -25,6 +25,7 @@ from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from application.mod_group_service import ModGroupService
 from application.quick_insert_service import QuickInsertService
+from application.search_service import SearchService
 from application.staging_service import StagingService
 from application.tag_service import TagService
 from application.thumbnail_service import ThumbnailService
@@ -168,6 +169,11 @@ def main() -> int:
     # Stage 5 Task 3b：应用内剪贴板服务（Q3=A 不与系统剪贴板混用）
     clipboard_service = ClipboardService()
 
+    # Stage 5 Task 7：全局搜索服务
+    from infrastructure.repositories.search import SearchRepository  # noqa: PLC0415
+
+    search_service = SearchService(SearchRepository(conn))
+
     # 加载预置标签库（D1-D4：仅当 tag_category 表为空时加载）
     # 加载失败不阻塞应用启动（service 内部捕获并记录 ERROR 日志）
     if _DEFAULT_TAGS_JSON.is_file():
@@ -208,6 +214,7 @@ def main() -> int:
         file_operation_service=file_operation_service,
         undo_service=undo_service,
         clipboard_service=clipboard_service,
+        search_service=search_service,
     )
     window.show()
     exit_code = app.exec()

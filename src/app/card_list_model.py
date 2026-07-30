@@ -37,14 +37,14 @@ logger = logging.getLogger(__name__)
 
 
 def _build_tooltip(entry: FileEntry) -> str:
-    """构造卡片 ToolTip：路径 + 内容单元状态（Q6:B）。
+    """构造卡片 ToolTip：路径 + 内容单元标记。
 
-    卡片空间有限，名称不显示 [内容单元] 标记，完整信息通过 ToolTip 承载。
+    Stage 5 Task 7 收尾：status 简化为两态（organized / unmarked），
+    unmarked 视为无内容单元（不显示标记），故仅显示固定"内容单元"文案。
     """
     parts: list[str] = [entry.path]
     if entry.content_unit is not None:
-        status_text = ui.CARD_TOOLTIP_CONTENT_UNIT_STATUS.format(status=entry.content_unit.status)
-        parts.append(status_text)
+        parts.append(ui.CARD_TOOLTIP_CONTENT_UNIT)
     return ui.CARD_TOOLTIP_SEPARATOR.join(parts)
 
 

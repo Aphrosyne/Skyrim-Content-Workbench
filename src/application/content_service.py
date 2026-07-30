@@ -152,7 +152,7 @@ class ContentService:
         path: Path,
         title: str | None = None,
         content_type: str = "mod",
-        status: str = "unorganized",
+        status: str = "organized",
     ) -> ContentUnit:
         """创建新 ContentUnit。
 
@@ -160,7 +160,7 @@ class ContentService:
             path: 内容单元对应的真实路径（文件或文件夹）。
             title: 标题，默认 None（显示时回退到路径名）。
             content_type: 类型，默认 "mod"。
-            status: 状态，默认 "unorganized"。
+            status: 状态，默认 "organized"。
 
         Returns:
             新创建的 ContentUnit。
@@ -188,7 +188,7 @@ class ContentService:
 
         行为：
         - 若 path 已是 ContentUnit 且 status != "unmarked"：返回现有 unit（不重复创建）。
-        - 若 path 已是 ContentUnit 且 status == "unmarked"：恢复为 "unorganized"（重新标记）。
+        - 若 path 已是 ContentUnit 且 status == "unmarked"：恢复为 "organized"（重新标记）。
         - 若 path 是文件夹：先 list_by_path_prefix_normalized 查询子项 ContentUnit
           （不含自身），逐个 delete 非 "unmarked" 子项（ContentUnitRepository.delete
           已级联清理 content_unit_tag）；"unmarked" 子项保留（用户显式取消标记的偏好
@@ -268,8 +268,8 @@ class ContentService:
 
         # 创建新记录或恢复 unmarked 记录
         if existing is not None:
-            # existing.status == "unmarked" → 恢复为 unorganized
-            updated = replace(existing, status="unorganized", updated_at=self._now())
+            # existing.status == "unmarked" → 恢复为 organized
+            updated = replace(existing, status="organized", updated_at=self._now())
             result = self._repo.update(updated)
         else:
             # 默认 title=path.name（文件名或文件夹名），避免元数据面板显示"（无标题）"
@@ -331,7 +331,7 @@ class ContentService:
         重复创建该路径的内容单元（roadmap：扫描候选的纠错能力）。**不删除真实文件**。
 
         UI 层将 "unmarked" 状态视为无内容单元（不显示标记、不响应双击）。
-        若用户再次 mark_as_content_unit，status 恢复为 "unorganized"。
+        若用户再次 mark_as_content_unit，status 恢复为 "organized"。
 
         Args:
             unit_id: 待取消的 ContentUnit ID。

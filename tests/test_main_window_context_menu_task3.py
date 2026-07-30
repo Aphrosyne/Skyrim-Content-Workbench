@@ -291,7 +291,7 @@ def test_create_mod_group_full_flow(qapp, main_window_env) -> None:
     unit = window._content_service.get_by_path(str(target_folder))  # noqa: SLF001
     assert unit is not None
     assert unit.title == "BDOR Black Knight"
-    assert unit.status == "unorganized"
+    assert unit.status == "organized"
     # operation_history 写入 2 条
     rows = conn.execute("SELECT * FROM operation_history").fetchall()
     assert len(rows) == 2

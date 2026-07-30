@@ -49,7 +49,7 @@ def _make_unit(
     path: str,
     title: str | None = None,
     created_at: str = "2026-07-12T00:00:00Z",
-    status: str = "unorganized",
+    status: str = "organized",
 ) -> ContentUnit:
     return ContentUnit(
         id=unit_id,
@@ -660,15 +660,15 @@ class TestCreateContentUnit:
         assert unit.path == str(path)
         assert unit.title is None
         assert unit.content_type == "mod"
-        assert unit.status == "unorganized"
+        assert unit.status == "organized"
         assert unit.created_at == "2026-07-14T00:00:00Z"
         # DB 中可查
         fetched = svc._repo.get_by_id("uuid-create-1")  # noqa: SLF001
         assert fetched is not None
         assert fetched.path == str(path)
 
-    def test_default_status_unorganized(self, db_connection, tmp_path: Path) -> None:
-        """默认 status=unorganized。"""
+    def test_default_status_organized(self, db_connection, tmp_path: Path) -> None:
+        """默认 status=organized。"""
         from application.content_service import ContentService
         from infrastructure.repositories.content_unit import ContentUnitRepository
 
@@ -678,7 +678,7 @@ class TestCreateContentUnit:
 
         unit = svc.create_content_unit(path)
 
-        assert unit.status == "unorganized"
+        assert unit.status == "organized"
 
     def test_duplicate_path_raises(self, db_connection, tmp_path: Path) -> None:
         """path 唯一约束：重复创建抛 ConstraintViolationError。"""
@@ -1189,7 +1189,7 @@ class TestListByPathPrefixNormalized:
                 path=posix_child_path,
                 title="child",
                 content_type="mod",
-                status="unorganized",
+                status="organized",
                 created_at="2026-07-14T00:00:00Z",
                 updated_at="2026-07-14T00:00:00Z",
             )
@@ -1387,7 +1387,7 @@ class TestUpdateMetadataCoverPath:
                 id="u-m4",
                 path=str(unit_dir),
                 cover_path="cover_old.jpg",
-                status="unorganized",
+                status="organized",
                 created_at="2026-07-01T00:00:00Z",
                 updated_at="2026-07-01T00:00:00Z",
             )
@@ -1449,7 +1449,7 @@ class TestUpdateMetadataCoverPath:
             ContentUnit(
                 id="u-m4-none",
                 path=str(unit_dir),
-                status="unorganized",
+                status="organized",
                 created_at="2026-07-01T00:00:00Z",
                 updated_at="2026-07-01T00:00:00Z",
             )
@@ -1497,7 +1497,7 @@ class TestUpdateMetadataCoverPath:
                 id="u-m4-nochange",
                 path=str(unit_dir),
                 cover_path="cover.jpg",
-                status="unorganized",
+                status="organized",
                 created_at="2026-07-01T00:00:00Z",
                 updated_at="2026-07-01T00:00:00Z",
             )

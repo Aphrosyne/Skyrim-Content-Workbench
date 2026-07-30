@@ -10,6 +10,59 @@
 
 ---
 
+## [0.40.0] - 2026-07-30
+
+Stage 5 Task 7：全局搜索 + ContentUnit.status 简化
+
+完成全局搜索功能（Q2=B 仅搜索 organized 状态），并借此机会清理 ContentUnit.status 字段：将从未被生产代码写入的 `organized`（"已整理"语义）和 `missing` 取值废弃，将原 `unorganized`（"已标记"语义）重命名为更直观的 `organized`，最终 status 仅保留两态。schema_version v9 → v10 迁移。
+
+**新增功能**
+
+- 新增 [SearchService](src/application/search_service.py) / [SearchRepository](src/infrastructure/repositories/search.py)：跨表 LIKE 查询（content_unit.title + tag.name + content_unit.notes），支持中文 UTF-8，Q7=B matched_field 优先级排序（title > tag > notes）
+- 新增 [SearchDialog](src/app/search_dialog.py)：搜索结果列表对话框，双击跳转到对应内容单元所在目录并选中
+  - 整理模式下双击不跳转，仅在状态栏静默提示 3 秒（避免打断整理流程）
+- [MainWindow](src/app/main_window.py) 集成搜索入口：
+  - 顶部工具栏搜索框（固定宽度 360px，避免输入内容导致宽度变化）
+  - Ctrl+F 快捷键聚焦搜索框
+  - 搜索结果双击跳转：浏览模式下选中目录树节点 + 选中中栏条目
+- 目录树右键新增「折叠全部」入口：搜索跳转会展开大量节点，此入口用于快速收起（保留根节点展开）
+- [ui_constants.py](src/app/ui_constants.py) 新增文案：MENU_COLLAPSE_ALL / SEARCH_ORGANIZE_MODE_NO_JUMP / 搜索对话框相关文案
+
+**ContentUnit.status 简化（破坏性变更）**
+
+- **背景**：调查发现 `organized`（"已整理"语义）和 `missing`（"路径丢失"语义）两个取值从未被任何生产代码写入，仅 UI 和搜索查询布线，属于半实现/未实现状态。spec 已删除 rating 和 status 字段，但 status 因 `unmarked` 承载核心业务逻辑（取消标记后阻止扫描器重建）而保留。
+- **方案**：将原 `unorganized`（"已标记"语义）重命名为 `organized`，删除旧 `organized` 和 `missing` 取值。最终两态：
+  - `organized`：当前标记为内容单元
+  - `unmarked`：用户已取消标记（保留记录以阻止扫描器重新创建）
+- [migrations.py](src/infrastructure/migrations.py) 新增 `migrate_v9_to_v10`：UPDATE 现有 status='unorganized' → 'organized'（幂等，无匹配记录时不影响任何行）
+- [db.py](src/infrastructure/db.py) `CURRENT_SCHEMA_VERSION` 9 → 10
+- [domain/models.py](src/domain/models.py) `ContentUnit.status` 默认值 `unorganized` → `organized`
+- [content_service.py](src/application/content_service.py) / [scan_service.py](src/application/scan_service.py) 所有 `status="unorganized"` → `status="organized"`
+- [search.py](src/infrastructure/repositories/search.py) WHERE 条件简化为 `cu.status = 'organized'`（原 `IN ('unorganized', 'organized')`）
+- UI 简化：
+  - [file_list_model.py](src/app/file_list_model.py) 名称列统一显示 `[内容单元]` 标记（移除 organized ✓ 区分）
+  - [main_window.py](src/app/main_window.py) 元数据面板移除"整理状态"行（仅一态显示无意义）
+  - [card_list_model.py](src/app/card_list_model.py) 卡片 ToolTip 显示固定"内容单元"文案（移除状态值显示）
+- [ui_constants.py](src/app/ui_constants.py) 清理：移除 `CONTENT_UNIT_MARKER_ORGANIZED` / `CONTENT_UNIT_MARKER_UNORGANIZED` / `METADATA_STATUS_LABEL` / `METADATA_STATUS_UNORGANIZED` / `METADATA_STATUS_ORGANIZED` / `CARD_TOOLTIP_CONTENT_UNIT_STATUS`，新增统一常量 `CONTENT_UNIT_MARKER` / `CARD_TOOLTIP_CONTENT_UNIT`
+
+**设计要点**
+
+- **搜索范围 Q2=B**：仅搜索 organized 状态，排除 unmarked。理由：unmarked 是用户显式取消标记（不再是内容单元），搜索这些记录对用户无意义。用户若需搜索历史已取消标记的路径，可借助外部工具。
+- **搜索框固定宽度**：使用 `setFixedWidth(360)` 而非 `setMaximumWidth`，避免输入内容或清除按钮导致宽度变化。
+- **整理模式静默提示**：弹窗会打断整理流程，改为状态栏 3 秒提示。
+- **目录树折叠全部**：保留根节点展开状态，避免完全收起后无法看到受管理根列表。
+
+**测试**
+
+- 新增 [test_search_repository.py](tests/test_search_repository.py) 24 个用例：基础搜索 / 中文搜索 / 标签搜索 / 状态过滤（organized 被搜索 / unmarked 被排除）/ 排序 / 通配符转义 / 大小写不敏感
+- 新增 [test_search_service.py](tests/test_search_service.py) 11 个用例：空关键词 / 短关键词 / 正常搜索 / 异常处理
+- 新增 [test_search_dialog.py](tests/test_search_dialog.py) 13 个用例：初始状态 / 搜索结果展示 / 双击跳转 / 整理模式静默提示 / 中文路径
+- 适配 [test_main_window_staging.py](tests/test_main_window_staging.py) `test_context_menu_noop_without_staging_service`：原调用 `_on_tree_context_menu` 触发模态 `QMenu.exec`（Shiboken C++ 内置方法无法被 monkeypatch 拦截，导致 180s 超时），改为直接验证 `_collapse_all_tree()`，测试耗时从 180s 降至 0.6s
+- 全局替换 `unorganized` → `organized`，重写 `TestStatusFilter` 仅测 organized/unmarked 两态
+- 全量回归：1338 passed, 5 skipped, ruff check + format 全通过
+
+---
+
 ## [0.39.0] - 2026-07-30
 
 Stage 5 Task 5：「移动到...」快捷对话框

@@ -38,7 +38,7 @@ def unit_u1(db_connection, content_unit_repo, tmp_path) -> ContentUnit:
         path=str(tmp_path / "u1"),
         title="U1",
         content_type="mod",
-        status="unorganized",
+        status="organized",
         created_at="2026-07-01T00:00:00Z",
         updated_at="2026-07-01T00:00:00Z",
     )

@@ -160,7 +160,7 @@ class TestCreateModGroup:
         assert isinstance(unit, ContentUnit)
         assert unit.path == str(target_folder)
         assert unit.title == "BDOR Black Knight"
-        assert unit.status == "unorganized"
+        assert unit.status == "organized"
 
     def test_writes_two_operation_history(self, mod_group_env) -> None:
         """创建 Mod 组写 2 条 operation_history：new_folder + move。"""

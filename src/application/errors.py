@@ -159,3 +159,7 @@ class ClipboardError(ApplicationError):
 
 class EmptyClipboardError(ClipboardError):
     """剪贴板为空时执行粘贴操作。"""
+
+
+class SearchError(ApplicationError):
+    """搜索失败（Stage 5 Task 7）。"""

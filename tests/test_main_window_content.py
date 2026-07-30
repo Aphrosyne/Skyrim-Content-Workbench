@@ -274,7 +274,8 @@ def test_double_click_content_unit_shows_metadata(qapp, main_window_env) -> None
     assert "标题" in metadata
     assert "路径" in metadata
     assert "类型" in metadata
-    assert "整理状态" in metadata
+    # Stage 5 Task 7 收尾：移除"整理状态"行（status 简化为两态，显示无意义）
+    assert "整理状态" not in metadata
     # 标题应为压缩包文件名（含扩展名）
     assert "寒霜之心.7z" in metadata
 

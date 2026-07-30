@@ -43,11 +43,12 @@ def test_migrations_sorted_by_target() -> None:
     assert MIGRATIONS[6][0] == 7
     assert MIGRATIONS[7][0] == 8
     assert MIGRATIONS[8][0] == 9
+    assert MIGRATIONS[9][0] == 10
 
 
-def test_current_schema_version_is_nine() -> None:
-    """Stage 5 Task 3b：当前 schema 版本应为 9（operation_history 支持复制操作）。"""
-    assert CURRENT_SCHEMA_VERSION == 9
+def test_current_schema_version_is_ten() -> None:
+    """Stage 5 Task 7 收尾：当前 schema 版本应为 10（ContentUnit.status 简化为两态）。"""
+    assert CURRENT_SCHEMA_VERSION == 10
 
 
 def test_migrate_v0_to_v1_idempotent() -> None:
@@ -455,7 +456,7 @@ def test_migrate_v3_to_v4_unicode_support() -> None:
         conn.execute(
             "INSERT INTO content_unit (id, path, title, content_type, status, "
             "created_at, updated_at) VALUES "
-            "('cu1', 'D:/Mods/护甲/寒霜之心', '寒霜之心', 'mod', 'unorganized', "
+            "('cu1', 'D:/Mods/护甲/寒霜之心', '寒霜之心', 'mod', 'organized', "
             "'2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')"
         )
 
@@ -508,7 +509,7 @@ def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
     db_path = tmp_path / "test.db"
     version = init_db(db_path)
     assert version == CURRENT_SCHEMA_VERSION
-    assert version == 9
+    assert version == 10
 
     # v7 后 managed_root 表仍存在
     conn = sqlite3.connect(str(db_path))
@@ -602,9 +603,9 @@ def test_init_db_migrates_v3_db_to_v6(tmp_path) -> None:
     finally:
         conn.close()
 
-    # init_db 应识别 v3 并依次应用 v3→v4→v5→v6→v7→v8→v9
+    # init_db 应识别 v3 并依次应用 v3→v4→v5→v6→v7→v8→v9→v10
     version = init_db(db_path)
-    assert version == 9
+    assert version == 10
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row

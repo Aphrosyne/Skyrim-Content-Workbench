@@ -61,13 +61,15 @@ ThumbnailProvider = Callable[[str, str], QPixmap | None]
 
 
 def _display_name(entry: FileEntry) -> str:
-    """构造名称列 DisplayRole 文本：名称 + 内容单元标记。"""
+    """构造名称列 DisplayRole 文本：名称 + 内容单元标记。
+
+    Stage 5 Task 7 收尾：status 简化为两态（organized / unmarked），
+    unmarked 视为无内容单元（不在 UI 显示标记），故仅 organized 显示统一标记。
+    """
     unit = entry.content_unit
     if unit is None:
         return entry.name
-    if unit.status == "organized":
-        return f"{entry.name}{ui.CONTENT_UNIT_MARKER_ORGANIZED}"
-    return f"{entry.name}{ui.CONTENT_UNIT_MARKER_UNORGANIZED}"
+    return f"{entry.name}{ui.CONTENT_UNIT_MARKER}"
 
 
 def _type_text(entry: FileEntry) -> str:

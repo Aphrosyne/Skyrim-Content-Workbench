@@ -203,7 +203,7 @@ def test_metadata_saved_does_not_call_coordinator_invalidate(
             path="/test/path",
             title="Test",
             content_type="mod",
-            status="unorganized",
+            status="organized",
             created_at="2026-07-01T00:00:00Z",
             updated_at="2026-07-01T00:00:00Z",
         )

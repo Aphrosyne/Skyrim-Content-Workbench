@@ -294,7 +294,7 @@ def test_delete_preserves_content_unit_and_folder_cache(
     db_connection.execute(
         "INSERT INTO content_unit (id, path, title, content_type, status, "
         "created_at, updated_at) VALUES "
-        "('cu-1', ?, 'Mods', 'mod', 'unorganized', '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
+        "('cu-1', ?, 'Mods', 'mod', 'organized', '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
         (str(path),),
     )
     db_connection.execute(

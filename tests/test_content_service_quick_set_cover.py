@@ -234,7 +234,7 @@ class TestMarkAsContentUnitAutoCover:
 
         # unmark
         service.unmark_content_unit(unit.id)
-        # 再 mark（恢复 unorganized）
+        # 再 mark（恢复 organized）
         remarke_unit = service.mark_as_content_unit(Path(folder))
 
         # 已有手动封面 b.png 不被覆盖

@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListView,
     QListWidget,
     QListWidgetItem,
@@ -108,6 +109,7 @@ from application.managed_root_service import ManagedRootService
 from application.mod_group_service import ModGroupService
 from application.quick_insert_service import QuickInsertService
 from application.scan_service import ScanSummary
+from application.search_service import SearchService
 from application.staging_service import StagingService
 from application.tag_service import TagService
 from application.undo_service import UndoService
@@ -234,6 +236,7 @@ class MainWindow(QMainWindow):
         file_operation_service: FileOperationService | None = None,
         undo_service: UndoService | None = None,
         clipboard_service: ClipboardService | None = None,
+        search_service: SearchService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -254,6 +257,10 @@ class MainWindow(QMainWindow):
         self._undo_service = undo_service
         # Stage 5 Task 3b：应用内剪贴板服务（Q3=A 不与系统剪贴板混用）
         self._clipboard_service = clipboard_service
+        # Stage 5 Task 7：全局搜索服务
+        self._search_service = search_service
+        # 搜索结果对话框实例（非模态，保持引用避免被 GC）
+        self._search_dialog: QDialog | None = None
         # Stage 4 Task 4：缩略图调度器（可选注入，便于测试）
         self._thumbnail_coordinator = thumbnail_coordinator
         self._thread: QThread | None = None
@@ -408,7 +415,17 @@ class MainWindow(QMainWindow):
         self._mode_group.addButton(self._mode_organize_button)
 
         top_layout.addStretch(1)
-        # 右侧预留空间（搜索框、置顶按钮等属后续 Task）
+
+        # Stage 5 Task 7：全局搜索框（Q1=A 回车触发）
+        # 仅注入 search_service 时显示
+        self._search_box = QLineEdit()
+        self._search_box.setPlaceholderText(ui.SEARCH_BOX_PLACEHOLDER)
+        self._search_box.setClearButtonEnabled(True)
+        # 固定宽度：避免输入内容或清除按钮(×)出现时撑宽搜索框
+        self._search_box.setFixedWidth(360)
+        self._search_box.returnPressed.connect(self._on_search_triggered)
+        self._search_box.setVisible(self._search_service is not None)
+        top_layout.addWidget(self._search_box)
 
         # 快速插入按钮（阶段 3 Task 5）：仅整理模式 + 装配面板已绑定 + 目录树选中目标时可用
         self._quick_insert_button = QPushButton(ui.QUICK_INSERT_BUTTON)
@@ -1256,6 +1273,120 @@ class MainWindow(QMainWindow):
             self._refresh_content_list(dir_path)
             self._set_metadata_text(ui.METADATA_NOT_SELECTED)
 
+    # === Stage 5 Task 7：全局搜索 ===
+
+    def _on_search_triggered(self) -> None:
+        """搜索框回车触发（Q1=A）。
+
+        - 空白输入不触发
+        - 调用 SearchService.search 获取结果
+        - 弹出非模态 SearchDialog（Q3=B）
+        - 复用已有对话框实例（避免重复弹出）
+        """
+        if self._search_service is None:
+            return
+        query = self._search_box.text().strip()
+        if not query:
+            return
+
+        from application.errors import SearchError  # noqa: PLC0415
+
+        try:
+            results = self._search_service.search(query)
+        except SearchError as e:
+            QMessageBox.warning(
+                self,
+                ui.SEARCH_DIALOG_TITLE,
+                ui.SEARCH_DIALOG_ERROR.format(error=str(e)),
+            )
+            return
+        except Exception as e:  # noqa: BLE001 - 兜底，确保 UI 收到友好错误
+            logger.exception("搜索发生未预期异常：query=%s", query)
+            QMessageBox.warning(
+                self,
+                ui.SEARCH_DIALOG_TITLE,
+                ui.SEARCH_DIALOG_ERROR.format(error=str(e)),
+            )
+            return
+
+        # 复用对话框实例：若已存在则更新内容，否则新建
+        from app.search_dialog import SearchDialog  # noqa: PLC0415
+
+        if self._search_dialog is not None and isinstance(self._search_dialog, SearchDialog):
+            # 更新现有对话框内容
+            self._search_dialog.update_results(query, results)
+        else:
+            self._search_dialog = SearchDialog(
+                query=query,
+                results=results,
+                jump_callback=self._on_search_result_clicked,
+                parent=self,
+            )
+        # Q3=B 非模态：show() 而非 exec()
+        self._search_dialog.show()
+        self._search_dialog.raise_()
+        self._search_dialog.activateWindow()
+
+    def _on_search_result_clicked(self, unit_id: str) -> None:
+        """搜索结果双击跳转回调（Q4=B, Q5=C）。
+
+        - Q4=B：跳转到所在目录 + 选中条目 + 保持对话框打开
+        - Q5=C：整理模式下不跳转（避免破坏整理状态），仅提示用户切换浏览模式
+        """
+        if self._content_service is None:
+            return
+        # Q5=C：整理模式不跳转（静默提示，走状态栏消息，不弹窗）
+        if not self._mode_manager.is_browse():
+            self.statusBar().showMessage(ui.SEARCH_ORGANIZE_MODE_NO_JUMP, 3000)
+            return
+
+        unit = self._content_service.get_by_id(unit_id)
+        if unit is None:
+            # 内容单元可能已被删除，提示并刷新搜索结果
+            QMessageBox.information(
+                self,
+                ui.SEARCH_DIALOG_TITLE,
+                ui.SEARCH_DIALOG_EMPTY,
+            )
+            return
+
+        # 跳转到内容单元所在目录
+        parent_dir = str(Path(unit.path).parent)
+        self._navigate_to_directory(parent_dir)
+
+        # 延迟选中中栏对应条目（目录刷新后才能匹配）
+        # 使用 QTimer.singleShot 给目录树 selection 信号链路留出刷新时间
+        from PySide6.QtCore import QTimer  # noqa: PLC0415
+
+        target_path = unit.path
+
+        def _select_in_content_list() -> None:
+            """在文件列表中选中对应条目（若可见）。"""
+            view = self._content_view_current()
+            if view is None:
+                return
+            model = view.model()
+            if model is None:
+                return
+            # 在 model 中查找 path 匹配的行
+            for row in range(model.rowCount()):
+                idx = model.index(row, 0)
+                data = idx.data(Qt.UserRole)
+                if isinstance(data, FileEntry) and data.path == target_path:
+                    view.setCurrentIndex(idx)
+                    return
+
+        QTimer.singleShot(100, _select_in_content_list)
+
+    def _content_view_current(self) -> QAbstractItemView | None:
+        """返回当前激活的内容视图（列表或卡片）。"""
+        current_widget = self._content_stack.currentWidget()
+        if current_widget is self._content_view:
+            return self._content_view
+        if current_widget is self._card_view:
+            return self._card_view
+        return None
+
     def _record_nav_history(self, dir_path: str) -> None:
         """记录浏览历史（仅浏览模式 + 非历史导航时调用）。
 
@@ -1400,49 +1531,53 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, ui.MENU_OPEN_IN_EXPLORER, ui.MENU_OPEN_IN_EXPLORER_FAILED)
 
     def _on_tree_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
-        """目录树右键菜单：标记/取消暂存区 + 新建文件夹 + 在资源管理器中打开。
+        """目录树右键菜单：标记/取消暂存区 + 新建文件夹 + 在资源管理器中打开 + 折叠全部。
 
         Stage 5 Task 1：新增「在资源管理器中打开」项，无论是否注入 StagingService 都可用。
         Stage 5 Task 3a：新增「新建文件夹」项，仅注入 FileOperationService 时显示。
             选中节点即在其目录下创建子文件夹，与中栏右键入口行为一致。
+        Stage 5 Task 7：新增「折叠全部」项，无论是否选中节点都显示。
+            搜索跳转会导致目录树展开很多节点，此入口用于快速收起。
         """
         index = self._tree_view.indexAt(pos)
-        if not index.isValid():
-            return
-        node = self._tree_model.node_at(index)
-        if node is None:
-            return
+        node = self._tree_model.node_at(index) if index.isValid() else None
 
         menu = QMenu(self)
-        # 暂存区标记/取消（仅注入了 StagingService 时显示）
+        # 节点相关菜单项（仅在选中有效节点时显示）
         staging_action = None
-        if self._staging_service is not None:
-            if node.is_staging:
-                staging_action = menu.addAction(ui.MENU_UNMARK_STAGING)
-            else:
-                staging_action = menu.addAction(ui.MENU_MARK_STAGING)
-        # 新建文件夹 / 删除（Stage 5 Task 3a，仅需 FileOperationService）
         new_folder_action = None
         delete_action = None
-        # 剪贴板项（Stage 5 Task 3b：复制/剪切/粘贴，需 FileOperationService + ClipboardService）
         copy_action = None
         cut_action = None
         paste_action = None
-        # 移动到...（Stage 5 Task 5，仅需 FileOperationService）
         move_to_action = None
-        if self._file_operation_service is not None:
+        explorer_action = None
+        if node is not None:
+            # 暂存区标记/取消（仅注入了 StagingService 时显示）
+            if self._staging_service is not None:
+                if node.is_staging:
+                    staging_action = menu.addAction(ui.MENU_UNMARK_STAGING)
+                else:
+                    staging_action = menu.addAction(ui.MENU_MARK_STAGING)
+            # 新建文件夹 / 删除（Stage 5 Task 3a，仅需 FileOperationService）
+            if self._file_operation_service is not None:
+                menu.addSeparator()
+                new_folder_action = menu.addAction(ui.MENU_NEW_FOLDER)
+                if self._clipboard_service is not None:
+                    copy_action = menu.addAction(ui.MENU_COPY)
+                    cut_action = menu.addAction(ui.MENU_CUT)
+                    # 粘贴项仅在剪贴板非空时启用
+                    paste_action = menu.addAction(ui.MENU_PASTE)
+                    paste_action.setEnabled(self._clipboard_service.get() is not None)
+                move_to_action = menu.addAction(ui.MENU_MOVE_TO)
+                delete_action = menu.addAction(ui.MENU_DELETE)
+            # 在资源管理器中打开（Stage 5 Task 1，节点有效时显示）
+            explorer_action = menu.addAction(ui.MENU_OPEN_IN_EXPLORER)
+
+        # 折叠全部（Stage 5 Task 7，无论是否选中节点都显示）
+        if node is not None:
             menu.addSeparator()
-            new_folder_action = menu.addAction(ui.MENU_NEW_FOLDER)
-            if self._clipboard_service is not None:
-                copy_action = menu.addAction(ui.MENU_COPY)
-                cut_action = menu.addAction(ui.MENU_CUT)
-                # 粘贴项仅在剪贴板非空时启用
-                paste_action = menu.addAction(ui.MENU_PASTE)
-                paste_action.setEnabled(self._clipboard_service.get() is not None)
-            move_to_action = menu.addAction(ui.MENU_MOVE_TO)
-            delete_action = menu.addAction(ui.MENU_DELETE)
-        # 在资源管理器中打开（Stage 5 Task 1，始终显示）
-        explorer_action = menu.addAction(ui.MENU_OPEN_IN_EXPLORER)
+        collapse_action = menu.addAction(ui.MENU_COLLAPSE_ALL)
 
         chosen = menu.exec(self._tree_view.viewport().mapToGlobal(pos))
         if chosen is None:
@@ -1464,8 +1599,22 @@ class MainWindow(QMainWindow):
             self._on_move_to_tree(node)
         elif delete_action is not None and chosen is delete_action:
             self._on_shortcut_delete_tree()
-        elif chosen is explorer_action:
+        elif explorer_action is not None and chosen is explorer_action:
             self._on_open_in_explorer(node.real_path)
+        elif chosen is collapse_action:
+            self._collapse_all_tree()
+
+    def _collapse_all_tree(self) -> None:
+        """折叠目录树所有展开的节点（Stage 5 Task 7）。
+
+        搜索跳转会展开大量节点，此功能用于快速收起。
+        折叠后保留根节点的展开状态（顶层受管理根目录列表仍可见）。
+        """
+        self._tree_view.collapseAll()
+        # 重新展开 model 根节点（其子节点 = 受管理根目录列表）
+        root_idx = self._tree_model.index(0, 0)
+        if root_idx.isValid():
+            self._tree_view.setExpanded(root_idx, True)
 
     def _mark_staging_from_node(self, node) -> None:
         """通过目录树节点标记暂存区。"""
@@ -3010,13 +3159,11 @@ class MainWindow(QMainWindow):
 
         Stage 4 Task 2：若有 MetadataPanel，加载到编辑表单；同时保留
         `_metadata_full_text` 多行文本格式以兼容现有测试（metadata_full_text()）。
+
+        Stage 5 Task 7 收尾：移除"整理状态"显示行（status 简化为两态，
+        organized/unmarked，unmarked 不进入此方法，故状态恒为 organized，显示无意义）。
         """
         title = unit.title or "（无标题）"
-        status_text = (
-            ui.METADATA_STATUS_ORGANIZED
-            if unit.status == "organized"
-            else ui.METADATA_STATUS_UNORGANIZED
-        )
         source_url = unit.source_url or ui.METADATA_SOURCE_URL_EMPTY
         notes = unit.notes or ui.METADATA_NOTES_EMPTY
 
@@ -3025,7 +3172,6 @@ class MainWindow(QMainWindow):
             f"{ui.METADATA_PATH_LABEL}：{unit.path}",
             f"{ui.METADATA_TYPE_LABEL}：{unit.content_type}",
             f"{ui.METADATA_SOURCE_URL_LABEL}：{source_url}",
-            f"{ui.METADATA_STATUS_LABEL}：{status_text}",
             f"{ui.METADATA_NOTES_LABEL}：{notes}",
             f"{ui.METADATA_CREATED_AT_LABEL}：{unit.created_at}",
         ]

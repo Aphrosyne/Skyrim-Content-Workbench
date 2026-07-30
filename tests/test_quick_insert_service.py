@@ -346,7 +346,7 @@ def test_quick_insert_cleans_stale_content_unit_at_target_path(db_env, tmp_path:
         path=str(stale_path),
         title="旧残留记录",
         content_type="mod",
-        status="unorganized",
+        status="organized",
         created_at="2026-07-17T00:00:00Z",
         updated_at="2026-07-17T00:00:00Z",
     )
@@ -402,7 +402,7 @@ def test_quick_insert_cleans_stale_child_content_units(db_env, tmp_path: Path) -
         path=str(stale_child_path),
         title="旧子项记录",
         content_type="mod",
-        status="unorganized",
+        status="organized",
         created_at="2026-07-17T00:00:00Z",
         updated_at="2026-07-17T00:00:00Z",
     )
@@ -464,7 +464,7 @@ def test_quick_insert_cleans_stale_content_unit_with_path_normalization(
         path=stale_path_with_trailing_sep,
         title="尾随分隔符旧记录",
         content_type="mod",
-        status="unorganized",
+        status="organized",
         created_at="2026-07-17T00:00:00Z",
         updated_at="2026-07-17T00:00:00Z",
     )
@@ -523,7 +523,7 @@ def test_quick_insert_cleanup_before_move_allows_safe_rollback(db_env, tmp_path:
         path=str(target_dir / "MyMod"),
         title="旧记录",
         content_type="mod",
-        status="unorganized",
+        status="organized",
         created_at="2026-07-17T00:00:00Z",
         updated_at="2026-07-17T00:00:00Z",
     )

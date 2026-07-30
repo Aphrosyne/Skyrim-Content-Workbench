@@ -195,7 +195,7 @@ def test_card_tooltip_includes_status(qapp, main_window_env) -> None:
     idx = card_model.index(idx_row, 0)
     tooltip = card_model.data(idx, Qt.ToolTipRole)
     assert "armor" in tooltip
-    assert "内容单元状态" in tooltip  # Q6:B
+    assert "内容单元" in tooltip  # Stage 5 Task 7：统一显示"内容单元"标记
 
 
 def test_zoom_combo_changes_card_icon_size(main_window_env) -> None:

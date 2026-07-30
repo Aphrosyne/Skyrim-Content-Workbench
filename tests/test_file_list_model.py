@@ -53,7 +53,7 @@ def _make_unit(
     unit_id: str = "u-1",
     path: str = "/mods/armor",
     title: str | None = None,
-    status: str = "unorganized",
+    status: str = "organized",
 ) -> ContentUnit:
     return ContentUnit(
         id=unit_id,
@@ -189,23 +189,14 @@ class TestDisplayRole:
         idx = model.index(0, COL_NAME)
         assert model.data(idx, Qt.DisplayRole) == "readme.txt"
 
-    def test_name_column_unorganized_marker(self, qapp) -> None:  # noqa: ANN001
+    def test_name_column_content_unit_marker(self, qapp) -> None:  # noqa: ANN001
         from PySide6.QtCore import Qt
 
-        unit = _make_unit(status="unorganized")
+        unit = _make_unit()
         model = FileListModel()
         model.refresh([_make_entry("armor", "/mods/armor", is_dir=True, content_unit=unit)])
         idx = model.index(0, COL_NAME)
-        assert model.data(idx, Qt.DisplayRole) == f"armor{ui.CONTENT_UNIT_MARKER_UNORGANIZED}"
-
-    def test_name_column_organized_marker(self, qapp) -> None:  # noqa: ANN001
-        from PySide6.QtCore import Qt
-
-        unit = _make_unit(status="organized")
-        model = FileListModel()
-        model.refresh([_make_entry("armor", "/mods/armor", is_dir=True, content_unit=unit)])
-        idx = model.index(0, COL_NAME)
-        assert model.data(idx, Qt.DisplayRole) == f"armor{ui.CONTENT_UNIT_MARKER_ORGANIZED}"
+        assert model.data(idx, Qt.DisplayRole) == f"armor{ui.CONTENT_UNIT_MARKER}"
 
     def test_type_column_directory(self, qapp) -> None:  # noqa: ANN001
         from PySide6.QtCore import Qt

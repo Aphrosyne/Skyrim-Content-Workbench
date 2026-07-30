@@ -382,10 +382,12 @@ content_unit
   - content_type TEXT NOT NULL DEFAULT 'mod'
   - source_url TEXT
   - cover_path TEXT
+  - status TEXT NOT NULL DEFAULT 'organized'  # v10 后两态：organized（已标记）/ unmarked（已取消标记）
   - notes TEXT
   - created_at TEXT NOT NULL
   - updated_at TEXT NOT NULL
   # v6 移除：rating INTEGER（私人数据库用不上）
+  # v10 变更：status 默认值 unorganized → organized（语义重命名，旧 organized/"已整理"语义已废弃）
 
 tag_category
   - id TEXT PRIMARY KEY

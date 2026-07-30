@@ -395,7 +395,7 @@ def service_with_sync(
 
 
 def _seed_content_unit(
-    repo: ContentUnitRepository, unit_id: str, path: str, status: str = "unorganized"
+    repo: ContentUnitRepository, unit_id: str, path: str, status: str = "organized"
 ) -> ContentUnit:
     """插入一条 ContentUnit 测试数据。"""
     unit = ContentUnit(

@@ -530,6 +530,33 @@ def migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
     logger.info("迁移 v8 → v9 完成")
 
 
+def migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
+    """v9 → v10：ContentUnit.status 简化为两态（Stage 5 Task 7 收尾）。
+
+    变更：
+    - 将所有 status='unorganized' 记录更新为 'organized'。
+      （'unorganized' 语义为"已标记"，重命名为更直观的 'organized'）
+    - 旧 'organized' 取值（"已整理"语义）实际从未被生产代码写入，无需处理。
+    - 'missing' 取值完全未实现，也无需处理。
+    - 表 DEFAULT 不变（SQLite 不便修改 DEFAULT，由应用层 ContentUnit 默认值接管）。
+
+    迁移后 status 仅两态：
+    - 'organized'：当前标记为内容单元
+    - 'unmarked'：用户已取消标记（保留记录以阻止扫描器重新创建）
+
+    幂等性：UPDATE 语句本身幂等，无 'unorganized' 记录时不影响任何行。
+    """
+    result = conn.execute(
+        "UPDATE content_unit SET status = 'organized' WHERE status = 'unorganized'"
+    )
+    if result.rowcount > 0:
+        logger.info(
+            "迁移 v9 → v10 完成：更新 %d 条记录 status='unorganized' → 'organized'", result.rowcount
+        )
+    else:
+        logger.info("迁移 v9 → v10 完成：无 'unorganized' 记录需要更新")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -542,4 +569,5 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (7, migrate_v6_to_v7),
     (8, migrate_v7_to_v8),
     (9, migrate_v8_to_v9),
+    (10, migrate_v9_to_v10),
 ]

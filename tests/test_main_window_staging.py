@@ -209,7 +209,12 @@ def test_unmark_staging_removes_prefix(qapp: QApplication, staging_window_env) -
 
 
 def test_context_menu_noop_without_staging_service(qapp: QApplication, tmp_path: Path) -> None:
-    """未注入 StagingService 时 _on_tree_context_menu 直接 return，不崩溃。"""
+    """未注入 StagingService 时目录树操作不崩溃。
+
+    Stage 5 Task 7 后 _on_tree_context_menu 不再早退（空白处显示「折叠全部」），
+    故改为直接验证 _collapse_all_tree 在无 StagingService 时可正常调用。
+    避免直接调用 _on_tree_context_menu 触发模态 QMenu.exec。
+    """
     db_path = tmp_path / "test.db"
     init_db(db_path)
     conn = get_connection(db_path)
@@ -242,10 +247,8 @@ def test_context_menu_noop_without_staging_service(qapp: QApplication, tmp_path:
         # 不传 staging_service
     )
 
-    # 直接调用 _on_tree_context_menu 不应抛异常（早 return）
-    from PySide6.QtCore import QPoint
-
-    window._on_tree_context_menu(QPoint(0, 0))  # noqa: SLF001
+    # 验证 _collapse_all_tree 在无 StagingService 时不崩溃（Stage 5 Task 7 新增功能）
+    window._collapse_all_tree()  # noqa: SLF001
     qapp.processEvents()
 
     window.close()
