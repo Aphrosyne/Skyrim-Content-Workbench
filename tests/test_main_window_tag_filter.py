@@ -2,8 +2,7 @@
 
 覆盖：
 - TagFilterBar 创建条件：注入 tag_service 时创建，否则不创建
-- 浏览模式可见 / 整理模式隐藏
-- 切到整理再切回：筛选状态保留
+- 浏览模式可见
 - 筛选激活时仅显示匹配的内容单元（Q1: B 非内容单元也隐藏）
 - 筛选未激活时显示全量
 - 筛选无命中显示空提示
@@ -28,7 +27,6 @@ from application.folder_tree_service import FolderTreeService  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
 from application.scan_service import ScanService  # noqa: E402
 from application.tag_service import TagService  # noqa: E402
-from domain.models import AppMode  # noqa: E402
 from infrastructure.db import get_connection, init_db  # noqa: E402
 from infrastructure.repositories.content_unit import (  # noqa: E402
     ContentUnitRepository,
@@ -192,7 +190,7 @@ def test_tag_filter_bar_not_created_without_tag_service(qapp, tmp_path: Path):
     conn.close()
 
 
-# === 浏览模式可见 / 整理模式隐藏 ===
+# === TagFilterBar 可见性 ===
 
 
 def test_tag_filter_bar_visible_in_browse_mode(qapp, env_with_filter):
@@ -202,45 +200,6 @@ def test_tag_filter_bar_visible_in_browse_mode(qapp, env_with_filter):
     bar = window.tag_filter_bar()
     assert bar is not None
     assert bar.isVisibleTo(window)
-
-
-def test_tag_filter_bar_hidden_in_organize_mode(qapp, env_with_filter):
-    """整理模式 → TagFilterBar 隐藏。"""
-    window, _, _, _, _, _, _, _ = env_with_filter
-    _select_root(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
-    qapp.processEvents()
-    bar = window.tag_filter_bar()
-    assert bar is not None
-    assert not bar.isVisibleTo(window)
-
-
-def test_switch_to_organize_then_back_restores_filter_state(qapp, env_with_filter):
-    """切到整理再切回 → 筛选状态保留。"""
-    window, _, _, tag_service, cat, tag_heavy, _, _ = env_with_filter
-    _select_root(qapp, window)
-
-    bar = window.tag_filter_bar()
-    # 选中「重甲」标签
-    bar._selected_tag_ids.add(tag_heavy.id)  # noqa: SLF001
-    bar.on_filter_changed.emit(bar.current_selected_tag_ids())
-    qapp.processEvents()
-    assert bar.is_filter_active()
-
-    # 切到整理模式
-    window._set_mode(AppMode.organize)  # noqa: SLF001
-    qapp.processEvents()
-    assert not bar.isVisibleTo(window)
-    # 筛选状态保留
-    assert bar.is_filter_active()
-    assert tag_heavy.id in bar.current_selected_tag_ids()
-
-    # 切回浏览模式
-    window._set_mode(AppMode.browse)  # noqa: SLF001
-    qapp.processEvents()
-    assert bar.isVisibleTo(window)
-    assert bar.is_filter_active()
-    assert tag_heavy.id in bar.current_selected_tag_ids()
 
 
 # === 筛选行为 ===

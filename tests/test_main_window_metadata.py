@@ -7,8 +7,6 @@
 - 单击非内容单元 → 清空元数据面板
 - 保存元数据 → on_saved 信号 → 事务提交 + 状态栏提示
 - 设置封面 → CoverPickerDialog 弹出 + 选定后更新表单
-- 整理模式 → 右栏元数据面板保留可见（2026-07-25 决策修正：原决策 4/8 被推翻，方案 B）
-- 浏览模式 → 右栏元数据面板可见
 - 批量打标签菜单：多选内容单元 → 右键显示菜单
 - 批量打标签动作：弹 BatchTagDialog + 应用 → 提交
 
@@ -33,7 +31,6 @@ from application.folder_tree_service import FolderTreeService  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
 from application.scan_service import ScanService  # noqa: E402
 from application.tag_service import TagService  # noqa: E402
-from domain.models import AppMode  # noqa: E402
 from infrastructure.db import get_connection, init_db  # noqa: E402
 from infrastructure.repositories.content_unit import (  # noqa: E402
     ContentUnitRepository,
@@ -400,40 +397,6 @@ def test_pick_cover_no_images_shows_information(qapp, main_window_with_tags, mon
     qapp.processEvents()
 
     assert len(info_calls) == 1
-
-
-# === 整理模式保留右栏（2026-07-25 决策修正：原决策 4/8 被推翻） ===
-
-
-def test_organize_mode_keeps_metadata_panel_visible(qapp, main_window_with_tags):
-    """整理模式 → 右栏 MetadataPanel 保留可见（决策 4/8 修正为方案 B）。
-
-    背景：原决策 4/8 整理模式完全隐藏右栏，但实测后右侧空白，无法释放空间。
-    用户决策改为方案 B：保留 MetadataPanel，让用户在装配同时编辑元数据，
-    避免创建完内容单元后切回浏览模式才能编辑元数据的多余步骤。
-    """
-    window, _, _, _ = main_window_with_tags
-    # 浏览模式：右栏可见
-    assert window.is_metadata_panel_visible()
-
-    # 切换到整理模式
-    window._set_mode(AppMode.organize)  # noqa: SLF001
-    qapp.processEvents()
-
-    # 整理模式：右栏 MetadataPanel 仍可见
-    assert window.is_metadata_panel_visible()
-
-
-def test_organize_to_browse_keeps_metadata_panel_visible(qapp, main_window_with_tags):
-    """整理 → 浏览 → 右栏 MetadataPanel 全程保留可见。"""
-    window, _, _, _ = main_window_with_tags
-    window._set_mode(AppMode.organize)  # noqa: SLF001
-    qapp.processEvents()
-    assert window.is_metadata_panel_visible()
-
-    window._set_mode(AppMode.browse)  # noqa: SLF001
-    qapp.processEvents()
-    assert window.is_metadata_panel_visible()
 
 
 # === 批量打标签菜单 ===

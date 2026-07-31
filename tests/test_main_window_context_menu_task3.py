@@ -1,7 +1,7 @@
 """MainWindow 右键菜单集成测试（阶段 3 Task 3）。
 
 覆盖：
-- 创建 Mod 组菜单项仅在整理模式 + 单选文件 + 注入 ContentUnitCreationService 时显示
+- 创建 Mod 组菜单项在单选文件 + 注入 ContentUnitCreationService 时显示
 - 标记为内容单元 / 取消内容单元标记 菜单项根据 entry.content_unit 切换
 - 多选显示"批量标记为内容单元"
 - 复制路径始终显示
@@ -30,7 +30,7 @@ from application.folder_tree_service import FolderTreeService  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
 from application.scan_service import ScanService  # noqa: E402
 from application.staging_service import StagingService  # noqa: E402
-from domain.models import AppMode, FileEntry  # noqa: E402
+from domain.models import FileEntry  # noqa: E402
 from infrastructure.db import get_connection, init_db  # noqa: E402
 from infrastructure.file_operation_service import FileOperationService  # noqa: E402
 from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper  # noqa: E402
@@ -180,7 +180,6 @@ def test_context_menu_includes_mark_for_unmarked(qapp, main_window_env) -> None:
     """右键未标记条目 → 可调用 mark_as_content_unit 验证 service 链路。"""
     window, _, _, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     # 选中 preview.jpg（非压缩包，未自动标记）
@@ -211,7 +210,6 @@ def test_mark_content_unit_refreshes_list(qapp, main_window_env) -> None:
     """标记后中栏列表刷新，显示 [内容单元] 标记。"""
     window, _, _, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
     _select_entry_by_name(qapp, window, "preview.jpg")
 
@@ -231,7 +229,6 @@ def test_unmark_content_unit_refreshes_list(qapp, main_window_env) -> None:
     """取消标记后中栏列表刷新，[内容单元] 标记消失。"""
     window, conn, _, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     # 先标记 BDOR 文件
@@ -261,7 +258,6 @@ def test_create_mod_group_full_flow(qapp, main_window_env) -> None:
     """创建 Mod 组完整流程：对话框接受默认名 → 文件夹创建 + 文件移动 + ContentUnit 创建。"""
     window, conn, root_dir, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     _select_entry_by_name(qapp, window, "BDOR Black Knight 1.0.7z")
@@ -317,7 +313,6 @@ def test_create_mod_group_appears_in_tree(qapp, main_window_env) -> None:
     """
     window, conn, root_dir, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     tree_model = window._tree_model  # noqa: SLF001
@@ -361,7 +356,6 @@ def test_create_mod_group_cancel_dialog(qapp, main_window_env) -> None:
     """取消对话框不操作文件。"""
     window, _, root_dir, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     _select_entry_by_name(qapp, window, "BDOR Black Knight 1.0.7z")
@@ -385,7 +379,6 @@ def test_create_mod_group_name_conflict(qapp, main_window_env, monkeypatch) -> N
     """同名文件夹已存在 → 弹出错误（不抛异常，仅 QMessageBox）。"""
     window, _, root_dir, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     # 预先创建同名文件夹
@@ -412,7 +405,6 @@ def test_batch_mark_multiple_files(qapp, main_window_env) -> None:
     """多选 2 个未标记文件 → 批量标记 → 各自独立 ContentUnit。"""
     window, conn, _, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     # 多选 preview.jpg + SkyUI 5.1 SE.zip（后者已被扫描自动标记，先取消）
@@ -454,7 +446,6 @@ def test_batch_unmark_content_unit(qapp, main_window_env) -> None:
     """Task 2 验收修复：多选含已标记项 → 批量取消 → 全部取消标记。"""
     window, conn, _, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     # SkyUI 已被扫描自动标记，preview.jpg 需手动标记
@@ -489,7 +480,6 @@ def test_batch_unmark_skips_unmarked_entries(qapp, main_window_env) -> None:
     """Task 2 验收修复：批量取消时未标记项跳过，不报错。"""
     window, _, _, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     # SkyUI 已标记，preview.jpg 未标记
@@ -514,7 +504,6 @@ def test_batch_unmark_menu_visible_when_any_marked(qapp, main_window_env) -> Non
     """Task 2 验收修复：多选且至少一个已标记时，右键菜单显示批量取消项。"""
     window, _, _, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     model = window._content_list_model  # noqa: SLF001
@@ -541,7 +530,6 @@ def test_batch_unmark_menu_hidden_when_none_marked(qapp, main_window_env) -> Non
     """Task 2 验收修复：多选且全部未标记时，右键菜单仅显示批量标记，不显示批量取消。"""
     window, _, _, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     # 先取消所有标记
@@ -573,7 +561,6 @@ def test_batch_mark_menu_hidden_when_all_marked(qapp, main_window_env) -> None:
     """Stage 5 Task 2 验收修复：多选且全部已标记时，仅显示批量取消，不显示批量标记。"""
     window, _, _, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     # 把暂存区所有条目都标记为内容单元
@@ -611,7 +598,6 @@ def test_chinese_filename_mod_group(qapp, main_window_env) -> None:
     (root_dir / "Stash" / "寒霜之心 1.0.7z").write_bytes(b"\x00" * 100)
 
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     _select_entry_by_name(qapp, window, "寒霜之心 1.0.7z")

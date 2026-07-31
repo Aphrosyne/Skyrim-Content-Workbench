@@ -1,16 +1,15 @@
 """MainWindow 装配面板集成测试（阶段 3 Task 4）。
 
 覆盖：
-- 装配面板在浏览模式隐藏 / 整理模式按绑定显隐
 - 创建 Mod 组后装配面板自动绑定并显示
-- 整理模式下双击 Mod 组文件夹 → 装配面板绑定（单击不绑定）
-- 装配面板回调：add_file / remove_file / rename_as_cover / closed
+- 双击 Mod 组文件夹 → 装配面板绑定（单击不绑定）
+- 装配面板回调：add_file / rename_as_cover / closed
 - 装配操作后暂存区列表与装配面板同步刷新
-- 浏览模式下选中 Mod 组文件夹 → 装配面板保持隐藏
 - 中栏右键菜单「加入装配」（2026-07-17 取消拖拽方案后新增）
 
 注（2026-07-17 调整）：拖拽方案已取消，加入装配改由右键菜单触发；
-整理模式下装配面板切换改由双击 Mod 组文件夹触发（单击仅选中显示元数据）。
+装配面板切换改由双击 Mod 组文件夹触发（单击仅选中显示元数据）。
+注（UX 重构 Phase 1 Task 1）：移除整理/浏览双模式，装配面板通过创建 Mod 组自动绑定。
 """
 
 from __future__ import annotations
@@ -32,7 +31,6 @@ from application.folder_tree_service import FolderTreeService  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
 from application.scan_service import ScanService  # noqa: E402
 from application.staging_service import StagingService  # noqa: E402
-from domain.models import AppMode  # noqa: E402
 from infrastructure.db import get_connection, init_db  # noqa: E402
 from infrastructure.file_operation_service import FileOperationService  # noqa: E402
 from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper  # noqa: E402
@@ -207,12 +205,12 @@ def _create_mod_group(qapp, window: MainWindow, source_name: str, chosen_name: s
     finally:
         window._show_create_mod_group_dialog = original_dialog  # noqa: SLF001
 
-    # 查询新创建的 ContentUnit
-    staging_path = window._organize_workarea_path  # noqa: SLF001
-    assert staging_path is not None
-    mod_folder = Path(staging_path) / chosen_name
-    unit = window._content_service.get_by_path(str(mod_folder))  # noqa: SLF001
-    assert unit is not None, f"Mod 组 ContentUnit 未创建：{mod_folder}"
+    # 查询新创建的 ContentUnit（UX 重构后通过装配面板绑定获取）
+    unit_id = window.assembly_panel_current_unit_id()
+    assert unit_id is not None, "Mod 组创建后装配面板未绑定"
+    unit = window._content_service.get_by_id(unit_id)  # noqa: SLF001
+    assert unit is not None, "Mod 组 ContentUnit 未创建"
+    mod_folder = Path(unit.path)
     return unit, mod_folder
 
 
@@ -220,41 +218,8 @@ def _create_mod_group(qapp, window: MainWindow, source_name: str, chosen_name: s
 
 
 def test_assembly_panel_hidden_in_browse_mode(qapp, main_window_env) -> None:
-    """默认浏览模式：装配面板隐藏。"""
+    """默认状态：装配面板隐藏。"""
     window, _, _, _ = main_window_env
-    assert window.current_mode() == AppMode.browse
-    assert not window.assembly_panel_visible()
-
-
-def test_assembly_panel_hidden_after_switching_to_organize_without_mod_group(
-    qapp, main_window_env
-) -> None:
-    """整理模式下未选中 Mod 组：装配面板隐藏。"""
-    window, _, _, _ = main_window_env
-    _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
-    qapp.processEvents()
-
-    # 未创建/选中 Mod 组 → 面板隐藏
-    assert not window.assembly_panel_visible()
-    assert window.assembly_panel_current_unit_id() is None
-
-
-def test_assembly_panel_hidden_when_switching_back_to_browse(qapp, main_window_env) -> None:
-    """整理模式下绑定 Mod 组后切回浏览模式：装配面板隐藏。"""
-    window, _, _, _ = main_window_env
-    _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
-    qapp.processEvents()
-
-    # 创建 Mod 组 → 面板显示
-    unit, _ = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z")
-    assert window.assembly_panel_visible()
-    assert window.assembly_panel_current_unit_id() == unit.id
-
-    # 切回浏览模式 → 面板隐藏
-    window._set_mode(AppMode.browse)  # noqa: SLF001
-    qapp.processEvents()
     assert not window.assembly_panel_visible()
 
 
@@ -262,10 +227,9 @@ def test_assembly_panel_hidden_when_switching_back_to_browse(qapp, main_window_e
 
 
 def test_assembly_panel_shown_after_create_mod_group(qapp, main_window_env) -> None:
-    """整理模式下创建 Mod 组 → 装配面板自动绑定并显示，列表含源文件。"""
+    """创建 Mod 组 → 装配面板自动绑定并显示，列表含源文件。"""
     window, _, _, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     unit, _ = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z")
@@ -281,10 +245,9 @@ def test_assembly_panel_shown_after_create_mod_group(qapp, main_window_env) -> N
 
 
 def test_assembly_panel_bind_switches_between_mod_groups(qapp, main_window_env) -> None:
-    """整理模式下创建/选中不同 Mod 组 → 装配面板切换绑定。"""
+    """创建/选中不同 Mod 组 → 装配面板切换绑定。"""
     window, _, root_dir, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     # 创建第一个 Mod 组
@@ -310,10 +273,13 @@ def test_on_assembly_add_file_moves_file_to_mod_group(qapp, main_window_env) -> 
     window, _, root_dir, _ = main_window_env
     staging = root_dir / "Stash"
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+
+    # 重新选中暂存区节点（_create_mod_group 内部 _refresh_tree 会重置树选区）
+    _select_staging(qapp, window)
+    qapp.processEvents()
 
     # 暂存区中应还有 preview.jpg（未移入）
     src_path = staging / "preview.jpg"
@@ -337,7 +303,6 @@ def test_on_assembly_add_file_conflict(qapp, main_window_env, monkeypatch) -> No
     window, _, root_dir, _ = main_window_env
     staging = root_dir / "Stash"
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
@@ -361,12 +326,12 @@ def test_on_assembly_add_file_conflict(qapp, main_window_env, monkeypatch) -> No
 # === 装配面板回调：remove_file ===
 
 
+@pytest.mark.skip(reason="UX 重构 Phase 1 Task 1 L2：移除文件功能已禁用")
 def test_on_assembly_remove_file_moves_back_to_staging(qapp, main_window_env) -> None:
     """_on_assembly_remove_file：Mod 组内文件移回暂存区根目录。"""
     window, _, root_dir, _ = main_window_env
     staging = root_dir / "Stash"
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
@@ -387,12 +352,12 @@ def test_on_assembly_remove_file_moves_back_to_staging(qapp, main_window_env) ->
     assert window.assembly_panel_entry_count() == 1
 
 
+@pytest.mark.skip(reason="UX 重构 Phase 1 Task 1 L2：移除文件功能已禁用")
 def test_on_assembly_remove_file_conflict(qapp, main_window_env, monkeypatch) -> None:
     """_on_assembly_remove_file：暂存区已存在同名文件 → ConflictError 提示。"""
     window, _, root_dir, _ = main_window_env
     staging = root_dir / "Stash"
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
@@ -420,7 +385,6 @@ def test_on_assembly_rename_cover_single_image(qapp, main_window_env) -> None:
     window, _, root_dir, _ = main_window_env
     staging = root_dir / "Stash"
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
@@ -449,7 +413,6 @@ def test_on_assembly_rename_cover_multiple_images(qapp, main_window_env) -> None
     """_on_assembly_rename_cover：多张图片采用 _2、_3 后缀。"""
     window, _, root_dir, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
@@ -474,7 +437,6 @@ def test_on_assembly_rename_cover_not_image(qapp, main_window_env, monkeypatch) 
     """_on_assembly_rename_cover：非图片文件 → InvalidContentUnitPathError 提示。"""
     window, _, root_dir, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
@@ -497,7 +459,6 @@ def test_on_assembly_closed_hides_panel(qapp, main_window_env) -> None:
     """_on_assembly_closed：隐藏装配面板（不解绑）。"""
     window, _, _, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     unit, _ = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
@@ -508,131 +469,6 @@ def test_on_assembly_closed_hides_panel(qapp, main_window_env) -> None:
     assert not window.assembly_panel_visible()
     # 解绑前 ContentUnit 仍保留（便于再次打开）
     assert window.assembly_panel_current_unit_id() == unit.id
-
-
-# === 整理模式下双击 Mod 组文件夹 → 装配面板绑定 ===
-
-
-def test_assembly_panel_binds_when_double_clicking_mod_group_in_content_list(
-    qapp, main_window_env
-) -> None:
-    """整理模式下在中栏双击 Mod 组文件夹 → 装配面板绑定（2026-07-17 调整）。"""
-    window, _, root_dir, _ = main_window_env
-    _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
-    qapp.processEvents()
-
-    unit, _ = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
-    # 关闭面板模拟用户取消选中
-    window._on_assembly_closed()  # noqa: SLF001
-    qapp.processEvents()
-    assert not window.assembly_panel_visible()
-
-    # 在中栏双击 MyMod 文件夹
-    _double_click_entry(qapp, window, "MyMod")
-
-    # 装配面板自动绑定并显示
-    assert window.assembly_panel_visible()
-    assert window.assembly_panel_current_unit_id() == unit.id
-
-
-def test_assembly_panel_no_bind_on_single_click_mod_group_in_content_list(
-    qapp, main_window_env
-) -> None:
-    """整理模式下在中栏单击 Mod 组文件夹 → 装配面板不绑定（仅显示元数据）。
-
-    2026-07-17 调整：单击不再切换装配面板，避免误触。
-    """
-    window, _, _, _ = main_window_env
-    _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
-    qapp.processEvents()
-
-    unit, _ = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
-    # 关闭面板模拟用户取消选中
-    window._on_assembly_closed()  # noqa: SLF001
-    qapp.processEvents()
-    assert not window.assembly_panel_visible()
-    assert window.assembly_panel_current_unit_id() == unit.id  # 解绑前 ContentUnit 仍保留
-
-    # 在中栏单击 MyMod 文件夹（不双击）
-    _select_entry_by_name(qapp, window, "MyMod")
-    qapp.processEvents()
-
-    # 装配面板保持隐藏（单击不触发绑定）
-    assert not window.assembly_panel_visible()
-    # 但元数据已显示（单击选中显示元数据）
-    # 检查元数据面板文本包含 Mod 组标题
-    metadata_text = window._metadata_label.text()  # noqa: SLF001
-    assert "MyMod" in metadata_text or "BDOR" in metadata_text
-
-
-def test_assembly_panel_binds_when_selecting_mod_group_in_tree(qapp, main_window_env) -> None:
-    """整理模式下在目录树选中 Mod 组文件夹 → 装配面板绑定（目录树行为不变）。"""
-    window, _, _, _ = main_window_env
-    _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
-    qapp.processEvents()
-
-    unit, _ = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
-    window._on_assembly_closed()  # noqa: SLF001
-    qapp.processEvents()
-    assert not window.assembly_panel_visible()
-
-    # 在目录树中找到 MyMod 节点并选中
-    tree_model = window._tree_model  # noqa: SLF001
-    root_idx = tree_model.index(0, 0)
-    tree_model.fetchMore(root_idx)
-    stash_idx = None
-    for i in range(tree_model.rowCount(root_idx)):
-        child_idx = tree_model.index(i, 0, root_idx)
-        if "Stash" in (tree_model.data(child_idx, Qt.DisplayRole) or ""):
-            stash_idx = child_idx
-            break
-    assert stash_idx is not None
-    tree_model.fetchMore(stash_idx)
-    mod_idx = None
-    for j in range(tree_model.rowCount(stash_idx)):
-        child_idx = tree_model.index(j, 0, stash_idx)
-        if "MyMod" in (tree_model.data(child_idx, Qt.DisplayRole) or ""):
-            mod_idx = child_idx
-            break
-    assert mod_idx is not None
-    window._tree_view.setCurrentIndex(mod_idx)  # noqa: SLF001
-    qapp.processEvents()
-
-    # 装配面板自动绑定并显示
-    assert window.assembly_panel_visible()
-    assert window.assembly_panel_current_unit_id() == unit.id
-
-
-def test_assembly_panel_no_bind_in_browse_mode_on_mod_group_selection(
-    qapp, main_window_env
-) -> None:
-    """浏览模式下选中 Mod 组文件夹 → 装配面板保持隐藏（spec §7.4）。"""
-    window, _, _, _ = main_window_env
-    _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
-    qapp.processEvents()
-
-    unit, _ = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
-    assert window.assembly_panel_visible()
-
-    # 切回浏览模式
-    window._set_mode(AppMode.browse)  # noqa: SLF001
-    qapp.processEvents()
-    assert not window.assembly_panel_visible()
-
-    # 在中栏选中 MyMod 文件夹（浏览模式）
-    # 先导航到 Stash 目录
-    _select_staging(qapp, window)
-    qapp.processEvents()
-    # 选中 MyMod
-    _select_entry_by_name(qapp, window, "MyMod")
-    qapp.processEvents()
-
-    # 装配面板保持隐藏
-    assert not window.assembly_panel_visible()
 
 
 # === 中栏右键菜单「加入装配」（2026-07-17 取消拖拽方案后新增） ===
@@ -707,7 +543,6 @@ def test_add_to_assembly_menu_moves_file_to_mod_group(qapp, main_window_env, mon
     window, _, root_dir, _ = main_window_env
     staging = root_dir / "Stash"
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
@@ -743,7 +578,6 @@ def test_add_to_assembly_menu_not_shown_without_mod_group_binding(
     """未绑定 Mod 组时右键菜单不显示「加入装配」。"""
     window, _, _, _ = main_window_env
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     # 未创建 Mod 组 → 装配面板无绑定
@@ -771,7 +605,6 @@ def test_assembly_panel_chinese_mod_group(qapp, main_window_env) -> None:
     window, _, root_dir, _ = main_window_env
     staging = root_dir / "Stash"
     _select_staging(qapp, window)
-    window._set_mode(AppMode.organize)  # noqa: SLF001
     qapp.processEvents()
 
     # 创建中文 Mod 组

@@ -88,7 +88,6 @@ from app.file_list_model import (
 )
 from app.folder_tree_model import FolderTreeModel
 from app.metadata_panel import MetadataPanel
-from app.mode_manager import ModeManager
 from app.scan_worker import ScanWorker
 from app.tag_filter import TagFilterBar
 from app.tag_manager_dialog import TagManagerDialog
@@ -104,6 +103,7 @@ from application.errors import (
     FileOperationError,
     ManagedRootNotFoundError,
     SelfSubdirectoryError,
+    SourceNotFoundError,
 )
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
@@ -113,7 +113,7 @@ from application.search_service import SearchService
 from application.staging_service import StagingService
 from application.tag_service import TagService
 from application.undo_service import UndoService
-from domain.models import AppMode, ContentUnit, FileEntry, ManagedRoot
+from domain.models import ContentUnit, FileEntry, ManagedRoot
 from infrastructure.file_operation_service import FileOperationService
 
 logger = logging.getLogger(__name__)
@@ -267,13 +267,6 @@ class MainWindow(QMainWindow):
         self._worker: ScanWorker | None = None
         self._is_scanning = False
 
-        # 模式管理器（默认浏览模式）
-        self._mode_manager = ModeManager(self)
-        # 整理模式冻结的工作区目录路径（None 表示未设置，切换到整理模式时填充）
-        self._organize_workarea_path: str | None = None
-        # 整理模式下目录树选中的目标路径（用于显示"目标：xxx"提示）
-        self._organize_target_path: str | None = None
-
         # Stage 5 Task 1：QSettings 持久化缩放值与视图模式（Q1=A）
         self._qsettings = QSettings(QSETTINGS_ORGANIZATION, QSETTINGS_APPLICATION)
         self._current_view_index: int = VIEW_INDEX_LIST  # 默认列表视图
@@ -290,7 +283,6 @@ class MainWindow(QMainWindow):
         self.resize(ui.WINDOW_DEFAULT_WIDTH, ui.WINDOW_DEFAULT_HEIGHT)
 
         self._setup_ui()
-        self._mode_manager.mode_changed.connect(self._on_mode_changed)
         self._refresh_root_list()
         self._refresh_tree()
         # Stage 5 Task 4：注册键盘快捷键
@@ -389,30 +381,10 @@ class MainWindow(QMainWindow):
     # --- UI 构建 ---
 
     def _setup_ui(self) -> None:
-        # === 顶部模式切换栏（spec §7.1，roadmap 阶段 2 Task 5） ===
+        # === 顶部工具栏（UX 重构 Phase 1 Task 1：移除模式切换按钮） ===
         top_bar = QWidget()
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(8, 4, 8, 4)
-
-        mode_label = QLabel(ui.MODE_SWITCH_GROUP_TITLE)
-        top_layout.addWidget(mode_label)
-
-        self._mode_browse_button = QPushButton(ui.MODE_BROWSE)
-        self._mode_browse_button.setCheckable(True)
-        self._mode_browse_button.setChecked(True)  # 默认浏览模式
-        self._mode_browse_button.clicked.connect(lambda: self._set_mode(AppMode.browse))
-        top_layout.addWidget(self._mode_browse_button)
-
-        self._mode_organize_button = QPushButton(ui.MODE_ORGANIZE)
-        self._mode_organize_button.setCheckable(True)
-        self._mode_organize_button.clicked.connect(lambda: self._set_mode(AppMode.organize))
-        top_layout.addWidget(self._mode_organize_button)
-
-        # 互斥分组
-        self._mode_group = QButtonGroup(self)
-        self._mode_group.setExclusive(True)
-        self._mode_group.addButton(self._mode_browse_button)
-        self._mode_group.addButton(self._mode_organize_button)
 
         top_layout.addStretch(1)
 
@@ -427,15 +399,16 @@ class MainWindow(QMainWindow):
         self._search_box.setVisible(self._search_service is not None)
         top_layout.addWidget(self._search_box)
 
-        # 快速插入按钮（阶段 3 Task 5）：仅整理模式 + 装配面板已绑定 + 目录树选中目标时可用
+        # 快速插入按钮（阶段 3 Task 5）：
+        # UX 重构 Phase 1 Task 1（C2 决策）：移除模式后永久隐藏，Commit 3 正式移除。
         self._quick_insert_button = QPushButton(ui.QUICK_INSERT_BUTTON)
         self._quick_insert_button.setToolTip(ui.QUICK_INSERT_TOOLTIP)
         self._quick_insert_button.clicked.connect(self._on_quick_insert_clicked)
-        self._quick_insert_button.setVisible(False)  # 默认浏览模式隐藏
+        self._quick_insert_button.setVisible(False)
+        self._quick_insert_button.setEnabled(False)
         top_layout.addWidget(self._quick_insert_button)
 
         # 标签管理按钮（阶段 4 Task 1）：打开标签管理对话框
-        # 始终可见（浏览/整理模式均可管理标签），但若未注入 tag_service 则隐藏
         self._tag_manager_button = QPushButton(ui.TAG_MANAGER_BUTTON)
         self._tag_manager_button.setToolTip(ui.TAG_MANAGER_TOOLTIP)
         self._tag_manager_button.clicked.connect(self._on_tag_manager_clicked)
@@ -545,16 +518,7 @@ class MainWindow(QMainWindow):
         middle_layout = QVBoxLayout(middle)
         middle_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 模式提示标签（显示当前模式 + 目标路径/工作区）
-        # 与详情区/元数据面板一致：关闭自动换行 + PlainText，走 Elide 流程
-        self._mode_hint_label = QLabel(ui.MODE_BROWSE_HINT)
-        self._mode_hint_label.setWordWrap(False)
-        self._mode_hint_label.setTextFormat(Qt.PlainText)
-        self._mode_hint_label.setStyleSheet("padding: 4px; color: #666;")
-        self._mode_hint_full_text = ui.MODE_BROWSE_HINT
-        middle_layout.addWidget(self._mode_hint_label)
-
-        # 上下分割：上方文件列表，下方装配面板（仅整理模式可见）
+        # 上下分割：上方文件列表，下方装配面板
         self._middle_splitter = QSplitter(Qt.Vertical)
 
         self._content_group = QGroupBox(ui.CONTENT_LIST_GROUP_TITLE)
@@ -840,7 +804,6 @@ class MainWindow(QMainWindow):
 
         2026-07-16 优化：刷新前保存展开状态与选中节点，刷新后递归恢复，
         避免每次扫描/创建 Mod 组后目录树全部折叠。
-        整理模式下不清空中栏文件列表（保留冻结的工作区）。
         """
         # 保存展开状态与选中节点
         expanded_paths = self._tree_model.save_expanded_paths(self._tree_view)
@@ -855,35 +818,30 @@ class MainWindow(QMainWindow):
         self._tree_empty_hint.setVisible(root_count == 0)
         # 清空详情区
         self._set_detail_text(ui.DETAIL_NOT_SELECTED)
-        if self._mode_manager.is_browse():
-            # 浏览模式：清空文件列表与元数据
-            self._content_list_model.refresh([])
-            self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
-            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
-        # 整理模式：保留冻结的工作区内容，不清空中栏
+        # 清空文件列表与元数据
+        self._content_list_model.refresh([])
+        self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
+        self._set_metadata_text(ui.METADATA_NOT_SELECTED)
 
     def _on_tree_selection_changed(self, *args) -> None:  # noqa: ANN001 (Qt 信号)
         """目录树选中变化时更新详情区与文件列表。
 
-        模式行为分支：
-        - 浏览模式：刷新详情区 + 刷新中栏文件列表 + 清空元数据。
-        - 整理模式：刷新详情区 + 更新整理目标提示，**不刷新中栏内容**（中栏冻结）。
+        UX 重构 Phase 1 Task 1：移除模式分支，统一为 browse 行为。
+        - 刷新详情区 + 刷新中栏文件列表 + 清空元数据。
         """
         indexes = self._tree_view.selectionModel().selectedIndexes()
         if not indexes:
             self._set_detail_text(ui.DETAIL_NOT_SELECTED)
-            if self._mode_manager.is_browse():
-                self._content_list_model.refresh([])
-                self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
+            self._content_list_model.refresh([])
+            self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
             return
 
         index = indexes[0]
         node = self._tree_model.node_at(index)
         if node is None:
             self._set_detail_text(ui.DETAIL_NOT_SELECTED)
-            if self._mode_manager.is_browse():
-                self._content_list_model.refresh([])
-                self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
+            self._content_list_model.refresh([])
+            self._content_empty_hint.setText(ui.CONTENT_LIST_NO_SELECTION)
             return
 
         # 查询子目录数
@@ -905,26 +863,10 @@ class MainWindow(QMainWindow):
         ]
         self._set_detail_text("\n".join(lines))
 
-        if self._mode_manager.is_browse():
-            # 浏览模式：刷新文件列表（使用 node.real_path 读取目录条目）
-            self._refresh_content_list(node.real_path)
-            # 清空元数据面板（切换目录时重置）
-            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
-        else:
-            # 整理模式：点选 [S] 节点 → 中栏切换为该暂存区递归列表；
-            # 点选非 [S] 节点 → 只更新目标提示，不刷新中栏内容。
-            if node.is_staging:
-                self._organize_workarea_path = node.real_path
-                self._organize_target_path = node.real_path
-                self._refresh_staging_content_list(node.real_path)
-            else:
-                self._organize_target_path = node.real_path
-            self._update_organize_hint()
-            # 整理模式下：选中 Mod 组文件夹 → 绑定装配面板
-            # （非 Mod 组节点保持当前绑定，便于用户从其他目录拖入文件）
-            self._maybe_bind_assembly_panel_for_tree_node(node)
-            # 同步快速插入按钮可用性（目标路径可能已变）
-            self._update_quick_insert_button_state()
+        # 刷新文件列表（使用 node.real_path 读取目录条目）
+        self._refresh_content_list(node.real_path)
+        # 清空元数据面板（切换目录时重置）
+        self._set_metadata_text(ui.METADATA_NOT_SELECTED)
 
     def _refresh_content_list(self, dir_path: str) -> None:
         """刷新文件列表（数据源为文件系统，content_unit 表仅作标记）。
@@ -1056,15 +998,16 @@ class MainWindow(QMainWindow):
         if entry is None:
             return
 
-        # 浏览模式下双击文件夹 → 进入该目录（优先于内容单元判断）
+        # 双击文件夹 → 进入该目录（优先于内容单元判断）
         # 文件夹即使被标记为内容单元（如 Mod 组），双击也进入目录；
         # 元数据通过单击查看。
-        if entry.is_dir and self._mode_manager.is_browse():
+        # UX 重构 Phase 1 Task 1：移除模式分支，双击始终进入目录。
+        if entry.is_dir:
             # 同步目录树选中节点到当前浏览目录（2026-07-17 修复）：
             # 原实现只刷新中栏，不更新 tree_view.selectionModel()，导致后续依赖
             # 该 selection 的刷新逻辑（_refresh_content_list_for_current_mode /
-            # _refresh_content_list_after_scan / _refresh_content_for_current_tree_selection）
-            # 误用陈旧的选中节点，中栏在标记内容单元后"退回"父目录显示。
+            # _refresh_content_list_after_scan）误用陈旧的选中节点，
+            # 中栏在标记内容单元后"退回"父目录显示。
             # 通过 find_index_by_path 找到对应节点并 setCurrentIndex，
             # 触发 _on_tree_selection_changed 完成中栏刷新 + 详情区更新。
             # 未找到节点时（如未扫描根目录的子项），回退到原保底逻辑手动刷新。
@@ -1081,18 +1024,12 @@ class MainWindow(QMainWindow):
                 self._set_metadata_text(ui.METADATA_NOT_SELECTED)
             return
 
-        # 整理模式下双击 Mod 组文件夹 → 绑定装配面板
-        # spec §7.4（2026-07-17 调整）：装配面板通过双击切换，单击仅选中
-        if entry.is_dir and self._mode_manager.is_organize() and entry.content_unit is not None:
-            self._bind_assembly_panel(entry.content_unit)
-            return
-
         # 双击文件类型内容单元 → 显示元数据
         if entry.content_unit is not None:
             self._update_metadata(entry.content_unit)
             return
 
-        # 其他情况（整理模式普通文件 / 普通文件夹）：不响应
+        # 其他情况（普通文件）：不响应
 
     def _on_content_selection_changed(self, *args) -> None:  # noqa: N802, ANN001 (Qt 信号)
         """文件列表选中变化：单击选中内容单元 → 右侧立即显示元数据。
@@ -1328,16 +1265,12 @@ class MainWindow(QMainWindow):
         self._search_dialog.activateWindow()
 
     def _on_search_result_clicked(self, unit_id: str) -> None:
-        """搜索结果双击跳转回调（Q4=B, Q5=C）。
+        """搜索结果双击跳转回调（Q4=B）。
 
         - Q4=B：跳转到所在目录 + 选中条目 + 保持对话框打开
-        - Q5=C：整理模式下不跳转（避免破坏整理状态），仅提示用户切换浏览模式
+        - UX 重构 Phase 1 Task 1：移除模式分支，搜索跳转始终允许。
         """
         if self._content_service is None:
-            return
-        # Q5=C：整理模式不跳转（静默提示，走状态栏消息，不弹窗）
-        if not self._mode_manager.is_browse():
-            self.statusBar().showMessage(ui.SEARCH_ORGANIZE_MODE_NO_JUMP, 3000)
             return
 
         unit = self._content_service.get_by_id(unit_id)
@@ -1388,15 +1321,12 @@ class MainWindow(QMainWindow):
         return None
 
     def _record_nav_history(self, dir_path: str) -> None:
-        """记录浏览历史（仅浏览模式 + 非历史导航时调用）。
+        """记录浏览历史（非历史导航时调用）。
 
         - 相邻相同路径不入栈（避免重复）
-        - 整理模式不记录
         - 历史导航触发的切换不记录（避免循环）
         """
         if self._navigating_from_history:
-            return
-        if not self._mode_manager.is_browse():
             return
         # 相邻相同路径去重
         if self._current_nav_path == dir_path:
@@ -1748,10 +1678,10 @@ class MainWindow(QMainWindow):
         # actions 元素：(label, handler, enabled)
         actions: list[tuple[str, Callable[[], None], bool]] = []
 
-        # 创建 Mod 组：仅整理模式 + 单选 + 文件（非目录）+ 注入了 ContentUnitCreationService
+        # 创建 Mod 组：单选 + 文件（非目录）+ 注入了 ContentUnitCreationService
+        # UX 重构 Phase 1 Task 1：移除整理模式限制。多选支持将在 Commit 3 添加。
         if (
             self._content_unit_creation_service is not None
-            and self._mode_manager.is_organize()
             and len(entries) == 1
             and not entries[0].is_dir
         ):
@@ -1759,12 +1689,11 @@ class MainWindow(QMainWindow):
                 (ui.MENU_CREATE_MOD_GROUP, lambda: self._on_create_mod_group(entries[0]), True)
             )
 
-        # 加入装配：仅整理模式 + 单选 + 文件（非目录）+ 装配面板已绑定 Mod 组
-        # spec §7.4（2026-07-17 调整）：取消拖拽方案，改用右键菜单触发 add_file
+        # 加入装配：单选 + 文件（非目录）+ 装配面板已绑定 Mod 组
+        # UX 重构 Phase 1 Task 1：移除整理模式限制。
         if (
             self._assembly_service is not None
             and self._assembly_panel is not None
-            and self._mode_manager.is_organize()
             and self._assembly_panel.current_unit() is not None
             and len(entries) == 1
             and not entries[0].is_dir
@@ -1913,12 +1842,16 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(ui.MENU_QUICK_SET_COVER_NO_IMAGE, 3000)
 
     def _on_create_mod_group(self, entry: FileEntry) -> None:
-        """创建 Mod 组：弹出对话框选择/编辑名称，调用 ContentUnitCreationService。"""
+        """创建 Mod 组：弹出对话框选择/编辑名称，调用 ContentUnitCreationService。
+
+        UX 重构 Phase 1 Task 1：移除整理模式后，staging_path 改为选中文件所在父目录。
+        多选支持将在 Commit 3 添加。
+        """
         if self._content_unit_creation_service is None:
             return
-        if self._organize_workarea_path is None:
-            QMessageBox.warning(self, ui.CREATE_MOD_GROUP_FAILED, "未选中暂存区工作区。")
-            return
+
+        # 选中文件所在父目录作为 staging_path（原整理模式使用 _organize_workarea_path）
+        staging_path = Path(entry.path).parent
 
         # 提取两种命名选项
         from application.content_unit_creation_service import extract_mod_name
@@ -1935,14 +1868,14 @@ class MainWindow(QMainWindow):
         try:
             unit = self._content_unit_creation_service.create_content_unit_from_file(
                 Path(entry.path),
-                Path(self._organize_workarea_path),
+                staging_path,
                 name=chosen_name,
             )
             # D3：ContentUnitCreationService 已注入 UoW，事务由 Service 内部管理，无需 _commit
             # 刷新目录树（新文件夹已写入 folder_cache）
             self._refresh_tree()
-            # 刷新暂存区文件列表
-            self._refresh_staging_content_list(self._organize_workarea_path)
+            # 刷新当前目录文件列表（原整理模式刷新暂存区列表）
+            self._refresh_content_list(str(staging_path))
             # 绑定装配面板到新创建的 Mod 组
             self._bind_assembly_panel(unit)
             self.statusBar().showMessage(
@@ -2075,30 +2008,26 @@ class MainWindow(QMainWindow):
             )
 
     def _refresh_content_list_for_current_mode(self) -> None:
-        """根据当前模式刷新中栏文件列表。"""
-        if self._mode_manager.is_organize():
-            if self._organize_workarea_path is not None:
-                self._refresh_staging_content_list(self._organize_workarea_path)
-        else:
-            # 浏览模式：刷新当前目录树节点
-            sm = self._tree_view.selectionModel()
-            if sm is None:
-                return
-            indexes = sm.selectedIndexes()
-            if not indexes:
-                return
-            node = self._tree_model.node_at(indexes[0])
-            if node is not None:
-                self._refresh_content_list(node.real_path)
+        """刷新中栏文件列表（基于当前目录树选中节点）。
+
+        UX 重构 Phase 1 Task 1：移除模式分支，统一为原 browse 行为。
+        方法名保留 _for_current_mode 仅为最小改动，Task 7 重命名。
+        """
+        sm = self._tree_view.selectionModel()
+        if sm is None:
+            return
+        indexes = sm.selectedIndexes()
+        if not indexes:
+            return
+        node = self._tree_model.node_at(indexes[0])
+        if node is not None:
+            self._refresh_content_list(node.real_path)
 
     def _current_displayed_dir(self) -> str | None:
         """获取当前中栏显示的目录路径（Stage 5 Task 3a）。
 
-        - 浏览模式：取目录树当前选中节点的 real_path
-        - 整理模式：取 _organize_workarea_path
+        UX 重构 Phase 1 Task 1：移除模式分支，取目录树当前选中节点的 real_path。
         """
-        if self._mode_manager.is_organize():
-            return self._organize_workarea_path
         sm = self._tree_view.selectionModel()
         if sm is None:
             return None
@@ -2113,19 +2042,13 @@ class MainWindow(QMainWindow):
     def _refresh_content_list_after_file_op(self, dir_path: str | None) -> None:
         """文件操作后刷新中栏（Stage 5 Task 3a）。
 
-        _refresh_tree 会 reset tree 模型，浏览模式下 selectionModel 可能暂时
-        无选中节点，此时 _refresh_content_list_for_current_mode 不会刷新列表。
+        _refresh_tree 会 reset tree 模型，selectionModel 可能暂时无选中节点，
+        此时 _refresh_content_list_for_current_mode 不会刷新列表。
         本方法直接用传入的 dir_path 刷新，避免依赖 selection 状态。
-
-        - 整理模式：刷新暂存区列表（dir_path 应为暂存区路径）
-        - 浏览模式：刷新指定目录文件列表
         """
         if dir_path is None:
             return
-        if self._mode_manager.is_organize():
-            self._refresh_staging_content_list(dir_path)
-        else:
-            self._refresh_content_list(dir_path)
+        self._refresh_content_list(dir_path)
 
     # === Stage 5 Task 3a：文件操作 handler ===
 
@@ -2248,53 +2171,22 @@ class MainWindow(QMainWindow):
     def _bind_assembly_panel(self, unit: ContentUnit | None) -> None:
         """绑定/解绑装配面板到指定 Mod 组 ContentUnit。
 
-        - 整理模式：绑定 unit 时显示装配面板并刷新文件列表；unit 为 None 时隐藏面板。
-        - 浏览模式：始终隐藏装配面板（spec §7.4：装配功能仅存在于整理模式）。
-        - staging_path 取 self._organize_workarea_path（移除文件时移回该路径）。
+        UX 重构 Phase 1 Task 1（K1 决策）：移除模式分支。
+        - 绑定 unit 时显示装配面板并刷新文件列表；unit 为 None 时隐藏面板。
+        - staging_path 传 None（L2 决策：移除文件功能已禁用，staging_path 不再需要）。
         """
         if self._assembly_panel is None:
             return
-        if not self._mode_manager.is_organize():
-            self._assembly_panel.setVisible(False)
-            return
-        staging_path = (
-            Path(self._organize_workarea_path) if self._organize_workarea_path is not None else None
-        )
-        self._assembly_panel.bind_mod_group(unit, staging_path)
+        self._assembly_panel.bind_mod_group(unit, None)
         self._assembly_panel.setVisible(unit is not None)
-        # 同步快速插入按钮可用性（Task 5）
+        # 同步快速插入按钮可用性（C2：永久禁用，此处保留调用不删方法）
         self._update_quick_insert_button_state()
 
-    def _maybe_bind_assembly_panel_for_tree_node(self, node) -> None:  # noqa: ANN001 (内部)
-        """整理模式下：若目录树节点对应一个 Mod 组 ContentUnit（文件夹类型），
-        则绑定装配面板到该 ContentUnit；否则保持当前绑定不变。
-
-        通过 ContentService.get_by_path 查询节点路径对应的 ContentUnit。
-        仅当节点是文件夹且存在 ContentUnit 时绑定（spec §7.4）。
-        """
-        if self._assembly_panel is None:
-            return
-        if not self._mode_manager.is_organize():
-            return
-        try:
-            unit = self._content_service.get_by_path(node.real_path)
-        except Exception:  # noqa: BLE001
-            logger.exception("查询 ContentUnit 失败：path=%s", node.real_path)
-            return
-        if unit is None or not unit.is_marked:
-            return  # 非 Mod 组节点：保持当前绑定
-        # 仅绑定文件夹类型的 ContentUnit（Mod 组本质是文件夹）
-        try:
-            is_dir = Path(unit.path).is_dir()
-        except OSError:
-            return
-        if is_dir:
-            self._bind_assembly_panel(unit)
-
     def _on_assembly_add_file(self, src_path: Path) -> None:
-        """装配面板拖入文件：调用 AssemblyService.add_file + 刷新双方 + 提交。
+        """装配面板加入文件：调用 AssemblyService.add_file + 刷新双方 + 提交。
 
         add_file 不自动重命名（spec §7.4：自动整理阶段不修改任何文件名）。
+        UX 重构 Phase 1 Task 1：移除暂存区刷新，改为刷新当前显示目录。
         """
         if self._assembly_service is None or self._assembly_panel is None:
             return
@@ -2305,35 +2197,22 @@ class MainWindow(QMainWindow):
             self._assembly_service.add_file(unit.id, src_path)
             self._commit()
             self._assembly_panel.refresh_current()
-            # 刷新暂存区文件列表（源文件已离开暂存区）
-            if self._organize_workarea_path is not None:
-                self._refresh_staging_content_list(self._organize_workarea_path)
+            # 刷新当前显示目录文件列表（源文件已离开当前目录）
+            current_dir = self._current_displayed_dir()
+            if current_dir is not None:
+                self._refresh_content_list(current_dir)
             self.statusBar().showMessage(ui.ASSEMBLY_ADD_FILE_OK.format(name=src_path.name), 3000)
         except Exception as e:  # noqa: BLE001
             self._handle_service_error(e, ui.ASSEMBLY_ADD_FILE_FAILED)
 
     def _on_assembly_remove_file(self, filename: str) -> None:
-        """装配面板移除文件：移回暂存区根目录 + 刷新双方 + 提交。
+        """装配面板移除文件（L2 决策：Task 1 已禁用此功能，Task 4 正式移除）。
 
-        remove_file 不保留原子目录结构（统一移到 staging_path 根目录）。
+        UX 重构 Phase 1 Task 1：移除整理模式后，staging_path（移回目标）消失。
+        此功能将在 Commit 3 / Task 4 正式移除 UI，此处保留方法签名但 early return。
         """
-        if self._assembly_service is None or self._assembly_panel is None:
-            return
-        unit = self._assembly_panel.current_unit()
-        if unit is None:
-            return
-        if self._organize_workarea_path is None:
-            QMessageBox.warning(self, ui.ASSEMBLY_REMOVE_FILE_FAILED, "未选中暂存区工作区。")
-            return
-        staging_path = Path(self._organize_workarea_path)
-        try:
-            self._assembly_service.remove_file(unit.id, filename, staging_path)
-            self._commit()
-            self._assembly_panel.refresh_current()
-            self._refresh_staging_content_list(self._organize_workarea_path)
-            self.statusBar().showMessage(ui.ASSEMBLY_REMOVE_FILE_OK.format(name=filename), 3000)
-        except Exception as e:  # noqa: BLE001
-            self._handle_service_error(e, ui.ASSEMBLY_REMOVE_FILE_FAILED)
+        # L2 决策：Task 1 移除"移除文件"功能。方法保留待 Commit 3 移除 UI 时一并清理。
+        return
 
     def _on_assembly_rename_cover(self, image_path: Path) -> None:
         """装配面板右键重命名预览图：rename_as_cover + 刷新 + 提交。
@@ -2364,133 +2243,20 @@ class MainWindow(QMainWindow):
     # --- 快速插入（阶段 3 Task 5） ---
 
     def _update_quick_insert_button_state(self) -> None:
-        """根据当前状态更新「快速插入」按钮可用性。
+        """更新「快速插入」按钮可用性。
 
-        可用条件（全部满足）：
-        - 整理模式
-        - 装配面板已绑定 Mod 组（current_unit 不为 None）
-        - 目录树选中了目标路径（_organize_target_path 不为 None）
-        - 目标路径与源 Mod 组位置不同
-        - 目标路径是目录
-        - 目标路径不是源 Mod 组的子目录（不能移到自身内部）
+        UX 重构 Phase 1 Task 1（C2 决策）：移除模式后按钮永久隐藏且禁用。
+        方法保留待 Commit 3 正式移除按钮和 QuickInsertService。
         """
-        if not self._mode_manager.is_organize():
-            self._quick_insert_button.setEnabled(False)
-            return
-        if self._assembly_panel is None or self._assembly_panel.current_unit() is None:
-            self._quick_insert_button.setEnabled(False)
-            return
-        if self._organize_target_path is None:
-            self._quick_insert_button.setEnabled(False)
-            return
-        # 目标与源相同 / 目标不是目录 / 目标在源子树内：按钮禁用
-        unit = self._assembly_panel.current_unit()
-        src_folder = Path(unit.path)
-        target = Path(self._organize_target_path)
-        try:
-            if not target.is_dir():
-                self._quick_insert_button.setEnabled(False)
-                return
-            # 源父目录 == 目标 → 已经在该目录下，无需移动
-            if src_folder.parent == target:
-                self._quick_insert_button.setEnabled(False)
-                return
-            # 目标在源子树内 → 禁用（SelfSubdirectoryError）
-            import os
-
-            sep = os.sep
-            src_str = str(src_folder).rstrip(sep) + sep
-            if str(target).startswith(src_str):
-                self._quick_insert_button.setEnabled(False)
-                return
-        except OSError:
-            self._quick_insert_button.setEnabled(False)
-            return
-        self._quick_insert_button.setEnabled(True)
+        self._quick_insert_button.setEnabled(False)
 
     def _on_quick_insert_clicked(self) -> None:
-        """快速插入按钮点击：弹出确认 → 调用 QuickInsertService → 刷新 UI。
+        """快速插入按钮点击（C2 决策：已永久禁用，此方法保留待 Commit 3 移除）。
 
-        安全规则（spec §6.1）：
-        - 移动前弹出确认对话框（显示源路径 → 目标路径）。
-        - 跨盘 / 子目录 / 冲突等错误转为用户可读提示。
-        - 成功后：解绑装配面板 + 刷新目录树 + 刷新暂存区列表 + 状态栏提示。
+        UX 重构 Phase 1 Task 1：移除整理模式后，目标路径机制失效。
+        按钮已 setVisible(False) + setEnabled(False)，此方法不会被触发。
         """
-        if self._quick_insert_service is None or self._assembly_panel is None:
-            return
-        unit = self._assembly_panel.current_unit()
-        if unit is None:
-            QMessageBox.information(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_NO_BINDING)
-            return
-        if self._organize_target_path is None:
-            QMessageBox.information(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_NO_TARGET)
-            return
-
-        src_folder = Path(unit.path)
-        target_dir = Path(self._organize_target_path)
-
-        # 二次校验目标有效性（按钮状态可能因文件系统变化而过时）
-        try:
-            if not target_dir.is_dir():
-                QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_TARGET_NOT_DIR)
-                return
-            if src_folder.parent == target_dir:
-                QMessageBox.information(
-                    self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_SAME_AS_SOURCE
-                )
-                return
-        except OSError as e:
-            QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, f"无法访问路径：\n{e}")
-            return
-
-        dst_folder = target_dir / src_folder.name
-
-        # 弹出确认对话框
-        confirm_text = ui.QUICK_INSERT_CONFIRM_TEXT.format(src=str(src_folder), dst=str(dst_folder))
-        reply = QMessageBox.question(
-            self,
-            ui.QUICK_INSERT_CONFIRM_TITLE,
-            confirm_text,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        # 调用 QuickInsertService
-        try:
-            updated_unit = self._quick_insert_service.quick_insert(unit.id, target_dir)
-            # D3：QuickInsertService 已注入 UoW，事务由 Service 内部管理，无需 _commit
-        except ConflictError:
-            # D3：Service 内部已 rollback，无需 _rollback
-            QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_CONFLICT_HINT)
-            return
-        except CrossDriveError:
-            QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_CROSS_DRIVE_HINT)
-            return
-        except SelfSubdirectoryError:
-            QMessageBox.warning(self, ui.QUICK_INSERT_FAILED, ui.QUICK_INSERT_SELF_SUBDIR_HINT)
-            return
-        except Exception as e:  # noqa: BLE001
-            self._handle_service_error(e, ui.QUICK_INSERT_FAILED, rollback=False)
-            return
-
-        # 成功后 UI 刷新：
-        # 1. 解绑装配面板（Mod 组已移走，原路径不再有效）
-        self._assembly_panel.bind_mod_group(None, None)
-        self._assembly_panel.setVisible(False)
-        # 2. 刷新目录树（源目录和目标目录都变了）
-        self._refresh_tree()
-        # 3. 刷新暂存区列表（Mod 组已离开暂存区）
-        if self._organize_workarea_path is not None:
-            self._refresh_staging_content_list(self._organize_workarea_path)
-        # 4. 更新按钮状态
-        self._update_quick_insert_button_state()
-        # 5. 状态栏提示
-        self.statusBar().showMessage(
-            ui.QUICK_INSERT_OK.format(name=updated_unit.title, target=str(target_dir)),
-            5000,
-        )
+        return
 
     def _on_tag_manager_clicked(self) -> None:
         """打开标签管理对话框（阶段 4 Task 1）。
@@ -2902,13 +2668,6 @@ class MainWindow(QMainWindow):
             has_conflict,
             has_cross_drive_cut,
         )
-        from application.errors import (  # noqa: PLC0415
-            ConflictError,
-            CrossDriveError,
-            FileOperationError,
-            SelfSubdirectoryError,
-            SourceNotFoundError,
-        )
 
         entry = self._clipboard_service.get()
         if entry is None or not entry.paths:
@@ -3078,13 +2837,6 @@ class MainWindow(QMainWindow):
             ConflictResolutionService,
             has_conflict,
             has_cross_drive_cut,
-        )
-        from application.errors import (  # noqa: PLC0415
-            ConflictError,
-            CrossDriveError,
-            FileOperationError,
-            SelfSubdirectoryError,
-            SourceNotFoundError,
         )
 
         conflict_service = ConflictResolutionService()
@@ -3304,13 +3056,8 @@ class MainWindow(QMainWindow):
             self._metadata_label.setVisible(True)
         self._apply_elide()
 
-    def _set_mode_hint_text(self, text: str) -> None:
-        """设置模式提示文本（缓存原文，触发 Elide 重算）。"""
-        self._mode_hint_full_text = text
-        self._apply_elide()
-
     def _apply_elide(self) -> None:
-        """对详情区、元数据面板、模式提示的路径行应用 ElideMiddle。
+        """对详情区、元数据面板的路径行应用 ElideMiddle。
 
         多行文本按 \\n 拆分，仅对路径行（"路径：..." / "完整路径：..." / "目标：..."）
         做值部分省略，其他行原样保留。文本超长时用 QFontMetrics.elidedText 替换为中间省略形式。
@@ -3318,7 +3065,6 @@ class MainWindow(QMainWindow):
         """
         self._elide_label_lines(self._detail_label, self._detail_full_text)
         self._elide_label_lines(self._metadata_label, self._metadata_full_text)
-        self._elide_label_lines(self._mode_hint_label, self._mode_hint_full_text)
 
     def _elide_label_lines(self, label: QLabel, full_text: str) -> None:
         """对 label 的多行文本逐行 Elide，并设置 Tooltip 显示完整文本。"""
@@ -3528,17 +3274,9 @@ class MainWindow(QMainWindow):
     def _refresh_content_list_after_scan(self) -> None:
         """扫描完成后刷新中栏文件列表（扫描联动）。
 
-        - 浏览模式：若目录树有选中节点，重新读取该目录文件列表。
-        - 整理模式：若有暂存区工作区，重新读取该暂存区递归文件列表。
-        - 否则：无操作。
+        UX 重构 Phase 1 Task 1：移除模式分支，统一为原 browse 行为。
+        若目录树有选中节点，重新读取该目录文件列表；否则无操作。
         """
-        if self._mode_manager.is_organize():
-            workarea = self._organize_workarea_path
-            if workarea is not None:
-                self._refresh_staging_content_list(workarea)
-            return
-
-        # 浏览模式：读取当前选中目录树节点
         sm = self._tree_view.selectionModel()
         indexes = sm.selectedIndexes() if sm is not None else []
         if not indexes:
@@ -3652,149 +3390,6 @@ class MainWindow(QMainWindow):
     def card_list_model(self) -> CardListModel:
         """返回 CardListModel 实例（供测试）。"""
         return self._card_list_model
-
-    # --- 模式切换（spec §5.1/§5.2，roadmap 阶段 2 Task 5） ---
-
-    def _set_mode(self, mode: AppMode) -> None:
-        """切换应用模式（按钮回调）。"""
-        self._mode_manager.set_mode(mode)
-
-    def _on_mode_changed(self, mode: AppMode) -> None:
-        """模式变化时更新 UI 状态与中栏提示。
-
-        阶段 3 Task 4（2026-07-17 调整：取消拖拽方案）：
-        - 整理模式：装配面板按当前绑定显隐。
-        - 浏览模式：隐藏装配面板（spec §7.4）。
-
-        阶段 3 Task 5：快速插入按钮在整理模式可见，浏览模式隐藏。
-
-        Stage 4 Task 2（2026-07-19 决策修正：原决策 4/8 整理模式隐藏右栏被推翻）：
-        - 整理模式保留右栏 MetadataPanel，用户可在装配同时编辑元数据，
-          避免创建完内容单元后切回浏览模式才能编辑元数据的多余步骤。
-        - 两种模式下右栏均可见；单击内容单元加载 MetadataPanel（spec §7.2）。
-
-        Stage 4 Task 3：
-        - 整理模式隐藏 TagFilterBar（中栏固定为暂存区递归列表，不参与筛选）。
-        - 切回浏览模式恢复 TagFilterBar，已选标签保留并重新应用筛选。
-        """
-        if mode == AppMode.organize:
-            # 切换到整理模式：若当前选中节点是 [S] 则加载暂存区递归列表
-            self._enter_organize_mode()
-            self._update_organize_hint()
-            # 装配面板显隐：根据当前绑定（无绑定时隐藏）
-            if self._assembly_panel is not None:
-                self._assembly_panel.setVisible(self._assembly_panel.current_unit() is not None)
-            # 快速插入按钮：整理模式可见（可用性由 _update_quick_insert_button_state 控制）
-            self._quick_insert_button.setVisible(True)
-            self._update_quick_insert_button_state()
-            # 右栏 MetadataPanel 保留显示（2026-07-19 决策修正）
-            # Stage 4 Task 3：整理模式隐藏 TagFilterBar
-            if self._tag_filter_bar is not None:
-                self._tag_filter_bar.setVisible(False)
-            # Stage 5 Task 1（Q5=B）：整理模式隐藏视图切换栏 + 强制切到列表视图
-            self._view_switch_bar.setVisible(False)
-            if self._current_view_index != VIEW_INDEX_LIST:
-                self._view_list_button.setChecked(True)
-                self._switch_view(VIEW_INDEX_LIST)
-        else:
-            # 切换回浏览模式：恢复跟随目录树刷新
-            self._organize_workarea_path = None
-            self._organize_target_path = None
-            self._set_mode_hint_text(ui.MODE_BROWSE_HINT)
-            # 恢复显示当前选中目录树节点的内容
-            self._refresh_content_for_current_tree_selection()
-            # 隐藏装配面板
-            if self._assembly_panel is not None:
-                self._assembly_panel.setVisible(False)
-            # 隐藏快速插入按钮
-            self._quick_insert_button.setVisible(False)
-            # Stage 4 Task 3：浏览模式恢复 TagFilterBar 显隐（按是否有分类）
-            if self._tag_filter_bar is not None:
-                self._tag_filter_bar.setVisible(self._tag_filter_bar.has_categories())
-            # Stage 5 Task 1（Q5=B）：浏览模式恢复视图切换栏
-            self._view_switch_bar.setVisible(True)
-
-    def _enter_organize_mode(self) -> None:
-        """进入整理模式：根据当前选中节点状态加载中栏。
-
-        - 当前选中节点是 [S]：加载该暂存区递归列表，工作区=目标=该节点路径。
-        - 当前选中节点非 [S] 或无选中：工作区为 None，中栏显示
-          "请在目录树中选中一个暂存区 [S] 节点" 提示，清空文件列表。
-        """
-        sm = self._tree_view.selectionModel()
-        indexes = sm.selectedIndexes() if sm is not None else []
-        if not indexes:
-            self._organize_workarea_path = None
-            self._content_list_model.refresh([])
-            self._content_empty_hint.setText(ui.STAGING_LIST_NO_STAGING_SELECTED)
-            return
-        node = self._tree_model.node_at(indexes[0])
-        if node is None:
-            self._organize_workarea_path = None
-            self._content_list_model.refresh([])
-            self._content_empty_hint.setText(ui.STAGING_LIST_NO_STAGING_SELECTED)
-            return
-        if node.is_staging:
-            # 选中节点是暂存区：加载递归列表
-            self._organize_workarea_path = node.real_path
-            self._organize_target_path = node.real_path
-            self._refresh_staging_content_list(node.real_path)
-        else:
-            # 选中节点不是暂存区：清空中栏，提示用户选中 [S] 节点
-            self._organize_workarea_path = None
-            self._organize_target_path = node.real_path
-            self._content_list_model.refresh([])
-            self._content_empty_hint.setText(ui.STAGING_LIST_NO_STAGING_SELECTED)
-
-    def _update_organize_hint(self) -> None:
-        """更新整理模式下的中栏顶部提示（走 Elide 流程）。"""
-        if self._organize_workarea_path is None:
-            # 无暂存区工作区：显示"请选中 [S] 节点"提示（可能附带目标路径）
-            target = self._organize_target_path
-            if target is not None:
-                target_hint = ui.MODE_ORGANIZE_TARGET_HINT.format(path=target)
-                self._set_mode_hint_text(f"{ui.STAGING_LIST_NO_STAGING_SELECTED}\n{target_hint}")
-            else:
-                self._set_mode_hint_text(ui.STAGING_LIST_NO_STAGING_SELECTED)
-            return
-        workarea_name = Path(self._organize_workarea_path).name
-        base_hint = ui.MODE_ORGANIZE_WORKAREA_HINT.format(name=workarea_name)
-        target = self._organize_target_path
-        if target is not None and target != self._organize_workarea_path:
-            target_hint = ui.MODE_ORGANIZE_TARGET_HINT.format(path=target)
-            self._set_mode_hint_text(f"{base_hint}\n{target_hint}")
-        else:
-            self._set_mode_hint_text(base_hint)
-
-    def _refresh_content_for_current_tree_selection(self) -> None:
-        """切回浏览模式时，根据目录树当前选中节点刷新中栏。"""
-        sm = self._tree_view.selectionModel()
-        if sm is None:
-            return
-        indexes = sm.selectedIndexes()
-        if not indexes:
-            return
-        node = self._tree_model.node_at(indexes[0])
-        if node is not None:
-            self._refresh_content_list(node.real_path)
-
-    # --- 模式测试接口 ---
-
-    def current_mode(self) -> AppMode:
-        """返回当前应用模式（供测试）。"""
-        return self._mode_manager.mode
-
-    def mode_hint_text(self) -> str:
-        """返回中栏顶部模式提示显示文本（已 Elide，供测试）。"""
-        return self._mode_hint_label.text()
-
-    def mode_hint_full_text(self) -> str:
-        """返回中栏顶部模式提示原始文本（未 Elide，供测试）。"""
-        return self._mode_hint_full_text
-
-    def organize_workarea_path(self) -> str | None:
-        """返回整理模式冻结的工作区路径（供测试）。"""
-        return self._organize_workarea_path
 
     # --- 装配面板测试接口（阶段 3 Task 4） ---
 

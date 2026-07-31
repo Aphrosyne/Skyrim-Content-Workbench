@@ -4,8 +4,6 @@
 - 默认视图为列表；
 - 切换到卡片视图后 QListView 可见；
 - 选中状态跨视图保持（用 entry.path 匹配）；
-- 整理模式隐藏视图切换栏；
-- 浏览模式恢复视图切换栏；
 - 缩放滑块改变卡片图标尺寸；
 - 卡片名称不含 [内容单元] 标记；
 - 卡片 ToolTip 含状态。
@@ -229,32 +227,6 @@ def test_zoom_combo_only_accepts_preset_sizes(main_window_env) -> None:
 def test_view_switch_bar_visible_in_browse_mode(main_window_env) -> None:
     """浏览模式视图切换栏可见（Q5=B）。"""
     window, _, _ = main_window_env
-    assert window.view_switch_bar_visible() is True
-
-
-def test_view_switch_bar_hidden_in_organize_mode(qapp, main_window_env) -> None:
-    """整理模式隐藏视图切换栏（Q5=B）。"""
-    window, _, _ = main_window_env
-    # 切到整理模式
-    window._set_mode(__import__("domain.models", fromlist=["AppMode"]).AppMode.organize)  # noqa: SLF001
-    qapp.processEvents()
-    assert window.view_switch_bar_visible() is False
-    # 整理模式强制切到列表视图
-    assert window.current_view_index() == VIEW_INDEX_LIST
-
-
-def test_view_switch_bar_restored_in_browse_mode(qapp, main_window_env) -> None:
-    """切回浏览模式恢复视图切换栏（Q5=B）。"""
-    window, _, _ = main_window_env
-    # 切到整理模式
-    from domain.models import AppMode
-
-    window._set_mode(AppMode.organize)  # noqa: SLF001
-    qapp.processEvents()
-    assert window.view_switch_bar_visible() is False
-    # 切回浏览模式
-    window._set_mode(AppMode.browse)  # noqa: SLF001
-    qapp.processEvents()
     assert window.view_switch_bar_visible() is True
 
 
@@ -580,21 +552,3 @@ def test_nav_forward_stack_cleared_on_new_navigation(qapp, main_window_env) -> N
     # 前进栈应清空
     assert window._nav_forward_stack == []  # noqa: SLF001
     assert window._nav_forward_button.isEnabled() is False  # noqa: SLF001
-
-
-def test_nav_history_not_recorded_in_organize_mode(qapp, main_window_env) -> None:
-    """整理模式不记录导航历史。"""
-    from domain.models import AppMode
-
-    window, _, _ = main_window_env
-    # 切到整理模式
-    window._set_mode(AppMode.organize)  # noqa: SLF001
-    qapp.processEvents()
-
-    # 整理模式下选中暂存区
-    _select_root(qapp, window)
-    qapp.processEvents()
-
-    # 不应记录历史
-    assert window._current_nav_path is None  # noqa: SLF001
-    assert window._nav_back_stack == []  # noqa: SLF001

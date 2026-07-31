@@ -12,7 +12,6 @@ ContentUnit / TagCategory / Tag / OperationHistory / FolderCache / ManagedRoot�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import ClassVar
 
 
@@ -333,17 +332,6 @@ class SearchResult:
                 f"SearchResult.matched_field 必须是 'title' / 'tag' / 'notes' 之一，"
                 f"得到：{self.matched_field}"
             )
-
-
-class AppMode(StrEnum):
-    """应用模式（spec §5.1/§5.2）。
-
-    - browse：浏览模式（默认），中栏跟随目录树节点刷新。
-    - organize：整理模式，中栏内容冻结，目录树变为目标选择器。
-    """
-
-    browse = "browse"
-    organize = "organize"
 
 
 @dataclass
