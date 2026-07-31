@@ -3,16 +3,17 @@
 spec §7.4：创建 Mod 组后自动绑定，显示当前 Mod 组文件夹内容，
 支持手动重命名预览图。
 
-设计要点（UX 重构 Phase 1 Task 1 Commit 3 调整）：
-- 不自动重命名图片。加入装配保留原文件名。
+设计要点（UX 重构 Phase 1 Task 2 调整）：
+- 不自动重命名图片。装配保留原文件名。
 - 手动重命名：右键图片 → "重命名为与 Mod 组同名"。
 - 「移除文件」功能已移除（L2 决策）：Task 4 将由剪切/移动到……替代。
-- 装配面板始终可见，未绑定时显示空状态占位（「无固定内容」）。
+- 「加入装配」菜单项已移除（B2-2 决策）：Task 4 将由「添加到钉住文件夹」+ 拖拽替代。
+- 装配面板迁移到右栏下方，始终可见，未绑定时显示空状态占位（「无固定内容」）。
 - 装配面板绑定当前 Mod 组，切换 Mod 组时刷新内容。
+- 移除关闭按钮（B1-1）：装配面板固定在右栏，不再支持手动隐藏。
 
 交互方式：
-- 中栏文件列表右键菜单「加入装配」，由 MainWindow._on_assembly_add_file 触发。
-- 装配面板本身只负责显示 + 右键重命名，不再接收拖拽。
+- 单击文件夹内容单元 → 装配面板绑定（A1-1）；双击文件夹 → 进入目录。
 - 创建 Mod 组成功后自动绑定装配面板（K1 决策）。
 """
 
@@ -26,11 +27,9 @@ from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QHBoxLayout,
     QLabel,
     QListView,
     QMenu,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -119,31 +118,32 @@ class AssemblyListModel(QAbstractListModel):
 
 
 class AssemblyPanel(QWidget):
-    """装配面板：显示 Mod 组文件夹内容，支持右键重命名预览图。
+    """装配面板（文件夹透视器）：透视任意文件夹内容，支持右键重命名预览图。
 
     信号回调（由 MainWindow 注入）：
     - on_cover_renamed(image_path)：右键重命名触发，MainWindow 调用 rename_as_cover。
-    - on_panel_closed()：用户点击关闭按钮，MainWindow 隐藏装配面板。
 
     使用回调而非直接调用 AssemblyService，便于 MainWindow 统一处理刷新逻辑
     （装配后需同步刷新装配面板 + 当前目录列表 + 提交事务）。
 
-    注：「加入装配」由 MainWindow 中栏右键菜单触发，不经过本面板回调。
     UX 重构 Phase 1 Task 1 Commit 3：「移除文件」功能已移除（L2 决策）。
+    UX 重构 Phase 1 Task 2：移除关闭按钮（B1-1），装配面板固定在右栏下方；
+    「加入装配」菜单项已移除（B2-2），Task 4 由「添加到钉住文件夹」替代；
+    装配面板语义扩展为"文件夹透视器"：bind_folder 透视任意文件夹（不限于内容单元）。
     """
 
     def __init__(
         self,
         assembly_service: AssemblyService,
         on_cover_renamed: Callable[[Path], None] | None = None,
-        on_panel_closed: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._service = assembly_service
         self._on_cover_renamed = on_cover_renamed
-        self._on_panel_closed = on_panel_closed
         self._current_unit: ContentUnit | None = None
+        # 当前透视的文件夹路径（bind_folder 设置，bind_mod_group 同步设置）
+        self._current_folder_path: Path | None = None
 
         self._setup_ui()
 
@@ -151,17 +151,9 @@ class AssemblyPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # 标题栏
-        title_row = QHBoxLayout()
+        # 标题栏（UX 重构 Task 2：移除关闭按钮，仅保留标题）
         self._title_label = QLabel(ui.ASSEMBLY_PANEL_TITLE)
-        title_row.addWidget(self._title_label)
-        title_row.addStretch(1)
-        self._close_button = QPushButton("×")
-        self._close_button.setFixedSize(24, 24)
-        self._close_button.setToolTip(ui.ASSEMBLY_PANEL_CLOSE_BUTTON)
-        self._close_button.clicked.connect(self._on_close_clicked)
-        title_row.addWidget(self._close_button)
-        layout.addLayout(title_row)
+        layout.addWidget(self._title_label)
 
         # 当前 Mod 组提示
         self._hint_label = QLabel(ui.ASSEMBLY_PANEL_EMPTY)
@@ -187,6 +179,7 @@ class AssemblyPanel(QWidget):
             unit: Mod 组 ContentUnit；None 表示解绑（清空面板，显示空状态占位）。
         """
         self._current_unit = unit
+        self._current_folder_path = Path(unit.path) if unit is not None else None
 
         if unit is None:
             self._title_label.setText(ui.ASSEMBLY_PANEL_TITLE)
@@ -199,18 +192,51 @@ class AssemblyPanel(QWidget):
         self._hint_label.setText(ui.ASSEMBLY_PANEL_HINT.format(name=mod_name))
         self._refresh_file_list()
 
+    def bind_folder(self, folder_path: Path | None) -> None:
+        """透视任意文件夹路径（不依赖 ContentUnit，用于非内容单元文件夹）。
+
+        UX 重构 Phase 1 Task 2：装配面板语义扩展为"文件夹透视器"。
+        单击非内容单元文件夹时调用，显示其内部文件。
+        清空 _current_unit 关联（封面重命名功能在 Task 2 Commit 2 调整）。
+
+        Args:
+            folder_path: 待透视的文件夹路径；None 表示清空面板。
+        """
+        self._current_unit = None
+        self._current_folder_path = folder_path
+
+        if folder_path is None:
+            self._title_label.setText(ui.ASSEMBLY_PANEL_TITLE)
+            self._hint_label.setText(ui.ASSEMBLY_PANEL_EMPTY)
+            self._list_model.refresh([])
+            return
+
+        # 显示文件夹名
+        self._hint_label.setText(ui.ASSEMBLY_PANEL_FOLDER_HINT.format(name=folder_path.name))
+        self._refresh_file_list()
+
     def refresh_current(self) -> None:
-        """刷新当前绑定的 Mod 组文件列表（装配操作后调用）。"""
-        if self._current_unit is not None:
+        """刷新当前透视的文件夹文件列表（装配操作后调用）。"""
+        if self._current_unit is not None or self._current_folder_path is not None:
             self._refresh_file_list()
 
     def current_unit_id(self) -> str | None:
-        """返回当前绑定的 Mod 组 ContentUnit ID（供测试）。"""
+        """返回当前绑定的 Mod 组 ContentUnit ID（供测试）。
+
+        非内容单元文件夹透视时返回 None。
+        """
         return self._current_unit.id if self._current_unit is not None else None
 
     def current_unit(self) -> ContentUnit | None:
         """返回当前绑定的 Mod 组 ContentUnit（供 MainWindow 查询）。"""
         return self._current_unit
+
+    def current_folder_path(self) -> Path | None:
+        """返回当前透视的文件夹路径（供 MainWindow 查询）。
+
+        内容单元文件夹和非内容单元文件夹都会返回路径。
+        """
+        return self._current_folder_path
 
     def entry_count(self) -> int:
         """返回当前文件列表条数（供测试）。"""
@@ -223,24 +249,28 @@ class AssemblyPanel(QWidget):
     # --- 内部 ---
 
     def _refresh_file_list(self) -> None:
-        """从 AssemblyService 重新加载 Mod 组文件夹内容。"""
-        if self._current_unit is None:
-            self._list_model.refresh([])
-            return
-        try:
-            entries = self._service.list_mod_group_files(self._current_unit.id)
-        except ContentUnitNotFoundError:
-            logger.warning("装配面板：ContentUnit 不存在：%s", self._current_unit.id)
-            entries = []
-        except Exception:  # noqa: BLE001
-            logger.exception("装配面板：加载文件列表失败")
+        """从 AssemblyService 重新加载当前透视文件夹的内容。
+
+        优先使用 ContentUnit 关联（list_mod_group_files），其次使用路径（list_folder_files）。
+        """
+        if self._current_unit is not None:
+            try:
+                entries = self._service.list_mod_group_files(self._current_unit.id)
+            except ContentUnitNotFoundError:
+                logger.warning("装配面板：ContentUnit 不存在：%s", self._current_unit.id)
+                entries = []
+            except Exception:  # noqa: BLE001
+                logger.exception("装配面板：加载文件列表失败")
+                entries = []
+        elif self._current_folder_path is not None:
+            try:
+                entries = self._service.list_folder_files(self._current_folder_path)
+            except Exception:  # noqa: BLE001
+                logger.exception("装配面板：加载文件夹列表失败")
+                entries = []
+        else:
             entries = []
         self._list_model.refresh(entries)
-
-    def _on_close_clicked(self) -> None:
-        """关闭按钮 → 通知 MainWindow 隐藏装配面板。"""
-        if self._on_panel_closed is not None:
-            self._on_panel_closed()
 
     def _on_context_menu(self, pos) -> None:  # noqa: ANN001 (Qt 信号)
         """右键菜单：图片重命名 / 复制路径。

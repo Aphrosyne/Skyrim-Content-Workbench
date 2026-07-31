@@ -9,6 +9,12 @@
 - 手动重命名预览图：`{Mod组名}.{扩展名}`，多张图片 `_2`、`_3` 后缀。
 - 装配面板绑定"当前选中 Mod 组"，整理模式下切换不同 Mod 组时刷新内容。
 
+UX 重构 Phase 1 Task 2（装配面板语义调整）：
+- 装配面板从"Mod 组装配器"扩展为"文件夹透视器"，可透视任意文件夹（不限于内容单元）。
+- 新增 list_folder_files(path)：按路径列出文件夹内容，不依赖 ContentUnit。
+- bind_mod_group 仍用于内容单元文件夹（保留 unit 关联用于封面重命名）。
+- 非内容单元文件夹通过 list_folder_files + bind_folder 透视（无 unit 关联）。
+
 约束（AGENTS 规则）：
 - 不覆盖已有文件/目录（FileOperationService 已保证）。
 - 文件操作通过 FileOperationService，本服务不直接调用 shutil / Path.rename。
@@ -131,6 +137,40 @@ class AssemblyService:
             return []
 
         # 文件夹在前，名称不区分大小写升序（与 ContentService 保持一致）
+        entries.sort(key=lambda e: (not e.is_dir, e.name.lower(), e.name))
+        return entries
+
+    def list_folder_files(self, folder_path: Path) -> list[FileEntry]:
+        """列出任意文件夹内的所有文件和子文件夹条目（透视用，不依赖 ContentUnit）。
+
+        UX 重构 Phase 1 Task 2：装配面板语义扩展为"文件夹透视器"，
+        支持透视非内容单元文件夹。逻辑与 list_mod_group_files 一致，
+        但直接接受路径参数，无需 ContentUnit 关联。
+
+        Args:
+            folder_path: 待透视的文件夹路径。
+
+        Returns:
+            FileEntry 列表（文件夹在前，名称升序）。路径不可访问时返回空列表。
+        """
+        try:
+            if not folder_path.is_dir():
+                logger.warning("list_folder_files: 路径不是目录：%s", folder_path)
+                return []
+        except OSError as e:
+            logger.warning("list_folder_files: 路径检查失败 %s: %s", folder_path, e)
+            return []
+
+        entries: list[FileEntry] = []
+        try:
+            for child in folder_path.iterdir():
+                entry = self._build_entry(child)
+                if entry is not None:
+                    entries.append(entry)
+        except OSError as e:
+            logger.warning("list_folder_files: 读取目录失败 %s: %s", folder_path, e)
+            return []
+
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower(), e.name))
         return entries
 

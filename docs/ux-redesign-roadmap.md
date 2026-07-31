@@ -63,6 +63,20 @@
 - 移除原有"从装配面板移除文件"功能（被剪切/移动到替代）
 - 原有装配面板代码保留，仅改变其父容器和布局位置
 
+**Task 2 实施记录（Commit 1）：**
+
+- 布局重构：移除中栏 `_middle_splitter`，新建右栏 `_right_splitter`（元数据上 + 装配下，初始比例 3:2）。
+- 移除装配面板关闭按钮（B1-1）：`_close_button` / `_on_close_clicked` / `on_panel_closed` 回调 / `_on_assembly_closed` 一并清理。
+- 单击行为 A1-1：单击文件夹内容单元 → 绑定装配面板；单击其他 → 解绑；双击文件夹 → 进入目录。
+- 「加入装配」菜单项移除（B2-2）：`_on_assembly_add_file` / `MENU_ADD_TO_ASSEMBLY` / `ASSEMBLY_ADD_FILE_OK/FAILED` 清理，Task 4 由「添加到钉住文件夹」替代。
+- 信号循环防护：`_bind_assembly_panel` → `bind_mod_group` → `_refresh_file_list` 仅刷新装配面板内部 model，不反向修改 content_view 选区。
+- 装配面板语义调整：扩展为"文件夹透视器"，可透视任意文件夹（不限于内容单元）。新增 `AssemblyService.list_folder_files(path)` + `AssemblyPanel.bind_folder(path)` + `MainWindow._bind_assembly_folder`。单击非内容单元文件夹 → 装配面板透视其内部文件。
+
+**留给后续 Task 的项（Task 2 新增）：**
+
+- 装配面板后续可能改名为"文件夹透视器"以匹配新语义（待用户确认时机，登记为技术债）。
+- 装配面板内文件右键菜单继承中栏操作（重命名/复制/剪切/移动到/复制路径 + 图片重命名封面 + 空白处移动到）→ Commit 2 实现。
+
 ### Task 3：📌 钉住功能
 
 - 装配面板右上角添加小按钮 📌（Pin/Unpin 切换）

@@ -2,14 +2,13 @@
 
 覆盖：
 - 创建 Mod 组后装配面板自动绑定并显示
-- 双击 Mod 组文件夹 → 装配面板绑定（单击不绑定）
-- 装配面板回调：add_file / rename_as_cover / closed
-- 装配操作后暂存区列表与装配面板同步刷新
-- 中栏右键菜单「加入装配」（2026-07-17 取消拖拽方案后新增）
+- 装配面板始终可见，未绑定时显示空状态
+- 装配面板回调：rename_as_cover
+- 装配面板切换绑定（创建多个 Mod 组）
 
-注（2026-07-17 调整）：拖拽方案已取消，加入装配改由右键菜单触发；
-装配面板切换改由双击 Mod 组文件夹触发（单击仅选中显示元数据）。
 注（UX 重构 Phase 1 Task 1）：移除整理/浏览双模式，装配面板通过创建 Mod 组自动绑定。
+注（UX 重构 Phase 1 Task 2）：装配面板迁至右栏下方；单击文件夹内容单元绑定装配面板（A1-1）；
+关闭按钮移除（B1-1）；「加入装配」菜单项移除（B2-2），Task 4 由「添加到钉住文件夹」替代。
 """
 
 from __future__ import annotations
@@ -256,62 +255,7 @@ def test_assembly_panel_bind_switches_between_mod_groups(qapp, main_window_env) 
     assert entry.name == "extra_patch.zip"
 
 
-# === 装配面板回调：add_file ===
-
-
-def test_on_assembly_add_file_moves_file_to_mod_group(qapp, main_window_env) -> None:
-    """_on_assembly_add_file：暂存区文件移入 Mod 组文件夹。"""
-    window, _, root_dir, _ = main_window_env
-    staging = root_dir / "Stash"
-    _select_staging(qapp, window)
-    qapp.processEvents()
-
-    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
-
-    # 重新选中暂存区节点（_create_mod_group 内部 _refresh_tree 会重置树选区）
-    _select_staging(qapp, window)
-    qapp.processEvents()
-
-    # 暂存区中应还有 preview.jpg（未移入）
-    src_path = staging / "preview.jpg"
-    assert src_path.is_file()
-
-    # 触发 add_file 回调
-    window._on_assembly_add_file(src_path)  # noqa: SLF001
-    qapp.processEvents()
-
-    # 源文件已移入 Mod 组文件夹
-    assert not src_path.exists()
-    assert (mod_folder / "preview.jpg").is_file()
-    # 装配面板刷新后包含 2 个文件
-    assert window.assembly_panel_entry_count() == 2
-    # 暂存区列表已刷新（preview.jpg 不再出现）
-    assert _find_entry_by_name(window, "preview.jpg") is None
-
-
-def test_on_assembly_add_file_conflict(qapp, main_window_env, monkeypatch) -> None:
-    """_on_assembly_add_file：目标已存在同名文件 → ConflictError 提示。"""
-    window, _, root_dir, _ = main_window_env
-    staging = root_dir / "Stash"
-    _select_staging(qapp, window)
-    qapp.processEvents()
-
-    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
-
-    # 在 Mod 组内手动放置同名文件，制造冲突
-    (mod_folder / "preview.jpg").write_bytes(b"\x00" * 10)
-
-    # 暂存区也有 preview.jpg
-    src_path = staging / "preview.jpg"
-    assert src_path.is_file()
-
-    # Mock QMessageBox 避免阻塞
-    monkeypatch.setattr("app.main_window.QMessageBox.warning", lambda *a, **kw: None)
-    window._on_assembly_add_file(src_path)  # noqa: SLF001
-    qapp.processEvents()
-
-    # 源文件未被移动（冲突）
-    assert src_path.is_file()
+# === 装配面板回调：add_file（UX 重构 Phase 1 Task 2 B2-2：加入装配功能已移除，测试一并删除） ===
 
 
 # === 装配面板回调：rename_as_cover ===
@@ -320,14 +264,12 @@ def test_on_assembly_add_file_conflict(qapp, main_window_env, monkeypatch) -> No
 def test_on_assembly_rename_cover_single_image(qapp, main_window_env) -> None:
     """_on_assembly_rename_cover：单张图片重命名为 {Mod组名}.{扩展名}。"""
     window, _, root_dir, _ = main_window_env
-    staging = root_dir / "Stash"
     _select_staging(qapp, window)
     qapp.processEvents()
 
     unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
-    # 把 preview.jpg 移入 Mod 组
-    window._on_assembly_add_file(staging / "preview.jpg")  # noqa: SLF001
-    qapp.processEvents()
+    # UX 重构 Task 2：加入装配功能已移除，直接在 Mod 组内放置图片文件
+    (mod_folder / "preview.jpg").write_bytes(b"\x00" * 50)
 
     # 重命名 preview.jpg → MyMod.jpg
     image_path = mod_folder / "preview.jpg"
@@ -389,149 +331,10 @@ def test_on_assembly_rename_cover_not_image(qapp, main_window_env, monkeypatch) 
     assert not (mod_folder / "MyMod.7z").exists()
 
 
-# === 装配面板回调：closed ===
+# === 装配面板回调：closed（UX 重构 Phase 1 Task 2：关闭按钮已移除，测试一并删除） ===
 
 
-def test_on_assembly_closed_hides_panel(qapp, main_window_env) -> None:
-    """_on_assembly_closed：隐藏装配面板（不解绑）。"""
-    window, _, _, _ = main_window_env
-    _select_staging(qapp, window)
-    qapp.processEvents()
-
-    unit, _ = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
-    assert window.assembly_panel_visible()
-
-    window._on_assembly_closed()  # noqa: SLF001
-    qapp.processEvents()
-    assert not window.assembly_panel_visible()
-    # 解绑前 ContentUnit 仍保留（便于再次打开）
-    assert window.assembly_panel_current_unit_id() == unit.id
-
-
-# === 中栏右键菜单「加入装配」（2026-07-17 取消拖拽方案后新增） ===
-
-
-class _FakeMenuAction:
-    """模拟 QAction：仅保留 text 用于菜单项识别。"""
-
-    def __init__(self, text: str) -> None:
-        self._text = text
-
-    def text(self) -> str:  # noqa: D401 (Qt 命名)
-        return self._text
-
-    def setEnabled(self, enabled: bool) -> None:  # noqa: ANN001 (Qt 签名)
-        """no-op：生产代码调用 act.setEnabled(enabled)，测试中忽略。"""
-
-
-class _FakeMenu:
-    """模拟 QMenu：捕获 addAction 调用，exec 返回匹配目标标签的 action。
-
-    PySide6 的 QMenu.exec 为 C++ 实现，无法通过 monkeypatch.setattr(QMenu, "exec", ...)
-    在实例方法层级替换；改为在模块命名空间替换 QMenu 类本身。
-    """
-
-    def __init__(self, parent=None) -> None:  # noqa: ANN001 (Qt 签名)
-        self._actions: list[_FakeMenuAction] = []
-        self._captured: list[str] = []
-        self._target_label: str | None = None
-
-    def addAction(self, label):  # noqa: ANN001 (Qt 签名)
-        action = _FakeMenuAction(label)
-        self._actions.append(action)
-        return action
-
-    def actions(self) -> list[_FakeMenuAction]:
-        return self._actions
-
-    def exec(self, pos, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, A003 (Qt 命名)
-        for action in self._actions:
-            self._captured.append(action.text())
-            if self._target_label is not None and action.text() == self._target_label:
-                return action
-        return None
-
-
-def _patch_qmenu(monkeypatch, target_label: str | None = None) -> list[str]:
-    """Patch app.main_window.QMenu，返回捕获到的 action 文本列表容器。
-
-    Args:
-        target_label: exec 时返回此标签对应的 action；None 表示始终返回 None（仅捕获）。
-    """
-    from app import main_window as mw_module
-
-    captured: list[str] = []
-
-    class _CapturingMenu(_FakeMenu):
-        def __init__(self, parent=None) -> None:  # noqa: ANN001
-            super().__init__(parent)
-            self._captured = captured
-            self._target_label = target_label
-
-    monkeypatch.setattr(mw_module, "QMenu", _CapturingMenu)
-    return captured
-
-
-def test_add_to_assembly_menu_moves_file_to_mod_group(qapp, main_window_env, monkeypatch) -> None:
-    """右键菜单「加入装配」：暂存区文件移入 Mod 组文件夹。
-
-    取代原拖拽方案，底层调用 AssemblyService.add_file。
-    """
-    window, _, root_dir, _ = main_window_env
-    staging = root_dir / "Stash"
-    _select_staging(qapp, window)
-    qapp.processEvents()
-
-    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
-
-    # 暂存区中应还有 preview.jpg（未移入）
-    src_path = staging / "preview.jpg"
-    assert src_path.is_file()
-
-    # 选中 preview.jpg
-    _select_entry_by_name(qapp, window, "preview.jpg")
-
-    # Patch QMenu：捕获菜单项并返回「加入装配」action
-    captured_actions = _patch_qmenu(monkeypatch, target_label="加入装配")
-
-    # 触发右键菜单
-    viewport = window._content_view.viewport()  # noqa: SLF001
-    window._on_content_context_menu(viewport.mapToGlobal(viewport.rect().center()))  # noqa: SLF001
-    qapp.processEvents()
-
-    # 菜单中应包含「加入装配」
-    assert "加入装配" in captured_actions
-
-    # 源文件已移入 Mod 组文件夹
-    assert not src_path.exists()
-    assert (mod_folder / "preview.jpg").is_file()
-    # 装配面板刷新后包含 2 个文件
-    assert window.assembly_panel_entry_count() == 2
-
-
-def test_add_to_assembly_menu_not_shown_without_mod_group_binding(
-    qapp, main_window_env, monkeypatch
-) -> None:
-    """未绑定 Mod 组时右键菜单不显示「加入装配」。"""
-    window, _, _, _ = main_window_env
-    _select_staging(qapp, window)
-    qapp.processEvents()
-
-    # 未创建 Mod 组 → 装配面板无绑定
-    assert window.assembly_panel_current_unit_id() is None
-
-    # 选中 preview.jpg
-    _select_entry_by_name(qapp, window, "preview.jpg")
-
-    # Patch QMenu：仅捕获，不返回任何 action
-    captured_actions = _patch_qmenu(monkeypatch, target_label=None)
-
-    viewport = window._content_view.viewport()  # noqa: SLF001
-    window._on_content_context_menu(viewport.mapToGlobal(viewport.rect().center()))  # noqa: SLF001
-    qapp.processEvents()
-
-    # 菜单中不应包含「加入装配」
-    assert "加入装配" not in captured_actions
+# === 中栏右键菜单「加入装配」（UX Task 2 B2-2：已移除，测试与辅助类一并删除） ===
 
 
 # === 中文路径支持 ===
@@ -540,7 +343,6 @@ def test_add_to_assembly_menu_not_shown_without_mod_group_binding(
 def test_assembly_panel_chinese_mod_group(qapp, main_window_env) -> None:
     """中文 Mod 组名 + 中文文件名：装配面板正常工作。"""
     window, _, root_dir, _ = main_window_env
-    staging = root_dir / "Stash"
     _select_staging(qapp, window)
     qapp.processEvents()
 
@@ -549,14 +351,95 @@ def test_assembly_panel_chinese_mod_group(qapp, main_window_env) -> None:
     assert window.assembly_panel_visible()
     assert mod_folder.name == "寒霜之心"
 
-    # 创建一个中文文件名的图片并移入
-    chinese_image = staging / "预览图.jpg"
-    chinese_image.write_bytes(b"\x00" * 50)
-    window._on_assembly_add_file(chinese_image)  # noqa: SLF001
-    qapp.processEvents()
+    # UX 重构 Task 2：加入装配功能已移除，直接在 Mod 组内放置中文图片文件
+    (mod_folder / "预览图.jpg").write_bytes(b"\x00" * 50)
     assert (mod_folder / "预览图.jpg").is_file()
 
     # 重命名为 Mod 组同名
     window._on_assembly_rename_cover(mod_folder / "预览图.jpg")  # noqa: SLF001
     qapp.processEvents()
     assert (mod_folder / "寒霜之心.jpg").is_file()
+
+
+# === UX 重构 Phase 1 Task 2：单击绑定装配面板（A1-1） ===
+
+
+def test_single_click_folder_content_unit_binds_assembly(qapp, main_window_env) -> None:
+    """A1-1：单击文件夹内容单元 → 装配面板绑定并显示其内部文件。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    # 创建 Mod 组（装配面板自动绑定）
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+    assert window.assembly_panel_current_unit_id() == unit.id
+
+    # 重新选中暂存区，单击其他文件 → 装配面板应解绑
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    _select_entry_by_name(qapp, window, "preview.jpg")
+    qapp.processEvents()
+    assert window.assembly_panel_current_unit_id() is None
+
+    # 回到暂存区，单击 MyMod 文件夹内容单元 → 装配面板应绑定
+    _select_entry_by_name(qapp, window, "MyMod")
+    qapp.processEvents()
+    assert window.assembly_panel_current_unit_id() == unit.id
+    assert window.assembly_panel_entry_count() == 1
+
+
+def test_single_click_non_content_unit_unbinds_assembly(qapp, main_window_env) -> None:
+    """A1-1：单击非内容单元 → 装配面板解绑显空状态。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    # 创建 Mod 组（装配面板自动绑定）
+    unit, _ = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+    assert window.assembly_panel_current_unit_id() == unit.id
+
+    # 重新选中暂存区，单击普通文件 preview.jpg → 装配面板解绑
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    _select_entry_by_name(qapp, window, "preview.jpg")
+    qapp.processEvents()
+    assert window.assembly_panel_current_unit_id() is None
+
+
+def test_assembly_panel_in_right_splitter(qapp, main_window_env) -> None:
+    """UX Task 2：装配面板位于右栏 _right_splitter（非中间区 _middle_splitter）。"""
+    window, _, _, _ = main_window_env
+    # _middle_splitter 已不存在
+    assert not hasattr(window, "_middle_splitter")
+    # _right_splitter 存在且包含元数据 + 装配面板
+    assert hasattr(window, "_right_splitter")
+    splitter = window._right_splitter  # noqa: SLF001
+    assert splitter.count() == 2
+    assert splitter.widget(0) is window._metadata_group  # noqa: SLF001
+    assert splitter.widget(1) is window._assembly_panel  # noqa: SLF001
+
+
+def test_single_click_non_content_unit_folder_inspects(qapp, main_window_env) -> None:
+    """UX Task 2：单击非内容单元文件夹 → 装配面板透视其内部文件（文件夹透视器语义）。"""
+    window, _, root_dir, _ = main_window_env
+    staging = root_dir / "Stash"
+    # 在暂存区创建一个非内容单元文件夹 + 内部文件
+    plain_folder = staging / "PlainFolder"
+    plain_folder.mkdir()
+    (plain_folder / "readme.txt").write_text("hi", encoding="utf-8")
+
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    # 单击 PlainFolder 文件夹（非内容单元）
+    _select_entry_by_name(qapp, window, "PlainFolder")
+    qapp.processEvents()
+
+    # 装配面板应透视显示其内部文件
+    assert window.assembly_panel_current_unit_id() is None  # 无 ContentUnit 关联
+    panel = window._assembly_panel  # noqa: SLF001
+    assert panel.current_folder_path() == plain_folder
+    assert panel.entry_count() == 1
+    entry = panel.entry_at(0)
+    assert entry is not None
+    assert entry.name == "readme.txt"

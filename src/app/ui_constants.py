@@ -75,7 +75,7 @@ MENU_UNMARK_CONTENT_UNIT = "取消内容单元标记"
 MENU_BATCH_MARK_CONTENT_UNIT = "批量标记为内容单元"
 MENU_BATCH_UNMARK_CONTENT_UNIT = "批量取消内容单元标记"
 MENU_BATCH_TAG = "批量打标签"
-MENU_ADD_TO_ASSEMBLY = "加入装配"
+# UX 重构 Phase 1 Task 2（B2-2）：移除 MENU_ADD_TO_ASSEMBLY，Task 4 由「添加到钉住文件夹」替代
 MENU_QUICK_SET_COVER = "快速设置封面"
 MENU_QUICK_SET_COVER_NO_IMAGE = "该目录无可用图片"
 MENU_QUICK_SET_COVER_ALREADY_SET = "已设置封面，未覆盖"
@@ -212,14 +212,15 @@ BATCH_MARK_CONTENT_UNIT_FAILED = "批量标记失败"
 BATCH_UNMARK_CONTENT_UNIT_FAILED = "批量取消标记失败"
 
 # 装配面板（阶段 3 Task 4）
+# UX 重构 Phase 1 Task 2：移除 ASSEMBLY_PANEL_CLOSE_BUTTON（B1-1 关闭按钮已删）
 ASSEMBLY_PANEL_TITLE = "装配面板"
 ASSEMBLY_PANEL_HINT = "当前 Mod 组：{name}"
+# UX 重构 Phase 1 Task 2：非内容单元文件夹透视时的提示文案
+ASSEMBLY_PANEL_FOLDER_HINT = "当前文件夹：{name}"
 ASSEMBLY_PANEL_EMPTY = "无固定内容"
-ASSEMBLY_PANEL_CLOSE_BUTTON = "关闭装配面板"
 ASSEMBLY_MENU_RENAME_COVER = "重命名为与 Mod 组同名"
 ASSEMBLY_MENU_COPY_PATH = "复制路径"
-ASSEMBLY_ADD_FILE_OK = "已加入文件：{name}"
-ASSEMBLY_ADD_FILE_FAILED = "加入文件失败"
+# UX 重构 Phase 1 Task 2（B2-2）：移除 ASSEMBLY_ADD_FILE_OK/FAILED，加入装配功能已删
 ASSEMBLY_RENAME_COVER_OK = "已重命名为：{name}"
 ASSEMBLY_RENAME_COVER_FAILED = "重命名失败"
 ASSEMBLY_NOT_IMAGE_HINT = "仅图片文件可重命名为 Mod 组同名。"

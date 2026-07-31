@@ -148,6 +148,66 @@ class TestListModGroupFiles:
         assert entries == []
 
 
+# === list_folder_files（UX 重构 Phase 1 Task 2：文件夹透视器） ===
+
+
+class TestListFolderFiles:
+    def test_lists_files_in_plain_folder(self, assembly_env, tmp_path: Path) -> None:
+        """列出任意文件夹内所有文件（无需 ContentUnit 关联）。"""
+        svc, *_ = assembly_env
+        folder = tmp_path / "PlainFolder"
+        folder.mkdir()
+        (folder / "readme.txt").write_text("hi", encoding="utf-8")
+        (folder / "data.zip").write_bytes(b"\x00" * 10)
+
+        entries = svc.list_folder_files(folder)
+
+        names = sorted(e.name for e in entries)
+        assert names == ["data.zip", "readme.txt"]
+
+    def test_lists_subdirectories(self, assembly_env, tmp_path: Path) -> None:
+        """列出文件夹内的子目录。"""
+        svc, *_ = assembly_env
+        folder = tmp_path / "PlainFolder"
+        folder.mkdir()
+        (folder / "子目录").mkdir()
+
+        entries = svc.list_folder_files(folder)
+
+        subdirs = [e for e in entries if e.is_dir]
+        assert len(subdirs) == 1
+        assert subdirs[0].name == "子目录"
+
+    def test_folders_sorted_before_files(self, assembly_env, tmp_path: Path) -> None:
+        """文件夹排在文件之前。"""
+        svc, *_ = assembly_env
+        folder = tmp_path / "PlainFolder"
+        folder.mkdir()
+        (folder / "zzz_file.txt").write_bytes(b"data")
+        (folder / "aaa_folder").mkdir()
+
+        entries = svc.list_folder_files(folder)
+
+        assert entries[0].is_dir
+        assert entries[0].name == "aaa_folder"
+
+    def test_path_not_directory_returns_empty(self, assembly_env, tmp_path: Path) -> None:
+        """路径不是目录返回空列表。"""
+        svc, *_ = assembly_env
+        file_path = tmp_path / "not_a_dir.7z"
+        file_path.write_bytes(b"data")
+
+        entries = svc.list_folder_files(file_path)
+
+        assert entries == []
+
+    def test_nonexistent_path_returns_empty(self, assembly_env, tmp_path: Path) -> None:
+        """路径不存在返回空列表（不抛异常）。"""
+        svc, *_ = assembly_env
+        entries = svc.list_folder_files(tmp_path / "nonexistent")
+        assert entries == []
+
+
 # === add_file ===
 
 

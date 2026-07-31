@@ -209,17 +209,7 @@ def test_panel_refresh_current(qapp, mod_group_env) -> None:
     assert panel.entry_count() == 2
 
 
-def test_panel_close_button_triggers_callback(qapp, assembly_service) -> None:
-    """关闭按钮 → 触发 on_panel_closed 回调。"""
-    service, _ = assembly_service
-    closed_called = {"flag": False}
-
-    def on_closed() -> None:
-        closed_called["flag"] = True
-
-    panel = AssemblyPanel(service, on_panel_closed=on_closed)
-    panel._on_close_clicked()  # noqa: SLF001
-    assert closed_called["flag"]
+# === 关闭按钮测试已移除（UX 重构 Phase 1 Task 2：B1-1 移除关闭按钮） ===
 
 
 # === 拖拽方案已取消（2026-07-17 调整为右键菜单「加入装配」） ===

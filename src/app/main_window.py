@@ -162,7 +162,10 @@ class _RubberBandTableView(QTableView):
                 self._origin = event.pos()
                 self._drag_selecting = True
                 if self._rubber_band is None:
-                    self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
+                    # UX 重构 Phase 1 Task 2：rubber band 父对象改为 viewport()，
+                    # 使其几何坐标与 event.pos() / rowAt() 一致（原父对象为 self，
+                    # 受 header 高度偏移影响，框选框与鼠标指针存在垂直错位）。
+                    self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
                 self._rubber_band.setGeometry(QRect(self._origin, QSize()))
                 self._rubber_band.show()
                 # 清空当前选择（与 Explorer 行为一致：空白拖动开始新选择）
@@ -392,6 +395,8 @@ class MainWindow(QMainWindow):
         self._search_box.setClearButtonEnabled(True)
         # 固定宽度：避免输入内容或清除按钮(×)出现时撑宽搜索框
         self._search_box.setFixedWidth(360)
+        # UX 重构 Phase 1 Task 2：启动时不自动聚焦搜索栏（ClickFocus：点击才聚焦）
+        self._search_box.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self._search_box.returnPressed.connect(self._on_search_triggered)
         self._search_box.setVisible(self._search_service is not None)
         top_layout.addWidget(self._search_box)
@@ -510,13 +515,10 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(left)
 
-        # === 中栏：文件列表 + 装配面板（roadmap Task 4 + 阶段 3 Task 4） ===
+        # === 中栏：文件列表（UX 重构 Phase 1 Task 2：装配面板迁至右栏） ===
         middle = QWidget()
         middle_layout = QVBoxLayout(middle)
         middle_layout.setContentsMargins(0, 0, 0, 0)
-
-        # 上下分割：上方文件列表，下方装配面板
-        self._middle_splitter = QSplitter(Qt.Vertical)
 
         self._content_group = QGroupBox(ui.CONTENT_LIST_GROUP_TITLE)
         content_layout = QVBoxLayout(self._content_group)
@@ -699,32 +701,17 @@ class MainWindow(QMainWindow):
         self._content_empty_hint.setWordWrap(True)
         content_layout.addWidget(self._content_empty_hint)
 
-        self._middle_splitter.addWidget(self._content_group)
-
-        # 装配面板（UX 重构 Phase 1 Task 1 Commit 3）：
-        # 始终可见，未绑定时显示空状态占位「无固定内容」。
-        # 移除文件功能已移除（L2），on_file_removed 回调不再注入。
-        if self._assembly_service is not None:
-            self._assembly_panel = AssemblyPanel(
-                self._assembly_service,
-                on_cover_renamed=self._on_assembly_rename_cover,
-                on_panel_closed=self._on_assembly_closed,
-            )
-            self._middle_splitter.addWidget(self._assembly_panel)
-            # 初始拉伸比例：文件列表占大头，装配面板占小头
-            self._middle_splitter.setStretchFactor(0, 3)
-            self._middle_splitter.setStretchFactor(1, 1)
-        else:
-            self._assembly_panel = None  # type: ignore[assignment]
-
-        middle_layout.addWidget(self._middle_splitter)
+        middle_layout.addWidget(self._content_group)
 
         splitter.addWidget(middle)
 
-        # === 右栏：元数据面板 ===
+        # === 右栏：元数据（上）+ 装配面板（下），垂直分割（UX 重构 Phase 1 Task 2） ===
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 上下分割：上方元数据，下方装配面板（初始比例 3:2，可拖拽调整）
+        self._right_splitter = QSplitter(Qt.Vertical)
 
         self._metadata_group = QGroupBox(ui.METADATA_GROUP_TITLE)
         metadata_layout = QVBoxLayout(self._metadata_group)
@@ -747,7 +734,26 @@ class MainWindow(QMainWindow):
             metadata_layout.addWidget(self._metadata_panel)
         else:
             self._metadata_panel = None  # type: ignore[assignment]
-        right_layout.addWidget(self._metadata_group)
+        self._right_splitter.addWidget(self._metadata_group)
+
+        # 装配面板（UX 重构 Phase 1 Task 2：从中间区迁至右栏下方）：
+        # 始终可见，未绑定时显示空状态占位「无固定内容」。
+        # 移除关闭按钮（B1-1），on_panel_closed 回调不再注入。
+        if self._assembly_service is not None:
+            self._assembly_panel = AssemblyPanel(
+                self._assembly_service,
+                on_cover_renamed=self._on_assembly_rename_cover,
+            )
+            self._right_splitter.addWidget(self._assembly_panel)
+            # 初始拉伸比例：元数据 3 : 装配 2（C1 决策）
+            # setSizes 强制初始像素比例，stretchFactor 维持拉伸比例
+            self._right_splitter.setSizes([450, 300])
+            self._right_splitter.setStretchFactor(0, 3)
+            self._right_splitter.setStretchFactor(1, 2)
+        else:
+            self._assembly_panel = None  # type: ignore[assignment]
+
+        right_layout.addWidget(self._right_splitter)
 
         splitter.addWidget(right)
 
@@ -1003,19 +1009,19 @@ class MainWindow(QMainWindow):
         # 其他情况（普通文件）：不响应
 
     def _on_content_selection_changed(self, *args) -> None:  # noqa: N802, ANN001 (Qt 信号)
-        """文件列表选中变化：单击选中内容单元 → 右侧立即显示元数据。
+        """文件列表选中变化：单击选中条目 → 右栏同步更新元数据与装配面板。
 
-        交互优化（2026-07-15）：元数据作为"详情面板"，单击查看更符合
-        资源管理器/IDE/DAM 软件的交互方式。
-        - 选中内容单元 → 显示元数据。
-        - 选中非内容单元 → 清空元数据面板（或保持现状，这里选择清空以避免误导）。
-        - 整理模式下同样生效（暂存区列表中的内容单元也响应）。
+        UX 重构 Phase 1 Task 2（A1-1 决策）：
+        - 单选文件夹内容单元 → 显示元数据 + 绑定装配面板显示其内部文件。
+        - 单选文件类型内容单元 → 显示元数据 + 装配面板解绑显空状态。
+        - 单选非内容单元 → 清空元数据 + 装配面板解绑显空状态。
+        - 多选 → 清空元数据 + 装配面板解绑显空状态（避免混淆）。
+        - 双击文件夹 → 进入目录（_on_entry_activated 处理，与单击不冲突）。
 
-        注（2026-07-17 调整）：单击不再切换装配面板绑定。装配面板切换
-        通过双击 Mod 组文件夹触发（_on_entry_activated）。
-
-        Stage 4 Task 3（Q6: A 修正）：标签筛选激活时仍保留元数据面板交互，
-        让用户能查看选中条目的元数据。
+        信号循环防护（用户补充注意）：
+        _bind_assembly_panel → bind_mod_group → _refresh_file_list 仅刷新装配面板
+        内部 AssemblyListModel，不反向修改 content_view 选区，因此 selectionChanged
+        不会再次触发本方法。元数据更新同理。
 
         Stage 5 Task 1：支持列表视图和卡片视图，根据当前活动视图获取选中。
         """
@@ -1034,17 +1040,29 @@ class MainWindow(QMainWindow):
         indexes = sm.selectedRows()
         if not indexes:
             return
-        # 只在单选时显示元数据（多选时清空避免混淆）
+        # 多选：清空元数据 + 解绑装配面板
         if len(indexes) > 1:
             self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+            self._bind_assembly_panel(None)
             return
         entry = active_model.entry_at(indexes[0].row())
         if entry is None:
             return
         if entry.content_unit is not None:
+            # 显示元数据
             self._update_metadata(entry.content_unit)
-        else:
+            # 文件夹内容单元 → 绑定装配面板（保留 unit 关联用于封面重命名）
+            # 文件类型内容单元 → 解绑装配面板
+            self._bind_assembly_panel(entry.content_unit if entry.is_dir else None)
+        elif entry.is_dir:
+            # UX 重构 Phase 1 Task 2：非内容单元文件夹 → 装配面板透视（文件夹透视器语义）
+            # 清空元数据（非内容单元无元数据），装配面板按路径透视显示其内部文件
             self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+            self._bind_assembly_folder(Path(entry.path))
+        else:
+            # 非内容单元文件：清空元数据 + 解绑装配面板
+            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+            self._bind_assembly_panel(None)
 
     def _on_content_header_clicked(self, column: int) -> None:  # noqa: N802 (Qt 命名)
         """文件列表列头点击：切换排序键，同列再点切换升降序。
@@ -1512,14 +1530,16 @@ class MainWindow(QMainWindow):
         Stage 5 Task 3a：空白区域右键显示"新建文件夹"（基于当前目录）。
 
         菜单项：
-        - 创建 Mod 组：仅整理模式 + 单选文件 + 注入了 ContentUnitCreationService 时显示。
-        - 加入装配：仅整理模式 + 单选文件（非目录）+ 装配面板已绑定 Mod 组时显示。
+        - 创建 Mod 组：单选或多选文件 + 注入了 ContentUnitCreationService 时显示。
         - 标记为内容单元 / 把每个文件标记为内容单元：未标记条目。
         - 取消标记：已标记 ContentUnit。
         - 快速设置封面：已标记文件夹内容单元（压缩包内容单元灰显）。
         - 新建文件夹 / 重命名 / 删除（Stage 5 Task 3a）。
         - 在资源管理器中打开：始终显示（Stage 5 Task 1）。
         - 复制路径：始终显示。
+
+        UX 重构 Phase 1 Task 2（B2-2）：「加入装配」菜单项已移除，
+        Task 4 将由「添加到钉住文件夹」+ 拖拽替代。
         """
         # 取当前活动视图（列表 or 卡片）
         active_view = (
@@ -1612,22 +1632,8 @@ class MainWindow(QMainWindow):
                 (ui.MENU_CREATE_MOD_GROUP, lambda: self._on_create_mod_group(entries), True)
             )
 
-        # 加入装配：单选 + 文件（非目录）+ 装配面板已绑定 Mod 组
-        # UX 重构 Phase 1 Task 1：移除整理模式限制。
-        if (
-            self._assembly_service is not None
-            and self._assembly_panel is not None
-            and self._assembly_panel.current_unit() is not None
-            and len(entries) == 1
-            and not entries[0].is_dir
-        ):
-            actions.append(
-                (
-                    ui.MENU_ADD_TO_ASSEMBLY,
-                    lambda: self._on_assembly_add_file(Path(entries[0].path)),
-                    True,
-                )
-            )
+        # 「加入装配」菜单项已移除（UX 重构 Phase 1 Task 2 B2-2 决策）：
+        # Task 4 将由「添加到钉住文件夹」+ 拖拽替代。
 
         # 标记/取消标记
         if len(entries) == 1:
@@ -2127,28 +2133,16 @@ class MainWindow(QMainWindow):
         # 同步快速插入按钮可用性（C2：永久禁用，此处保留调用不删方法）
         self._update_quick_insert_button_state()
 
-    def _on_assembly_add_file(self, src_path: Path) -> None:
-        """装配面板加入文件：调用 AssemblyService.add_file + 刷新双方 + 提交。
+    def _bind_assembly_folder(self, folder_path: Path | None) -> None:
+        """装配面板透视任意文件夹路径（不依赖 ContentUnit）。
 
-        add_file 不自动重命名（spec §7.4：自动整理阶段不修改任何文件名）。
-        UX 重构 Phase 1 Task 1：移除暂存区刷新，改为刷新当前显示目录。
+        UX 重构 Phase 1 Task 2：装配面板语义扩展为"文件夹透视器"。
+        单击非内容单元文件夹时调用，显示其内部文件。
         """
-        if self._assembly_service is None or self._assembly_panel is None:
+        if self._assembly_panel is None:
             return
-        unit = self._assembly_panel.current_unit()
-        if unit is None:
-            return
-        try:
-            self._assembly_service.add_file(unit.id, src_path)
-            self._commit()
-            self._assembly_panel.refresh_current()
-            # 刷新当前显示目录文件列表（源文件已离开当前目录）
-            current_dir = self._current_displayed_dir()
-            if current_dir is not None:
-                self._refresh_content_list(current_dir)
-            self.statusBar().showMessage(ui.ASSEMBLY_ADD_FILE_OK.format(name=src_path.name), 3000)
-        except Exception as e:  # noqa: BLE001
-            self._handle_service_error(e, ui.ASSEMBLY_ADD_FILE_FAILED)
+        self._assembly_panel.bind_folder(folder_path)
+        self._update_quick_insert_button_state()
 
     def _on_assembly_rename_cover(self, image_path: Path) -> None:
         """装配面板右键重命名预览图：rename_as_cover + 刷新 + 提交。
@@ -2170,11 +2164,6 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:  # noqa: BLE001
             self._handle_service_error(e, ui.ASSEMBLY_RENAME_COVER_FAILED)
-
-    def _on_assembly_closed(self) -> None:
-        """关闭装配面板：隐藏（不解绑，便于用户再次打开时恢复）。"""
-        if self._assembly_panel is not None:
-            self._assembly_panel.setVisible(False)
 
     # --- 快速插入（阶段 3 Task 5） ---
 
