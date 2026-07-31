@@ -12,11 +12,6 @@
 节点 ID 约定：
 - "mr:<managed_root_id>"：受管理根目录节点（可能已扫描或未扫描）
 - "fc:<folder_cache_id>"：folder_cache 表中的目录节点
-
-暂存区标记（阶段 3 Task 1）：
-- StagingService 注入后，节点查询时填充 is_staging 字段。
-- 内部维护 path_key 集合缓存，标记/取消时通过 refresh_staging_cache 增量更新，
-  避免每次查询都读 DB。
 """
 
 from __future__ import annotations
@@ -24,7 +19,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from application.staging_service import StagingService
 from domain.models import FolderCache
 from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.folder_cache import FolderCacheRepository
@@ -45,8 +39,6 @@ class TreeNode:
     - "managed_root"：已扫描的受管理根目录（关联了 folder_cache）
     - "unscanned_root"：未扫描的受管理根目录（无 folder_cache 关联）
     - "folder"：普通子目录
-
-    is_staging：该节点路径是否被标记为暂存区（阶段 3 Task 1）。
     """
 
     node_id: str
@@ -57,7 +49,6 @@ class TreeNode:
     managed_root_id: str | None
     folder_cache_id: str | None
     parent_id: str | None
-    is_staging: bool = False
 
     def __post_init__(self) -> None:
         valid_categories = {"managed_root", "unscanned_root", "folder"}
@@ -71,7 +62,7 @@ class FolderTreeService:
     """只读目录树查询服务。
 
     使用方式：
-        service = FolderTreeService(managed_root_repo, folder_cache_repo, staging_service)
+        service = FolderTreeService(managed_root_repo, folder_cache_repo)
         roots = service.list_root_nodes()
         children = service.list_children("mr:<id>")
     """
@@ -80,34 +71,9 @@ class FolderTreeService:
         self,
         managed_root_repo: ManagedRootRepository,
         folder_cache_repo: FolderCacheRepository,
-        staging_service: StagingService | None = None,
     ) -> None:
         self._managed_root_repo = managed_root_repo
         self._folder_cache_repo = folder_cache_repo
-        self._staging_service = staging_service
-        # 暂存区 path_key 集合缓存（避免每次查询都读 DB）
-        self._staging_keys_cache: set[str] | None = None
-
-    def refresh_staging_cache(self) -> None:
-        """刷新暂存区 path_key 集合缓存。
-
-        标记/取消暂存区后调用，使后续节点查询能反映最新状态。
-        若未注入 StagingService，则清空缓存。
-        """
-        if self._staging_service is None:
-            self._staging_keys_cache = set()
-            return
-        self._staging_keys_cache = self._staging_service.get_staging_path_keys()
-
-    def _get_staging_keys(self) -> set[str]:
-        """获取暂存区 path_key 集合（惰性加载缓存）。"""
-        if self._staging_keys_cache is None:
-            self.refresh_staging_cache()
-        return self._staging_keys_cache or set()
-
-    def _is_staging_path(self, real_path: str) -> bool:
-        """检查给定路径是否为暂存区（按 path_key 匹配缓存集合）。"""
-        return make_path_key(real_path) in self._get_staging_keys()
 
     def list_root_nodes(self) -> list[TreeNode]:
         """返回顶层节点列表（受管理根目录）。
@@ -132,7 +98,6 @@ class FolderTreeService:
         for root in roots:
             root_key = root.path_key  # 已归一化
             fc = fc_root_map.get(root_key)
-            is_staging = self._is_staging_path(root.real_path)
             if fc is not None:
                 nodes.append(
                     TreeNode(
@@ -144,7 +109,6 @@ class FolderTreeService:
                         managed_root_id=root.id,
                         folder_cache_id=fc.id,
                         parent_id=None,
-                        is_staging=is_staging,
                     )
                 )
             else:
@@ -158,7 +122,6 @@ class FolderTreeService:
                         managed_root_id=root.id,
                         folder_cache_id=None,
                         parent_id=None,
-                        is_staging=is_staging,
                     )
                 )
         return nodes
@@ -253,7 +216,6 @@ class FolderTreeService:
                     managed_root_id=None,
                     folder_cache_id=fc.id,
                     parent_id=parent_node_id,
-                    is_staging=self._is_staging_path(fc.path),
                 )
             )
         return nodes
@@ -283,7 +245,6 @@ class FolderTreeService:
                 managed_root_id=root.id,
                 folder_cache_id=fc_root.id,
                 parent_id=None,
-                is_staging=self._is_staging_path(root.real_path),
             )
         return TreeNode(
             node_id=f"mr:{root.id}",
@@ -294,7 +255,6 @@ class FolderTreeService:
             managed_root_id=root.id,
             folder_cache_id=None,
             parent_id=None,
-            is_staging=self._is_staging_path(root.real_path),
         )
 
     def _get_folder_cache_node(self, folder_cache_id: str) -> TreeNode | None:
@@ -319,7 +279,6 @@ class FolderTreeService:
                         managed_root_id=root.id,
                         folder_cache_id=fc.id,
                         parent_id=None,
-                        is_staging=self._is_staging_path(root.real_path),
                     )
             # folder_cache 根节点但无 managed_root（不应发生，容忍处理）
             return TreeNode(
@@ -331,7 +290,6 @@ class FolderTreeService:
                 managed_root_id=None,
                 folder_cache_id=fc.id,
                 parent_id=None,
-                is_staging=self._is_staging_path(fc.path),
             )
 
         # 普通子节点：查询父 folder_cache 以确定 parent_node_id
@@ -355,7 +313,6 @@ class FolderTreeService:
             managed_root_id=None,
             folder_cache_id=fc.id,
             parent_id=parent_node_id,
-            is_staging=self._is_staging_path(fc.path),
         )
 
     def _find_managed_root_node_id(self, fc_root) -> str:

@@ -29,7 +29,6 @@ from application.content_unit_creation_service import ContentUnitCreationService
 from application.folder_tree_service import FolderTreeService  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
 from application.scan_service import ScanService  # noqa: E402
-from application.staging_service import StagingService  # noqa: E402
 from domain.models import FileEntry  # noqa: E402
 from infrastructure.db import get_connection, init_db  # noqa: E402
 from infrastructure.file_operation_service import FileOperationService  # noqa: E402
@@ -40,7 +39,6 @@ from infrastructure.repositories.managed_root import ManagedRootRepository  # no
 from infrastructure.repositories.operation_history import (  # noqa: E402
     OperationHistoryRepository,
 )
-from infrastructure.repositories.staging_area import StagingAreaRepository  # noqa: E402
 
 
 def _make_mod_tree(tmp_path: Path) -> Path:
@@ -74,15 +72,9 @@ def main_window_env(qapp, tmp_path: Path):
         now_provider=lambda: "2026-07-14T00:00:00Z",
         uuid_provider=fake_uuid,
     )
-    staging_service = StagingService(
-        StagingAreaRepository(conn),
-        now_provider=lambda: "2026-07-14T00:00:00Z",
-        uuid_provider=fake_uuid,
-    )
     tree_service = FolderTreeService(
         ManagedRootRepository(conn),
         FolderCacheRepository(conn),
-        staging_service=staging_service,
     )
     content_service = ContentService(ContentUnitRepository(conn))
     scan_service = ScanService(
@@ -105,8 +97,6 @@ def main_window_env(qapp, tmp_path: Path):
     # 扫描以填充 folder_cache（目录树才能显示 Stash 子节点）+
     # 自动标记压缩包为内容单元（BDOR/SkyUI）
     scan_service.scan_root(root.id, incremental=False)
-    # 标记暂存区
-    staging_service.mark_staging(root_dir / "Stash")
     conn.commit()
 
     window = MainWindow(
@@ -115,7 +105,6 @@ def main_window_env(qapp, tmp_path: Path):
         content_service,
         db_path,
         commit_callback=conn.commit,
-        staging_service=staging_service,
         content_unit_creation_service=content_unit_creation_service,
     )
     yield window, conn, root_dir, root

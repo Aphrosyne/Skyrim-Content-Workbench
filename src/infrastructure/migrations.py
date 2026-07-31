@@ -677,6 +677,19 @@ def migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
     logger.info("迁移 v10 → v11 完成")
 
 
+def migrate_v11_to_v12(conn: sqlite3.Connection) -> None:
+    """v11 → v12：移除 staging_area 表。
+
+    UX 重构 Phase 1 Task 1 Commit 2：暂存区功能已移除，删除 staging_area 表。
+    staging_area 无任何 FK 被其他表引用（见 migrate_v4_to_v5 注释），
+    可直接 DROP。idx_staging_area_path_key 已在 v11 迁移中删除，无需再处理。
+
+    幂等性：DROP TABLE IF EXISTS 本身幂等。
+    """
+    conn.executescript("DROP TABLE IF EXISTS staging_area;")
+    logger.info("迁移 v11 → v12 完成")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -691,4 +704,5 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (9, migrate_v8_to_v9),
     (10, migrate_v9_to_v10),
     (11, migrate_v10_to_v11),
+    (12, migrate_v11_to_v12),
 ]

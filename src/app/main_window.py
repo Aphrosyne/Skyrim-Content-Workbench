@@ -110,7 +110,6 @@ from application.managed_root_service import ManagedRootService
 from application.quick_insert_service import QuickInsertService
 from application.scan_service import ScanSummary
 from application.search_service import SearchService
-from application.staging_service import StagingService
 from application.tag_service import TagService
 from application.undo_service import UndoService
 from domain.models import ContentUnit, FileEntry, ManagedRoot
@@ -226,7 +225,6 @@ class MainWindow(QMainWindow):
         content_service: ContentService,
         db_path: Path,
         commit_callback: Callable[[], None] | None = None,
-        staging_service: StagingService | None = None,
         content_unit_creation_service: ContentUnitCreationService | None = None,
         assembly_service: AssemblyService | None = None,
         quick_insert_service: QuickInsertService | None = None,
@@ -246,7 +244,6 @@ class MainWindow(QMainWindow):
         self._db_path = db_path
         self._commit_callback = commit_callback
         self._rollback_callback = rollback_callback
-        self._staging_service = staging_service
         self._content_unit_creation_service = content_unit_creation_service
         self._assembly_service = assembly_service
         self._quick_insert_service = quick_insert_service
@@ -1461,20 +1458,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, ui.MENU_OPEN_IN_EXPLORER, ui.MENU_OPEN_IN_EXPLORER_FAILED)
 
     def _on_tree_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
-        """目录树右键菜单：标记/取消暂存区 + 新建文件夹 + 在资源管理器中打开 + 折叠全部。
+        """目录树右键菜单：新建文件夹 + 在资源管理器中打开 + 折叠全部。
 
-        Stage 5 Task 1：新增「在资源管理器中打开」项，无论是否注入 StagingService 都可用。
+        Stage 5 Task 1：新增「在资源管理器中打开」项，无论是否选中节点都可用。
         Stage 5 Task 3a：新增「新建文件夹」项，仅注入 FileOperationService 时显示。
             选中节点即在其目录下创建子文件夹，与中栏右键入口行为一致。
         Stage 5 Task 7：新增「折叠全部」项，无论是否选中节点都显示。
             搜索跳转会导致目录树展开很多节点，此入口用于快速收起。
+        UX 重构 Phase 1 Task 1 Commit 2：移除暂存区标记/取消菜单项。
         """
         index = self._tree_view.indexAt(pos)
         node = self._tree_model.node_at(index) if index.isValid() else None
 
         menu = QMenu(self)
         # 节点相关菜单项（仅在选中有效节点时显示）
-        staging_action = None
         new_folder_action = None
         delete_action = None
         copy_action = None
@@ -1483,15 +1480,8 @@ class MainWindow(QMainWindow):
         move_to_action = None
         explorer_action = None
         if node is not None:
-            # 暂存区标记/取消（仅注入了 StagingService 时显示）
-            if self._staging_service is not None:
-                if node.is_staging:
-                    staging_action = menu.addAction(ui.MENU_UNMARK_STAGING)
-                else:
-                    staging_action = menu.addAction(ui.MENU_MARK_STAGING)
             # 新建文件夹 / 删除（Stage 5 Task 3a，仅需 FileOperationService）
             if self._file_operation_service is not None:
-                menu.addSeparator()
                 new_folder_action = menu.addAction(ui.MENU_NEW_FOLDER)
                 if self._clipboard_service is not None:
                     copy_action = menu.addAction(ui.MENU_COPY)
@@ -1512,12 +1502,7 @@ class MainWindow(QMainWindow):
         chosen = menu.exec(self._tree_view.viewport().mapToGlobal(pos))
         if chosen is None:
             return
-        if staging_action is not None and chosen is staging_action:
-            if node.is_staging:
-                self._unmark_staging_from_node(node)
-            else:
-                self._mark_staging_from_node(node)
-        elif new_folder_action is not None and chosen is new_folder_action:
+        if new_folder_action is not None and chosen is new_folder_action:
             self._on_new_folder_in_dir(node.real_path)
         elif copy_action is not None and chosen is copy_action:
             self._on_shortcut_copy_tree()
@@ -1545,42 +1530,6 @@ class MainWindow(QMainWindow):
         root_idx = self._tree_model.index(0, 0)
         if root_idx.isValid():
             self._tree_view.setExpanded(root_idx, True)
-
-    def _mark_staging_from_node(self, node) -> None:
-        """通过目录树节点标记暂存区。"""
-        if self._staging_service is None:
-            return
-        try:
-            self._staging_service.mark_staging(Path(node.real_path))
-            self._commit()
-            self._tree_service.refresh_staging_cache()
-            self._tree_model.refresh()
-            self.statusBar().showMessage("已标记为暂存区", 3000)
-        except Exception as e:  # noqa: BLE001
-            self._handle_service_error(e, "标记暂存区失败")
-
-    def _unmark_staging_from_node(self, node) -> None:
-        """通过目录树节点取消暂存区标记。"""
-        if self._staging_service is None:
-            return
-        try:
-            # 通过 is_staging + list_staging 找到对应记录 ID
-            target_path = Path(node.real_path)
-            staging_id: str | None = None
-            for staging in self._staging_service.list_staging():
-                if Path(staging.real_path) == target_path:
-                    staging_id = staging.id
-                    break
-            if staging_id is None:
-                QMessageBox.warning(self, "提示", "未找到该目录的暂存区标记。")
-                return
-            self._staging_service.unmark_staging(staging_id)
-            self._commit()
-            self._tree_service.refresh_staging_cache()
-            self._tree_model.refresh()
-            self.statusBar().showMessage("已取消暂存区标记", 3000)
-        except Exception as e:  # noqa: BLE001
-            self._handle_service_error(e, "取消暂存区标记失败")
 
     def _on_content_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
         """文件列表右键菜单：根据选中条目与模式动态构造。

@@ -22,18 +22,6 @@ class InvalidRootPathError(ApplicationError):
     """受管理根目录路径非法：不存在或非目录。"""
 
 
-class StagingAreaNotFoundError(ApplicationError):
-    """StagingArea 不存在。"""
-
-
-class DuplicateStagingAreaError(ApplicationError):
-    """同一 path_key 的暂存区已存在。"""
-
-
-class StagingAreaNestingError(ApplicationError):
-    """暂存区不允许嵌套：祖先目录或子目录已是暂存区。"""
-
-
 class FileOperationError(ApplicationError):
     """文件操作基础错误。"""
 

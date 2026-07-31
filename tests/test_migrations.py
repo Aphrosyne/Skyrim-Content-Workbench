@@ -1,6 +1,6 @@
 """migrations 模块测试。
 
-覆盖 v0→v1 / v1→v2 / v2→v3 / v3→v4 / v4→v5 / v5→v6 / v6→v7 / v8→v9 迁移。
+覆盖 v0→v1 / v1→v2 / v2→v3 / v3→v4 / v4→v5 / v5→v6 / v6→v7 / v8→v9 / v11→v12 迁移。
 v3→v4 为方向 C 重建：新建 content_unit 等表，移除 mod_item / file_asset /
 folder_node / operation_log，重建 thumbnail_cache（FK 改为 content_unit）。
 v4→v5 新增 staging_area 表（阶段 3 Task 1 暂存区标记）。
@@ -8,6 +8,7 @@ v5→v6 移除 content_unit.rating 列 + 加 tag_category.name / tag(name, categ
 UNIQUE 约束（阶段 4 Task 1）。
 v6→v7 thumbnail_cache 新增 size 列 + 复合主键 (content_unit_id, size)（Task 1a）。
 v8→v9 operation_history.operation_type CHECK 约束扩展 'copy'（Stage 5 Task 3b）。
+v11→v12 删除 staging_area 表（UX 重构 Phase 1 Task 1 Commit 2：暂存区功能移除）。
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from infrastructure.migrations import (
     migrate_v6_to_v7,
     migrate_v7_to_v8,
     migrate_v8_to_v9,
+    migrate_v11_to_v12,
 )
 
 
@@ -45,11 +47,12 @@ def test_migrations_sorted_by_target() -> None:
     assert MIGRATIONS[8][0] == 9
     assert MIGRATIONS[9][0] == 10
     assert MIGRATIONS[10][0] == 11
+    assert MIGRATIONS[11][0] == 12
 
 
-def test_current_schema_version_is_eleven() -> None:
-    """Stage 5 Code Review：当前 schema 版本应为 11（is_marked + path_key + D4 + M12）。"""
-    assert CURRENT_SCHEMA_VERSION == 11
+def test_current_schema_version_is_twelve() -> None:
+    """UX 重构 Phase 1 Task 1 Commit 2：当前 schema 版本应为 12（移除 staging_area 表）。"""
+    assert CURRENT_SCHEMA_VERSION == 12
 
 
 def test_migrate_v0_to_v1_idempotent() -> None:
@@ -510,7 +513,7 @@ def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
     db_path = tmp_path / "test.db"
     version = init_db(db_path)
     assert version == CURRENT_SCHEMA_VERSION
-    assert version == 11
+    assert version == 12
 
     # v7 后 managed_root 表仍存在
     conn = sqlite3.connect(str(db_path))
@@ -526,11 +529,11 @@ def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
         ).fetchone()
         assert row is not None
 
-        # v6 后 staging_area 表存在
+        # v12 后 staging_area 表已删除（UX 重构 Phase 1 Task 1 Commit 2）
         row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='staging_area'"
         ).fetchone()
-        assert row is not None
+        assert row is None
 
         # v6 后旧表 mod_item 不存在
         row = conn.execute(
@@ -567,10 +570,10 @@ def test_init_db_idempotent_at_current(tmp_path) -> None:
 
 
 def test_init_db_migrates_v3_db_to_v6(tmp_path) -> None:
-    """已存在 v3 数据库的 init_db 应迁移到 v6。
+    """已存在 v3 数据库的 init_db 应迁移到当前版本。
 
     模拟真实场景：用户已有 v3 数据库（含 managed_root 数据），
-    升级后 managed_root 数据应保留，旧业务表被移除，staging_area 表被创建，
+    升级后 managed_root 数据应保留，旧业务表被移除，
     rating 列被移除，UNIQUE 约束已建立。
     """
     db_path = tmp_path / "test.db"
@@ -604,9 +607,9 @@ def test_init_db_migrates_v3_db_to_v6(tmp_path) -> None:
     finally:
         conn.close()
 
-    # init_db 应识别 v3 并依次应用 v3→v4→v5→v6→v7→v8→v9→v10→v11
+    # init_db 应识别 v3 并依次应用 v3→v4→...→v12
     version = init_db(db_path)
-    assert version == 11
+    assert version == 12
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -938,5 +941,61 @@ def test_migrate_v8_to_v9_skips_when_table_absent() -> None:
             "SELECT name FROM sqlite_master WHERE type='table' AND name='operation_history'"
         ).fetchone()
         assert row is None
+    finally:
+        conn.close()
+
+
+# --- v11 → v12 迁移测试（UX 重构 Phase 1 Task 1 Commit 2） ---
+
+
+def test_migrate_v11_to_v12_drops_staging_area_table() -> None:
+    """v11→v12 迁移应删除 staging_area 表。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        # 手动创建 staging_area 表模拟 v11 状态
+        conn.executescript(
+            """
+            CREATE TABLE staging_area (
+                id TEXT PRIMARY KEY,
+                real_path TEXT NOT NULL,
+                path_key TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO staging_area (id, real_path, path_key, created_at, updated_at)
+            VALUES ('s1', 'D:/Stash', 'd:/stash', 't', 't');
+            """
+        )
+        assert (
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='staging_area'"
+            ).fetchone()
+            is not None
+        )
+
+        migrate_v11_to_v12(conn)
+
+        # 表已删除
+        assert (
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='staging_area'"
+            ).fetchone()
+            is None
+        )
+    finally:
+        conn.close()
+
+
+def test_migrate_v11_to_v12_idempotent() -> None:
+    """v11→v12 迁移函数本身幂等（DROP TABLE IF EXISTS）。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        # 不创建 staging_area 表，直接迁移应不报错
+        migrate_v11_to_v12(conn)
+        # 再次调用也不报错
+        migrate_v11_to_v12(conn)
     finally:
         conn.close()

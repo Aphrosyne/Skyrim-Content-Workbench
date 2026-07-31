@@ -26,7 +26,6 @@ from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from application.quick_insert_service import QuickInsertService
 from application.search_service import SearchService
-from application.staging_service import StagingService
 from application.tag_service import TagService
 from application.thumbnail_service import ThumbnailService
 from application.undo_service import UndoService
@@ -38,7 +37,6 @@ from infrastructure.repositories.content_unit_tag import ContentUnitTagRepositor
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
 from infrastructure.repositories.operation_history import OperationHistoryRepository
-from infrastructure.repositories.staging_area import StagingAreaRepository
 from infrastructure.repositories.tag import TagRepository
 from infrastructure.repositories.tag_category import TagCategoryRepository
 from infrastructure.repositories.thumbnail_cache import ThumbnailCacheRepository
@@ -82,11 +80,9 @@ def main() -> int:
     conn = get_connection(db_path)
     conn.row_factory = sqlite3.Row
     managed_root_service = ManagedRootService(ManagedRootRepository(conn))
-    staging_service = StagingService(StagingAreaRepository(conn))
     folder_tree_service = FolderTreeService(
         ManagedRootRepository(conn),
         FolderCacheRepository(conn),
-        staging_service=staging_service,
     )
 
     # Stage 4 Task 4：缩略图 service 先创建（Stage 4.5 M4：注入到 ContentService）
@@ -206,7 +202,6 @@ def main() -> int:
         content_service,
         db_path,
         commit_callback=conn.commit,
-        staging_service=staging_service,
         content_unit_creation_service=content_unit_creation_service,
         assembly_service=assembly_service,
         quick_insert_service=quick_insert_service,

@@ -1,6 +1,6 @@
 """应用服务层包。
 
-包含领域服务的应用层封装：ManagedRootService / StagingService / ContentService /
+包含领域服务的应用层封装：ManagedRootService / ContentService /
 FolderTreeService / ScanService / ContentUnitCreationService（D1 重命名，原 ModGroupService） /
 AssemblyService / QuickInsertService / TagService（Stage 4 Task 1 起）。
 

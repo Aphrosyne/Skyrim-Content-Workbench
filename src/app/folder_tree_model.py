@@ -129,8 +129,6 @@ class FolderTreeModel(QAbstractItemModel):
 
         if role == Qt.DisplayRole:
             name = tn.display_name
-            if tn.is_staging:
-                name = f"{ui.TREE_STAGING_HINT}{name}"
             if tn.category == "unscanned_root":
                 name = f"{name}{ui.TREE_UNSCANNED_HINT}"
             return name

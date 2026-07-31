@@ -36,11 +36,6 @@ STATUS_SCAN_FAILED = "扫描失败"
 TREE_GROUP_TITLE = "目录树"
 TREE_EMPTY_HINT = "尚未扫描任何目录。请先在左侧选择根目录并点击「扫描」。"
 TREE_UNSCANNED_HINT = "（未扫描）"
-TREE_STAGING_HINT = "[S] "
-
-# 暂存区右键菜单（阶段 3 Task 1）
-MENU_MARK_STAGING = "标记为暂存区"
-MENU_UNMARK_STAGING = "取消暂存区标记"
 
 # 选中目录详情区域
 DETAIL_GROUP_TITLE = "选中目录详情"
@@ -63,10 +58,6 @@ CONTENT_LIST_NO_SELECTION = "请在左侧目录树中选择一个目录。"
 FILE_LIST_COLUMN_HEADERS = ("名称", "类型", "大小", "修改日期")
 COL_TYPE_FOLDER = "文件夹"
 COL_TYPE_FILE = "文件"
-
-# 暂存区文件列表提示（阶段 3 Task 2）
-STAGING_LIST_NO_STAGING_SELECTED = "整理模式：请在目录树中选中一个暂存区 [S] 节点。"
-STAGING_LIST_PATH_INVALID = "暂存区路径不存在或为空：{path}"
 
 # 文件列表项内容单元标记
 # Stage 5 Task 7 收尾：status 简化为两态（organized / unmarked），
@@ -407,16 +398,6 @@ ERR_REMOVE_ROOT_FAILED = "移除目录配置失败"
 DB_COMMIT_FAILED_TITLE = "数据库提交失败"
 DB_COMMIT_FAILED_MESSAGE = "数据未能保存到数据库，请查看日志。最近的操作可能未持久化。"
 
-# 模式切换（spec §5.1/§5.2，roadmap 阶段 2 Task 5）
-MODE_SWITCH_GROUP_TITLE = "模式"
-MODE_BROWSE = "浏览"
-MODE_ORGANIZE = "整理"
-MODE_BROWSE_HINT = "浏览模式：点击目录树节点切换中栏内容。"
-MODE_ORGANIZE_HINT = "整理模式：中栏内容已冻结，目录树作为目标选择器。"
-MODE_ORGANIZE_WORKAREA_HINT = "整理模式 - 工作区：{name}"
-MODE_ORGANIZE_TARGET_HINT = "目标：{path}"
-MODE_ORGANIZE_NO_WORKAREA = "整理模式：请先在浏览模式选中目录后再切换。"
-
 
 def format_scan_summary(
     scanned_dirs: int,
@@ -512,4 +493,3 @@ SEARCH_MATCHED_FIELD_TITLE = "标题"
 SEARCH_MATCHED_FIELD_TAG = "标签"
 SEARCH_MATCHED_FIELD_NOTES = "备注"
 SEARCH_JUMP_TOOLTIP = "双击跳转到所在目录"
-SEARCH_ORGANIZE_MODE_NO_JUMP = "整理模式下不跳转，请切换浏览模式后双击"
