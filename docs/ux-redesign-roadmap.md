@@ -99,6 +99,19 @@
 - 取消钉住：右栏恢复跟随中栏选中切换
 - 钉住状态下中栏可右键 → "添加到钉住文件夹"
 
+**Task 3 实施记录（v0.44.0）：**
+
+- **📌 钉住按钮**：装配面板标题栏右侧新增 📌 按钮（B3 决策：钉住时切换图标 📌 → 📍）。未绑定时按钮禁用（A5）。
+- **钉住状态短路**：`bind_mod_group`/`bind_folder` 在钉住状态下短路不切换绑定（A1/A2 决策）。内部拆分 `_apply_bind_mod_group`/`_apply_bind_folder` 供取消钉住后跟随调用。
+- **取消钉住跟随中栏**（B4）：新增 `on_pin_changed(pinned: bool)` 回调，MainWindow 接收到 `False` 时调用 `_follow_middle_selection_after_unpin` 立即跟随中栏当前选中。中栏选中文件夹内容单元 → 绑定该 Mod 组；选中非内容单元文件夹 → 透视该文件夹；选中文件或无选中 → 解绑显空状态。
+- **创建 Mod 组不自动绑定**（B1）：钉住状态下 `_on_create_mod_group` 不调用 `_bind_assembly_panel`，装配面板保持钉住。
+- **路径不存在自动解除**（A4/B6）：`refresh_current` 检测钉住对象路径不存在时调用 `force_unpin_and_clear`（区别于 `unpin` 仅清标志，此方法同时清空绑定）。
+- **移动整个透视文件夹后强制解除**（A4）：`_on_assembly_file_op` 的 move_to 分支检测到文件夹移动后调用 `force_unpin_and_clear`。
+- **钉住状态不持久化**（A3）：程序重启后清空钉住状态，与现有装配面板绑定行为一致。
+- **钉住状态下文件操作仍可用**（B2）：钉住仅阻止 bind_* 切换，不影响 `refresh_current` 和 `on_file_op` 回调。
+- 「添加到钉住文件夹」菜单项留给 Task 4，不在 Task 3 实现。
+- 测试：新增 11 个 Task 3 钉住功能测试用例，全量回归 1262 tests passed, 4 skipped。
+
 ### Task 4："添加到钉住文件夹" + "移动到……" + 基础拖拽（快速插入移除）
 
 - "快速插入"按钮及功能完全移除，其场景由以下替代：

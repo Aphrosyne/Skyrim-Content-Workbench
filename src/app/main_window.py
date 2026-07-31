@@ -739,11 +739,13 @@ class MainWindow(QMainWindow):
         # 装配面板（UX 重构 Phase 1 Task 2：从中间区迁至右栏下方）：
         # 始终可见，未绑定时显示空状态占位「无固定内容」。
         # 移除关闭按钮（B1-1），on_panel_closed 回调不再注入。
+        # UX 重构 Phase 1 Task 3：注入 on_pin_changed 回调处理钉住状态变化（B4）。
         if self._assembly_service is not None:
             self._assembly_panel = AssemblyPanel(
                 self._assembly_service,
                 on_cover_renamed=self._on_assembly_rename_cover,
                 on_file_op=self._on_assembly_file_op,
+                on_pin_changed=self._on_assembly_pin_changed,
             )
             self._right_splitter.addWidget(self._assembly_panel)
             # 初始拉伸比例：元数据 3 : 装配 2（C1 决策）
@@ -1813,7 +1815,9 @@ class MainWindow(QMainWindow):
             # 刷新当前目录文件列表
             self._refresh_content_list(str(staging_path))
             # 绑定装配面板到新创建的 Mod 组
-            self._bind_assembly_panel(result.unit)
+            # UX 重构 Phase 1 Task 3（B1）：钉住状态下不自动绑定新 Mod 组
+            if not self._is_assembly_pinned():
+                self._bind_assembly_panel(result.unit)
             # 状态栏汇总
             if result.failure_count == 0:
                 if result.success_count == 1:
@@ -2182,6 +2186,7 @@ class MainWindow(QMainWindow):
         UX 重构 Phase 1 Task 1 Commit 3：
         - 装配面板始终可见，未绑定时显示空状态占位（bind_mod_group(None)）。
         - 移除 staging_path 参数（L2：移除文件功能已移除）。
+        UX 重构 Phase 1 Task 3：钉住状态下此调用被装配面板内部短路（A1/A2）。
         """
         if self._assembly_panel is None:
             return
@@ -2194,11 +2199,69 @@ class MainWindow(QMainWindow):
 
         UX 重构 Phase 1 Task 2：装配面板语义扩展为"文件夹透视器"。
         单击非内容单元文件夹时调用，显示其内部文件。
+        UX 重构 Phase 1 Task 3：钉住状态下此调用被装配面板内部短路（A1/A2）。
         """
         if self._assembly_panel is None:
             return
         self._assembly_panel.bind_folder(folder_path)
         self._update_quick_insert_button_state()
+
+    def _is_assembly_pinned(self) -> bool:
+        """返回装配面板当前是否处于钉住状态（UX 重构 Phase 1 Task 3）。"""
+        if self._assembly_panel is None:
+            return False
+        return self._assembly_panel.is_pinned()
+
+    def _follow_middle_selection_after_unpin(self) -> None:
+        """取消钉住后立即跟随中栏当前选中（B4 决策）。
+
+        UX 重构 Phase 1 Task 3：
+        - 中栏选中文件夹内容单元 → 绑定该 Mod 组
+        - 中栏选中非内容单元文件夹 → 透视该文件夹
+        - 中栏选中文件或无选中 → 解绑显空状态
+        """
+        if self._assembly_panel is None:
+            return
+        # 取中栏当前活动视图的选中
+        active_view = (
+            self._card_view if self._current_view_index == VIEW_INDEX_CARD else self._content_view
+        )
+        active_model = (
+            self._card_list_model
+            if self._current_view_index == VIEW_INDEX_CARD
+            else self._content_list_model
+        )
+        sm = active_view.selectionModel() if active_view is not None else None
+        if sm is None:
+            self._bind_assembly_panel(None)
+            return
+        indexes = sm.selectedRows()
+        if not indexes or len(indexes) > 1:
+            # 无选中或多选 → 解绑
+            self._bind_assembly_panel(None)
+            return
+        entry = active_model.entry_at(indexes[0].row())
+        if entry is None:
+            self._bind_assembly_panel(None)
+            return
+        if entry.content_unit is not None:
+            self._bind_assembly_panel(entry.content_unit if entry.is_dir else None)
+        elif entry.is_dir:
+            self._bind_assembly_folder(Path(entry.path))
+        else:
+            self._bind_assembly_panel(None)
+
+    def _on_assembly_pin_changed(self, pinned: bool) -> None:
+        """装配面板钉住状态变化回调（UX 重构 Phase 1 Task 3）。
+
+        Args:
+            pinned: True 表示已钉住，False 表示已取消钉住。
+
+        - 已钉住：无需额外动作（装配面板内部已短路 bind_* 调用）
+        - 已取消钉住：立即跟随中栏当前选中（B4 决策）
+        """
+        if not pinned:
+            self._follow_middle_selection_after_unpin()
 
     def _on_assembly_rename_cover(self, image_path: Path) -> None:
         """装配面板右键重命名预览图：rename_as_cover_by_path + 刷新 + 提交。
@@ -2257,10 +2320,14 @@ class MainWindow(QMainWindow):
         elif action == "move_to":
             self._on_move_to(entries)
             # A3-1：移动整个透视文件夹后解绑（文件夹路径已变）
+            # UX 重构 Phase 1 Task 3（A4）：钉住状态下移动自身 → 强制解除钉住并清空
             folder_path = self._assembly_panel.current_folder_path()
             if folder_path is not None and any(Path(e.path) == folder_path for e in entries):
                 if not folder_path.exists():
-                    self._bind_assembly_panel(None)
+                    if self._assembly_panel.is_pinned():
+                        self._assembly_panel.force_unpin_and_clear()
+                    else:
+                        self._bind_assembly_panel(None)
             else:
                 self._assembly_panel.refresh_current()
         elif action == "delete":
@@ -3445,3 +3512,15 @@ class MainWindow(QMainWindow):
         if self._assembly_panel is None:
             return 0
         return self._assembly_panel.entry_count()
+
+    def assembly_panel_is_pinned(self) -> bool:
+        """返回装配面板当前是否处于钉住状态（供测试，UX 重构 Phase 1 Task 3）。"""
+        if self._assembly_panel is None:
+            return False
+        return self._assembly_panel.is_pinned()
+
+    def assembly_panel_pin_button_enabled(self) -> bool:
+        """返回装配面板 📌 按钮是否可点击（供测试，A5 决策）。"""
+        if self._assembly_panel is None:
+            return False
+        return self._assembly_panel._pin_button.isEnabled()  # noqa: SLF001

@@ -585,3 +585,327 @@ def test_assembly_file_op_copy_and_paste(qapp, main_window_env) -> None:
     assert (staging / "preview.jpg").is_file()
     # 装配面板刷新后包含 2 个文件
     assert window.assembly_panel_entry_count() == 2
+
+
+# === UX 重构 Phase 1 Task 3：📌 钉住功能 ===
+
+
+def test_pin_button_disabled_when_unbound(qapp, main_window_env) -> None:
+    """A5：未绑定时 📌 按钮禁用。"""
+    window, _, _, _ = main_window_env
+    # 初始未绑定
+    assert window.assembly_panel_current_unit_id() is None
+    assert not window.assembly_panel_pin_button_enabled()
+    assert not window.assembly_panel_is_pinned()
+
+
+def test_pin_button_enabled_after_bind(qapp, main_window_env) -> None:
+    """绑定文件夹后 📌 按钮可点击。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, _ = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+    assert window.assembly_panel_current_unit_id() == unit.id
+    # 绑定后按钮可点击
+    assert window.assembly_panel_pin_button_enabled()
+    # 默认未钉住
+    assert not window.assembly_panel_is_pinned()
+
+
+def test_pin_blocks_middle_click_binding(qapp, main_window_env) -> None:
+    """A1：钉住后中栏单击其他文件夹不改变装配面板绑定。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit_a, mod_folder_a = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    assert window.assembly_panel_current_unit_id() == unit_a.id
+
+    # 钉住 ModA
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+    assert window.assembly_panel_is_pinned()
+
+    # 重新选中暂存区以创建 ModB
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    unit_b, mod_folder_b = _create_mod_group(qapp, window, "extra_patch.zip", "ModB")
+    # B1：钉住状态下创建 Mod 组不自动绑定，装配面板仍绑定 ModA
+    assert window.assembly_panel_current_unit_id() == unit_a.id
+    assert window.assembly_panel_is_pinned()
+
+    # 单击 ModB 文件夹（如果在中栏可见）
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    mod_b_entry = _find_entry_by_name(window, "ModB")
+    if mod_b_entry is not None:
+        _select_entry_by_name(qapp, window, "ModB")
+        qapp.processEvents()
+        # A1：钉住状态下装配面板仍显示 ModA
+        assert window.assembly_panel_current_unit_id() == unit_a.id
+
+
+def test_pin_blocks_double_click_navigation(qapp, main_window_env) -> None:
+    """A2：钉住后中栏双击文件夹进入目录，装配面板保持钉住。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+    assert window.assembly_panel_current_unit_id() == unit.id
+
+    # 钉住
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    # 双击暂存区中的另一个文件夹（这里用 mod_folder 自身，验证双击不切换）
+    # 切回暂存区
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    # 双击 MyMod 文件夹（进入目录）
+    _double_click_entry(qapp, window, "MyMod")
+    qapp.processEvents()
+    # 装配面板仍绑定 MyMod（钉住状态下双击进入目录不切换）
+    assert window.assembly_panel_current_unit_id() == unit.id
+    assert window.assembly_panel_is_pinned()
+
+
+def test_unpin_follows_middle_selection(qapp, main_window_env) -> None:
+    """B4：取消钉住后立即跟随中栏当前选中。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    # 先创建 ModA 和 ModB（都不钉住，装配面板正常切换）
+    unit_a, _ = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    unit_b, _ = _create_mod_group(qapp, window, "extra_patch.zip", "ModB")
+    # 装配面板当前绑定 ModB（最后创建的）
+    assert window.assembly_panel_current_unit_id() == unit_b.id
+
+    # 中栏选中 ModA → 装配面板跟随绑定 ModA
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    _select_entry_by_name(qapp, window, "ModA")
+    qapp.processEvents()
+    assert window.assembly_panel_current_unit_id() == unit_a.id
+
+    # 钉住 ModA
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+    assert window.assembly_panel_is_pinned()
+
+    # 中栏选中 ModB（钉住状态下装配面板仍显示 ModA）
+    _select_entry_by_name(qapp, window, "ModB")
+    qapp.processEvents()
+    assert window.assembly_panel_current_unit_id() == unit_a.id
+
+    # 取消钉住 → 立即跟随中栏选中 ModB
+    window._assembly_panel.unpin()  # noqa: SLF001
+    qapp.processEvents()
+    window._on_assembly_pin_changed(False)  # noqa: SLF001
+    qapp.processEvents()
+    assert not window.assembly_panel_is_pinned()
+    assert window.assembly_panel_current_unit_id() == unit_b.id
+
+
+def test_unpin_no_selection_clears_panel(qapp, main_window_env) -> None:
+    """B4 边界：钉住状态下中栏无选中 → 取消钉住后装配面板清空。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, _ = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    # 清空中栏选中
+    sm = window._content_view.selectionModel()  # noqa: SLF001
+    sm.clear()
+    qapp.processEvents()
+
+    # 取消钉住 → 无选中 → 清空
+    window._assembly_panel.unpin()  # noqa: SLF001
+    window._on_assembly_pin_changed(False)  # noqa: SLF001
+    qapp.processEvents()
+    assert not window.assembly_panel_is_pinned()
+    assert window.assembly_panel_current_unit_id() is None
+
+
+def test_pin_state_not_persisted(qapp, main_window_env) -> None:
+    """A3：钉住状态不持久化（重新创建装配面板实例默认未钉住）。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+    window._assembly_panel.pin()  # noqa: SLF001
+    assert window.assembly_panel_is_pinned()
+
+    # 重新创建装配面板（模拟"重启"）
+    from app.assembly_panel import AssemblyPanel
+
+    old_panel = window._assembly_panel  # noqa: SLF001
+    new_panel = AssemblyPanel(
+        old_panel._service,  # noqa: SLF001
+        on_cover_renamed=old_panel._on_cover_renamed,  # noqa: SLF001
+        on_file_op=old_panel._on_file_op,  # noqa: SLF001
+        on_pin_changed=window._on_assembly_pin_changed,  # noqa: SLF001
+    )
+    assert not new_panel.is_pinned()
+
+
+def test_pin_file_ops_still_work(qapp, main_window_env) -> None:
+    """B2：钉住状态下装配面板内文件操作仍可用（删除测试）。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+    # 在 Mod 组内放置额外文件
+    (mod_folder / "extra.txt").write_bytes(b"data")
+
+    # 钉住
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    # 刷新装配面板显示
+    window._assembly_panel.refresh_current()  # noqa: SLF001
+    qapp.processEvents()
+    assert window.assembly_panel_entry_count() == 2
+
+    # 删除 extra.txt
+    from domain.models import FileEntry
+
+    extra_entry = FileEntry(
+        name="extra.txt",
+        path=str(mod_folder / "extra.txt"),
+        is_dir=False,
+        modified_at="2026-07-14T00:00:00Z",
+        size=4,
+        content_unit=None,
+    )
+    # Mock 确认对话框
+    import unittest.mock
+
+    with unittest.mock.patch("app.main_window.QMessageBox.question", return_value=16384):  # Yes
+        window._on_assembly_file_op("delete", [extra_entry])  # noqa: SLF001
+        qapp.processEvents()
+
+    # 文件已删除
+    assert not (mod_folder / "extra.txt").exists()
+    # 装配面板仍钉住
+    assert window.assembly_panel_is_pinned()
+    assert window.assembly_panel_current_unit_id() == unit.id
+
+
+def test_pin_auto_unpin_when_folder_missing(qapp, main_window_env, tmp_path) -> None:
+    """A4/B6：钉住的文件夹路径不存在时自动解除钉住并清空。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+    assert window.assembly_panel_is_pinned()
+
+    # 外部删除文件夹
+    import shutil
+
+    shutil.rmtree(mod_folder)
+    qapp.processEvents()
+
+    # 刷新装配面板 → 检测到路径不存在 → 自动解除钉住
+    window._assembly_panel.refresh_current()  # noqa: SLF001
+    qapp.processEvents()
+
+    assert not window.assembly_panel_is_pinned()
+    assert window.assembly_panel_current_unit_id() is None
+    assert window.assembly_panel_entry_count() == 0
+
+
+def test_pin_move_folder_unpins(qapp, main_window_env, monkeypatch) -> None:
+    """A4：钉住状态下移动整个透视文件夹 → 强制解除钉住并清空。"""
+    from PySide6.QtWidgets import QDialog
+
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+    assert window.assembly_panel_is_pinned()
+
+    # 选目标路径
+    target_dir = root_dir.parent / "moved_target"
+    target_dir.mkdir(exist_ok=True)
+    target_path = target_dir / "MyMod"
+
+    # Mock MoveToDialog 返回 Accepted + target_dir
+    def _make_fake_dialog(target: Path, accepted: bool = True):
+        class _Fake:
+            def __init__(self, *a, **kw) -> None:
+                self._t = target
+                self._ok = accepted
+
+            def exec(self) -> int:
+                return QDialog.DialogCode.Accepted if self._ok else QDialog.DialogCode.Rejected
+
+            def selected_target_path(self) -> Path | None:
+                return self._t if self._ok else None
+
+        return _Fake
+
+    monkeypatch.setattr(
+        "app.move_to_dialog.MoveToDialog",
+        _make_fake_dialog(target_dir, accepted=True),
+    )
+    # 防止移动后信息弹窗阻塞
+    monkeypatch.setattr("app.main_window.QMessageBox.information", lambda *a, **kw: None)
+
+    # 触发 move_to 操作（移动整个 Mod 文件夹）
+    from domain.models import FileEntry
+
+    folder_entry = FileEntry(
+        name="MyMod",
+        path=str(mod_folder),
+        is_dir=True,
+        modified_at="2026-07-14T00:00:00Z",
+        size=None,
+        content_unit=unit,
+    )
+    window._on_assembly_file_op("move_to", [folder_entry])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 文件夹已移动到新位置
+    assert target_path.is_dir()
+    assert not mod_folder.exists()
+
+    # 装配面板已强制解除钉住并清空
+    assert not window.assembly_panel_is_pinned()
+    assert window.assembly_panel_current_unit_id() is None
+
+
+def test_pin_toggle_button_icon(qapp, main_window_env) -> None:
+    """B3：钉住时按钮显示 📍，未钉住时显示 📌。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+    # 未钉住状态
+    assert window._assembly_panel._pin_button.text() == "📌"  # noqa: SLF001
+
+    # 点击钉住
+    window._assembly_panel._on_pin_clicked()  # noqa: SLF001
+    qapp.processEvents()
+    assert window.assembly_panel_is_pinned()
+    assert window._assembly_panel._pin_button.text() == "📍"  # noqa: SLF001
+
+    # 再次点击取消钉住
+    window._assembly_panel._on_pin_clicked()  # noqa: SLF001
+    qapp.processEvents()
+    assert not window.assembly_panel_is_pinned()
+    assert window._assembly_panel._pin_button.text() == "📌"  # noqa: SLF001

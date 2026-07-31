@@ -10,6 +10,37 @@
 
 ---
 
+## [0.44.0] - 2026-07-31
+
+UX 重构 Phase 1 Task 3：装配面板 📌 钉住功能
+
+为装配面板添加 📌 钉住/取消钉住切换能力。钉住后中栏的选中/导航操作不再改变装配面板绑定，方便用户固定当前透视的文件夹进行持续整理。取消钉住后立即跟随中栏当前选中。钉住对象路径不存在时自动解除钉住并清空面板。schema_version 维持 v12，无数据库迁移。
+
+**新增功能**
+
+- **📌 钉住按钮**：[assembly_panel.py](src/app/assembly_panel.py) 标题栏右侧新增 📌 按钮（B3 决策：钉住时切换图标 📌 → 📍）
+- **钉住状态短路**：`bind_mod_group`/`bind_folder` 在钉住状态下短路不切换绑定（A1/A2 决策）
+- **取消钉住跟随中栏**：[main_window.py](src/app/main_window.py) `_on_assembly_pin_changed(False)` → `_follow_middle_selection_after_unpin` 立即跟随中栏当前选中（B4 决策）
+- **创建 Mod 组不自动绑定**（B1）：钉住状态下 `_on_create_mod_group` 不调用 `_bind_assembly_panel`
+- **路径不存在自动解除**（A4/B6）：`refresh_current` 检测钉住对象路径不存在时调用 `force_unpin_and_clear`
+- **移动整个透视文件夹后强制解除**（A4）：`_on_assembly_file_op` 的 move_to 分支检测文件夹移动后调用 `force_unpin_and_clear`
+- [ui_constants.py](src/app/ui_constants.py) 新增文案：ASSEMBLY_PIN_BUTTON_UNPINNED/PINNED、ASSEMBLY_PIN_TOOLTIP_UNPINNED/PINNED
+
+**设计要点**
+
+- **钉住状态不持久化**（A3）：程序重启后清空钉住状态，与现有装配面板绑定行为一致
+- **未绑定时 📌 按钮禁用**（A5）：`bind_mod_group`/`bind_folder` 解绑时 `_pin_button.setEnabled(False)`
+- **钉住状态下文件操作仍可用**（B2）：钉住仅阻止 bind_* 切换，不影响 refresh_current 和 on_file_op 回调
+- **回调委托模式**：`AssemblyPanel` 通过 `on_pin_changed(pinned: bool)` 回调通知 MainWindow，MainWindow 在取消钉住时主动调用 `_follow_middle_selection_after_unpin` 跟随中栏
+- **force_unpin_and_clear vs unpin**：`unpin()` 仅清除钉住标志保留当前绑定内容（用户主动取消钉住，由 MainWindow 跟随中栏）；`force_unpin_and_clear()` 同时清空绑定（路径不存在或移动自身等异常情况）
+
+**测试**
+
+- 新增 11 个 Task 3 钉住功能测试用例：A5 未绑定禁用 / 绑定后启用 / A1 单击不切换 / A2 双击不切换 / B4 跟随中栏 / B4 无选中清空 / A3 不持久化 / B2 文件操作可用 / A4/B6 路径不存在自动解除 / A4 移动自身解除 / B3 按钮图标切换
+- 全量回归：1262 tests passed, 4 skipped（Windows 权限相关），ruff check + format 全通过
+
+---
+
 ## [0.43.0] - 2026-07-31
 
 UX 重构 Phase 1 Task 2：装配面板迁移到右栏 + 文件操作继承

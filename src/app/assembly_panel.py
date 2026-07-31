@@ -27,9 +27,11 @@ from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QHBoxLayout,
     QLabel,
     QListView,
     QMenu,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -130,6 +132,10 @@ class AssemblyPanel(QWidget):
     UX 重构 Phase 1 Task 2：移除关闭按钮（B1-1），装配面板固定在右栏下方；
     「加入装配」菜单项已移除（B2-2），Task 4 由「添加到钉住文件夹」替代；
     装配面板语义扩展为"文件夹透视器"：bind_folder 透视任意文件夹（不限于内容单元）。
+    UX 重构 Phase 1 Task 3：📌 钉住功能。钉住后中栏操作不改变装配面板绑定（A1/A2）；
+    取消钉住后立即跟随中栏当前选中（B4）；钉住对象路径不存在时自动解除钉住（A4/B6）；
+    钉住状态不持久化（A3）；未绑定时 📌 按钮禁用（A5）；
+    钉住状态下装配面板内文件操作仍可用（B2）。
     """
 
     def __init__(
@@ -137,6 +143,7 @@ class AssemblyPanel(QWidget):
         assembly_service: AssemblyService,
         on_cover_renamed: Callable[[Path], None] | None = None,
         on_file_op: Callable[[str, list[FileEntry]], None] | None = None,
+        on_pin_changed: Callable[[bool], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -145,9 +152,17 @@ class AssemblyPanel(QWidget):
         # UX 重构 Phase 1 Task 2 Commit 2：文件操作委托回调
         # action ∈ {"rename", "copy", "cut", "paste", "move_to", "delete", "copy_path"}
         self._on_file_op = on_file_op
+        # UX 重构 Phase 1 Task 3：钉住状态变化回调
+        # 参数 True 表示已钉住，False 表示已取消钉住。
+        # 取消钉住时 MainWindow 调用 _follow_middle_selection_after_unpin 跟随中栏（B4）。
+        self._on_pin_changed = on_pin_changed
         self._current_unit: ContentUnit | None = None
         # 当前透视的文件夹路径（bind_folder 设置，bind_mod_group 同步设置）
         self._current_folder_path: Path | None = None
+        # UX 重构 Phase 1 Task 3：钉住状态
+        # 钉住后 bind_mod_group/bind_folder 调用被短路（不切换绑定）。
+        # 取消钉住后由 MainWindow 立即触发一次绑定跟随中栏选中（B4）。
+        self._is_pinned: bool = False
 
         self._setup_ui()
 
@@ -155,9 +170,19 @@ class AssemblyPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # 标题栏（UX 重构 Task 2：移除关闭按钮，仅保留标题）
+        # 标题栏（UX 重构 Task 2：移除关闭按钮；Task 3：新增 📌 钉住按钮）
+        title_bar = QHBoxLayout()
         self._title_label = QLabel(ui.ASSEMBLY_PANEL_TITLE)
-        layout.addWidget(self._title_label)
+        title_bar.addWidget(self._title_label)
+        title_bar.addStretch(1)
+        # 📌 钉住按钮（B3：钉住时切换图标 📌 → 📍）
+        self._pin_button = QPushButton(ui.ASSEMBLY_PIN_BUTTON_UNPINNED)
+        self._pin_button.setToolTip(ui.ASSEMBLY_PIN_TOOLTIP_UNPINNED)
+        self._pin_button.setFixedWidth(32)
+        self._pin_button.setEnabled(False)  # A5：未绑定时禁用
+        self._pin_button.clicked.connect(self._on_pin_clicked)
+        title_bar.addWidget(self._pin_button)
+        layout.addLayout(title_bar)
 
         # 当前 Mod 组提示
         self._hint_label = QLabel(ui.ASSEMBLY_PANEL_EMPTY)
@@ -179,9 +204,20 @@ class AssemblyPanel(QWidget):
     def bind_mod_group(self, unit: ContentUnit | None) -> None:
         """绑定当前 Mod 组，刷新文件列表。
 
+        UX 重构 Phase 1 Task 3：钉住状态下短路此调用（A1/A2 决策）。
+        钉住时中栏选中变化不改变装配面板绑定，需先取消钉住才能切换。
+        MainWindow 在取消钉住时会调用 `bind_mod_group`/`bind_folder` 重新跟随。
+
         Args:
             unit: Mod 组 ContentUnit；None 表示解绑（清空面板，显示空状态占位）。
         """
+        if self._is_pinned:
+            # 钉住中：短路所有绑定调用（包括解绑）
+            return
+        self._apply_bind_mod_group(unit)
+
+    def _apply_bind_mod_group(self, unit: ContentUnit | None) -> None:
+        """实际执行 Mod 组绑定（不受钉住状态影响，供内部取消钉住后调用）。"""
         self._current_unit = unit
         self._current_folder_path = Path(unit.path) if unit is not None else None
 
@@ -189,11 +225,13 @@ class AssemblyPanel(QWidget):
             self._title_label.setText(ui.ASSEMBLY_PANEL_TITLE)
             self._hint_label.setText(ui.ASSEMBLY_PANEL_EMPTY)
             self._list_model.refresh([])
+            self._pin_button.setEnabled(False)  # A5：未绑定时禁用
             return
 
         # 显示 Mod 组名
         mod_name = Path(unit.path).name
         self._hint_label.setText(ui.ASSEMBLY_PANEL_HINT.format(name=mod_name))
+        self._pin_button.setEnabled(True)
         self._refresh_file_list()
 
     def bind_folder(self, folder_path: Path | None) -> None:
@@ -202,10 +240,18 @@ class AssemblyPanel(QWidget):
         UX 重构 Phase 1 Task 2：装配面板语义扩展为"文件夹透视器"。
         单击非内容单元文件夹时调用，显示其内部文件。
         清空 _current_unit 关联（封面重命名功能在 Task 2 Commit 2 调整）。
+        UX 重构 Phase 1 Task 3：钉住状态下短路此调用（A1/A2 决策）。
 
         Args:
             folder_path: 待透视的文件夹路径；None 表示清空面板。
         """
+        if self._is_pinned:
+            # 钉住中：短路所有绑定调用（包括解绑）
+            return
+        self._apply_bind_folder(folder_path)
+
+    def _apply_bind_folder(self, folder_path: Path | None) -> None:
+        """实际执行文件夹透视（不受钉住状态影响，供内部取消钉住后调用）。"""
         self._current_unit = None
         self._current_folder_path = folder_path
 
@@ -213,14 +259,66 @@ class AssemblyPanel(QWidget):
             self._title_label.setText(ui.ASSEMBLY_PANEL_TITLE)
             self._hint_label.setText(ui.ASSEMBLY_PANEL_EMPTY)
             self._list_model.refresh([])
+            self._pin_button.setEnabled(False)  # A5：未绑定时禁用
             return
 
         # 显示文件夹名
         self._hint_label.setText(ui.ASSEMBLY_PANEL_FOLDER_HINT.format(name=folder_path.name))
+        self._pin_button.setEnabled(True)
         self._refresh_file_list()
 
+    def pin(self) -> None:
+        """钉住当前透视的文件夹。
+
+        钉住后中栏操作不再切换装配面板绑定（A1/A2）。
+        未绑定时调用此方法为 no-op（A5：按钮已禁用，防御性处理）。
+        """
+        if self._current_folder_path is None and self._current_unit is None:
+            return
+        self._is_pinned = True
+        self._pin_button.setText(ui.ASSEMBLY_PIN_BUTTON_PINNED)
+        self._pin_button.setToolTip(ui.ASSEMBLY_PIN_TOOLTIP_PINNED)
+
+    def unpin(self) -> None:
+        """取消钉住。
+
+        仅清除钉住状态，不主动切换绑定（B4：由 MainWindow 调用 bind_* 跟随中栏）。
+        内部会清除钉住标志，使后续 bind_* 调用不再被短路。
+        """
+        self._is_pinned = False
+        self._pin_button.setText(ui.ASSEMBLY_PIN_BUTTON_UNPINNED)
+        self._pin_button.setToolTip(ui.ASSEMBLY_PIN_TOOLTIP_UNPINNED)
+
+    def is_pinned(self) -> bool:
+        """返回当前是否处于钉住状态（供测试 + MainWindow 查询）。"""
+        return self._is_pinned
+
+    def force_unpin_and_clear(self) -> None:
+        """强制取消钉住并清空面板（钉住对象路径不存在时调用，A4/B6 决策）。
+
+        与 unpin() 区别：此方法同时清空当前绑定，使面板回到空状态。
+        unpin() 仅清除钉住标志，保留当前绑定内容。
+        """
+        self._is_pinned = False
+        self._pin_button.setText(ui.ASSEMBLY_PIN_BUTTON_UNPINNED)
+        self._pin_button.setToolTip(ui.ASSEMBLY_PIN_TOOLTIP_UNPINNED)
+        self._apply_bind_mod_group(None)
+
     def refresh_current(self) -> None:
-        """刷新当前透视的文件夹文件列表（装配操作后调用）。"""
+        """刷新当前透视的文件夹文件列表（装配操作后调用）。
+
+        UX 重构 Phase 1 Task 3：刷新时检测钉住对象路径是否存在，
+        不存在则自动解除钉住并清空面板（A4/B6 决策）。
+        """
+        # A4/B6：钉住对象路径不存在时自动解除钉住
+        if (
+            self._is_pinned
+            and self._current_folder_path is not None
+            and not self._current_folder_path.exists()
+        ):
+            logger.info("钉住的文件夹路径不存在，自动解除钉住：%s", self._current_folder_path)
+            self.force_unpin_and_clear()
+            return
         if self._current_unit is not None or self._current_folder_path is not None:
             self._refresh_file_list()
 
@@ -275,6 +373,22 @@ class AssemblyPanel(QWidget):
         else:
             entries = []
         self._list_model.refresh(entries)
+
+    def _on_pin_clicked(self) -> None:
+        """📌 按钮点击：切换钉住状态。
+
+        UX 重构 Phase 1 Task 3：
+        - 未钉住 → pin()，钉住当前透视文件夹（A1/A2）
+        - 已钉住 → unpin()，清除钉住标志，由 MainWindow 监听后调用 bind_* 跟随中栏（B4）
+        """
+        if self._is_pinned:
+            self.unpin()
+            if self._on_pin_changed is not None:
+                self._on_pin_changed(False)
+        else:
+            self.pin()
+            if self._on_pin_changed is not None:
+                self._on_pin_changed(True)
 
     def _on_context_menu(self, pos) -> None:  # noqa: ANN001 (Qt 信号)
         """右键菜单：文件操作 + 图片重命名封面 + 空白处移动文件夹。
