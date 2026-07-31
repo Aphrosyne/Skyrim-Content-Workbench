@@ -7,29 +7,20 @@
 
 ---
 
-## 1. 标签系统的初始预制库
+## 1. 标签系统的初始预制库 ✅ 已关闭（Stage 4 Task 1）
 
 - **问题**：第一批预制标签的具体内容（分类名称、各分类下的标签列表）。
 - **背景**：spec §10.2 确定使用"预制 + 自定义"策略，但预制库的具体内容未枚举。
-- **当前设想**：
-  - 服装护甲：重甲、轻甲、法袍、现代、幻想
-  - 武器：单手剑、双手剑、弓、法杖
-  - 作者：Kirax、NINI、3HY 等
-  - 来源：N 网、群友分享、自购
-  - 状态：已测试、已汉化、待测试、推荐
-  - 部位：身体、头部、腿部
-- **预计决定里程碑**：阶段 4 Task 1 实施前。
+- **关闭**：Stage 4 Task 1 已实现 `default_tags.json`，含 6 分类（服装护甲 / 武器 / 作者 / 来源 / 状态 / 部位），预制库内容与原设想一致。
 
 ---
 
-## 2. 搜索索引技术选型
+## 2. 搜索索引技术选型 ✅ 已关闭（Stage 5 Task 7）
 
 - **问题**：搜索使用 SQLite FTS5 还是直接 LIKE 查询。
 - **背景**：新 spec §8 定义搜索范围为内容单元标题 + 标签名 + 备注，第一阶段数据量有限。
-- **可选方向**：
-  - A) 直接 `LIKE` 查询（简单，满足第一阶段需求）
-  - B) SQLite FTS5 全文索引（更高性能，但增加 schema 复杂度）
-- **预计决定里程碑**：阶段 5 Task 5 实施前。
+- **关闭**：Stage 5 Task 7 采用方案 A（直接 `LIKE` 查询），Q2=B 仅搜索 `is_marked=1` 的内容单元。数据量有限时 LIKE 性能足够，FTF5 增加 schema 复杂度不划算。
+- **后续**：若数据量增长后性能不足，可再评估迁移到 FTS5。
 
 ---
 
@@ -39,6 +30,7 @@
 - **背景**：roadmap 阶段 5 涉及的功能，当前不迫切。
 - **可选方向**：官方 API / 网页解析 / 仅支持手动下载关联。
 - **预计决定里程碑**：阶段 5 启动前。实施前必须核对相关网站规则。
+- **当前状态**：Stage 5 已完成但未涉及此功能，归入 Stage 6 范围。
 
 ---
 
@@ -70,17 +62,15 @@
   - A) 不做取消（扫描通常很快，增量扫描更短）
   - B) 实现取消机制（需要 ScanWorker 层支持中断信号）
 - **预计决定里程碑**：阶段 3 或阶段 5（取决于用户实际使用体验反馈）。
+- **当前状态**：Stage 5 已完成，扫描速度可接受，按用户反馈决定。
 
 ---
 
-## 7. FolderTreeModel 惰性加载的技术债
+## 7. FolderTreeModel 惰性加载的技术债 ✅ 已关闭（新架构）
 
 - **问题**：`FolderTreeModel.rowCount` 在未加载时自动触发 `_fetch`，违反 Qt model/view 惯例。
 - **背景**：旧版实现中存在此问题（曾导致无限递归崩溃），通过重入保护缓解但未根治。
-- **当前状态**：在新架构的目录树实现中，建议在新 `FolderTreeModel` 中直接修复。
-  - `rowCount` 改为纯查询（返回 0 或缓存长度，不触发 `_fetch`）
-  - 加载仅由 `canFetchMore` / `fetchMore` 驱动
-- **预计决定里程碑**：阶段 2 Task 3（目录树浏览）实现时。
+- **关闭**：新架构 `canFetchMore` / `fetchMore` 已正确实现，`rowCount` 改为纯查询（返回 0 或缓存长度，不触发 `_fetch`），无无限递归问题。
 
 ---
 
@@ -107,6 +97,7 @@
   - 不显示已撤回的操作
   - 不记录/不显示"撤回"这个操作本身
   - 不显示删除操作（删除由回收站兜底，历史面板无需展示）
+- **Stage 5 Code Review 更新**：D4 决策已落地——撤销操作不再写入 `operation_history` 新记录，仅标记原记录 `undone_at`。"不记录/不显示撤回操作"已通过 schema v11 迁移在数据层消除，UI 层只需根据 `undone_at` 灰显原记录即可。
 
 ### 4. 刷新按钮
 
@@ -134,6 +125,49 @@
 - **现状**：当前 UI 为功能驱动开发，布局和交互细节未针对日常使用频率优化。
 - **计划**：Stage 5 全部完成 + Code Review 修复后，用多模态 AI 分析当前界面生成提示词，进行整体 UI 重构。
 - **属性**：属于交互体验。
+- **Stage 5 Code Review 更新**：用户决策 UI 重构单独开分支处理，不在当前主线进行。
+
+### 9. 信息简化
+
+- 拆分mainwindow。操作历史里面的操作记录简化，只显示操作类型，鼠标悬浮上去显示详细操作过程
+- 所有路径都不显示绝对路径，只从管理目录作为根路径开始显示，或者寻找一些替代方式，简化路径
+- **Stage 5 Code Review 更新**：MainWindow 拆分登记为 TD-M21 + TD-M31，归入 UI 重构版本处理。
+
+---
+
+## Stage 5 Code Review 决策记录（2026-07-31）
+
+> Stage 5 完成后的全面 Code Review 发现 5 项需用户决策的问题（D1-D5），
+> 用户已于 2026-07-31 完成决策，以下记录决策结果与落地状态。
+
+### D1: ModGroupService 命名与职责重构 — 决策 A ✅ 已落地
+
+- **决策**：A — 保留 "Mod 组" 作为 UI 术语（用户认知友好），但代码层面重命名。
+- **落地**：`ModGroupService` → `ContentUnitCreationService`，`create_mod_group` → `create_content_unit_from_file`，错误类 `ModGroupSourceNotInStagingError` / `InvalidModGroupNameError` → `SourceNotInStagingError` / `InvalidContentUnitNameError`。UI 文本保留 "Mod 组"。测试文件名和 `TestCreateModGroup` 类名保留（代码层重命名，UI 术语保留）。
+- **版本**：Stage 5 Code Review 批次 6（v0.41.0）。
+
+### D2: status 字段是否重构为 is_marked: bool — 决策 B ✅ 已落地
+
+- **决策**：B — 重构为 `is_marked: bool`，v11 迁移。
+- **落地**：schema v11 迁移，content_unit 表移除 `status` 列，新增 `is_marked INTEGER NOT NULL DEFAULT 1 CHECK(is_marked IN (0, 1))`。数据迁移：`status='organized'` → `is_marked=1`，`status='unmarked'` → `is_marked=0`。Domain 层 `ContentUnit` / `SearchResult` 字段 `status: str` → `is_marked: bool`。Repository / Service / UI 全链路改用 `is_marked`。
+- **版本**：Stage 5 Code Review 批次 7（v0.41.0）。
+
+### D3: "organized" 状态值是否重命名 — 决策 C ✅ 与 D2 一并处理
+
+- **决策**：C — 与 D2 一并决策。
+- **落地**：随 D2 决策落地，status 字段直接重构为 `is_marked: bool`，"organized" / "unmarked" 字面值不再存在。
+- **版本**：Stage 5 Code Review 批次 7（v0.41.0）。
+
+### D4: operation_history.source_path 复用问题 — 决策 A（用户修正）✅ 已落地
+
+- **决策**：A — 用户补充：删除操作记录默认灰色不可撤销；可撤销记录撤销后变灰；"撤销"操作本身不记录（因为原记录已有 `undone_at` 字段标记是否被撤销）。
+- **落地**：schema v11 迁移清理历史 `operation_type='undo'` 记录。`UndoService.undo()` 不再创建新 OperationHistory 记录，仅调用 `_repo.mark_undone(history.id, self._now())` 标记原记录。保留 CHECK 约束含 `'undo'`（向后兼容，不重建表）。不新增 `original_op_id` 列（H3 问题自动消失）。
+- **版本**：Stage 5 Code Review 批次 7（v0.41.0）。
+
+### D5: TD-H10 FileOperationService 分层迁移时机 — 决策 B ✅ 已登记
+
+- **决策**：B — UI 重构时一并处理。
+- **落地**：登记为 TD-H10 + TD-L25，归入 UI 重构版本处理（用户决策 UI 重构单独开分支）。当前代码保持现状，FileOperationService 仍位于 infrastructure 层。
 
 ---
 
@@ -143,7 +177,7 @@
 
 | 编号 | 主题 | 状态 | 新架构中的对应 |
 |------|------|------|---------------|
-| Q1 | ModItem.status | ✅ 关闭 | 由 ContentUnit.status 替代 |
+| Q1 | ModItem.status | ✅ 关闭 | 由 ContentUnit.status 替代（v11 进一步重构为 is_marked） |
 | Q2 | FileAsset.batch_id | ✅ 关闭 | FileAsset 概念已移除 |
 | Q3 | 拖入目录树 vs 按钮 | ✅ 关闭 | 拖拽 + 快速插入按钮并存 |
 | Q4 | 缩略图联系表给 AI | ✅ 关闭 | 阶段 6 决定 |
@@ -154,7 +188,7 @@
 | Q9 | 英文国际化 | ✅ 关闭 | UI 确认仅中文 |
 | Q10 | 候选成员关系 | ✅ 关闭 | ModItem 概念已移除 |
 | Q11 | 素材池处置 | ✅ 关闭 | 由暂存区方案替代 |
-| Q12 | 搜索索引更新 | → 新 Q2 | 移至新文档 |
+| Q12 | 搜索索引更新 | → 新 Q2 | 移至新文档（Stage 5 Task 7 关闭，方案 A LIKE） |
 | Q13 | 缩略图命名 | ✅ 关闭 | 保留现有策略 |
 | Q14 | undo_payload 结构 | ✅ 关闭 | 旧版 OperationLog 已废弃 |
 | Q15 | AI JSON Schema | → 新 Q4 | 移至新文档 |
@@ -163,4 +197,4 @@
 | Q18 | 扫描并发与取消 | → 新 Q6 | 移至新文档 |
 | Q19 | 成员角色限制 | ✅ 关闭 | 角色系统已移除 |
 | Q20 | 部分失败回滚 | ✅ 关闭 | 旧版批量移动已废弃 |
-| Q21 | FolderTreeModel 技术债 | → 新 Q7 | 移至新文档 |
+| Q21 | FolderTreeModel 技术债 | → 新 Q7 | 移至新文档（新架构已修复） |

@@ -132,7 +132,7 @@ class FileScanner:
         is_unchanged = False
         if folder_mtime_map is not None:
             cached_mtime = folder_mtime_map.get(make_path_key(dir_path))
-            if cached_mtime is not None and self._mtime_equal(cached_mtime, dir_mtime):
+            if cached_mtime is not None and self.mtime_equal(cached_mtime, dir_mtime):
                 is_unchanged = True
 
         # 读取目录内容（即使 mtime 未变也需要获取子目录列表 + 压缩包文件）
@@ -194,7 +194,7 @@ class FileScanner:
             )
 
     @staticmethod
-    def _mtime_equal(cached: float, current: float) -> bool:
+    def mtime_equal(cached: float, current: float) -> bool:
         """判断 mtime 是否相等（考虑浮点精度）。
 
         Windows NTFS mtime 精度约 100ns，直接 == 比较风险高。

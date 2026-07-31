@@ -22,10 +22,6 @@ class InvalidRootPathError(ApplicationError):
     """受管理根目录路径非法：不存在或非目录。"""
 
 
-class ScanError(ApplicationError):
-    """扫描过程中发生的可向用户展示的错误（非单个目录的扫描错误，而是整体性错误）。"""
-
-
 class StagingAreaNotFoundError(ApplicationError):
     """StagingArea 不存在。"""
 
@@ -58,12 +54,18 @@ class SourceNotFoundError(FileOperationError):
     """源文件或目录不存在。"""
 
 
-class ModGroupSourceNotInStagingError(ApplicationError):
-    """创建 Mod 组失败：源文件不在暂存区下。"""
+class SourceNotInStagingError(ApplicationError):
+    """创建 Mod 组失败：源文件不在暂存区下。
+
+    D1 重命名：原 ModGroupSourceNotInStagingError（UI 术语保留 "Mod 组"）。
+    """
 
 
-class InvalidModGroupNameError(ApplicationError):
-    """创建 Mod 组失败：Mod 组名称无效（空或仅含空白）。"""
+class InvalidContentUnitNameError(ApplicationError):
+    """创建 Mod 组失败：名称无效（空或仅含空白）。
+
+    D1 重命名：原 InvalidModGroupNameError（UI 术语保留 "Mod 组"）。
+    """
 
 
 class ContentUnitNotFoundError(ApplicationError):

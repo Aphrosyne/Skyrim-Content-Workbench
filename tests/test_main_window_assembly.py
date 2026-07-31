@@ -27,9 +27,9 @@ from PySide6.QtCore import Qt  # noqa: E402
 from app.main_window import MainWindow  # noqa: E402
 from application.assembly_service import AssemblyService  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
+from application.content_unit_creation_service import ContentUnitCreationService  # noqa: E402
 from application.folder_tree_service import FolderTreeService  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
-from application.mod_group_service import ModGroupService  # noqa: E402
 from application.scan_service import ScanService  # noqa: E402
 from application.staging_service import StagingService  # noqa: E402
 from domain.models import AppMode  # noqa: E402
@@ -59,7 +59,7 @@ def _make_mod_tree(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def main_window_env(qapp, tmp_path: Path):
-    """构造完整 MainWindow 测试环境（含暂存区 + ModGroupService + AssemblyService 注入）。"""
+    """构造完整 MainWindow 测试环境（含暂存区 + ContentUnitCreationService 等服务注入）。"""
     db_path = tmp_path / "test.db"
     init_db(db_path)
     conn = get_connection(db_path)
@@ -100,7 +100,7 @@ def main_window_env(qapp, tmp_path: Path):
         content_unit_repo=ContentUnitRepository(conn),
     )
     # Stage 4.5 H4：各 Service 不再需要 folder_cache_repo
-    mod_group_service = ModGroupService(file_op_service, content_service)
+    content_unit_creation_service = ContentUnitCreationService(file_op_service, content_service)
     assembly_service = AssemblyService(file_op_service, ContentUnitRepository(conn))
     from application.quick_insert_service import QuickInsertService
 
@@ -120,7 +120,7 @@ def main_window_env(qapp, tmp_path: Path):
         commit_callback=conn.commit,
         rollback_callback=conn.rollback,
         staging_service=staging_service,
-        mod_group_service=mod_group_service,
+        content_unit_creation_service=content_unit_creation_service,
         assembly_service=assembly_service,
         quick_insert_service=quick_insert_service,
     )
@@ -195,7 +195,7 @@ def _create_mod_group(qapp, window: MainWindow, source_name: str, chosen_name: s
     assert entry is not None
 
     if chosen_name is None:
-        from application.mod_group_service import extract_mod_name
+        from application.content_unit_creation_service import extract_mod_name
 
         chosen_name = extract_mod_name(entry.name)
 

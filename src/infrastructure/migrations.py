@@ -557,6 +557,126 @@ def migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
         logger.info("迁移 v9 → v10 完成：无 'unorganized' 记录需要更新")
 
 
+def migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
+    """v10 → v11：ContentUnit.status → is_marked + path_key + 清理 undo 记录 + 冗余索引。
+
+    Stage 5 Code Review 多项决策一次性落地：
+
+    1. D2/D3：status 字段重构为 is_marked: bool（破坏性 schema 迁移）
+       - content_unit 表移除 status 列，新增 is_marked INTEGER NOT NULL DEFAULT 1
+       - 数据迁移：status='organized' → is_marked=1，status='unmarked' → is_marked=0
+       - 简化两态语义为布尔值，消除 "organized" 字面歧义
+
+    2. H5 + TD-H9：content_unit 新增 path_key 列（UNIQUE 约束）
+       - 与 managed_root / staging_area 模式一致，DB 层强制路径归一化唯一
+       - 迁移时回填 path_key = make_path_key(path)
+
+    3. D4：撤销操作不再写入 operation_history
+       - 删除历史 operation_type='undo' 记录（用户决策：撤销只标记原记录 undone_at）
+       - 保留 undone_at 列（标记原操作已撤销）
+       - 保留 CHECK 约束含 'undo'（向后兼容，不重建表）
+       - 不新增 original_op_id 列（H3 问题自动消失）
+
+    4. M12：清理冗余索引
+       - DROP INDEX idx_managed_root_path_key（managed_root.path_key 已有 UNIQUE 约束）
+       - DROP INDEX idx_content_unit_path（content_unit.path 已有 UNIQUE 约束）
+       - DROP INDEX idx_folder_cache_path（folder_cache.path 已有 UNIQUE 约束）
+       - DROP INDEX idx_staging_area_path_key（staging_area.path_key 已有 UNIQUE 约束）
+       - DROP INDEX idx_content_unit_tag_cu（content_unit_tag.content_unit_id 是复合主键第一列）
+
+    实现说明：
+    - content_unit 表需重建（SQLite 不便直接修改列定义），采用 v6→v7 迁移模式
+    - path_key 回填需 Python 计算 make_path_key（infrastructure 层同层 import，不跨层）
+    - 操作历史仅 DELETE WHERE operation_type='undo'，不重建表
+
+    幂等性：通过检查 content_unit 是否已有 is_marked 列判断是否已迁移。
+    """
+    # 幂等检查：若 is_marked 列已存在则跳过
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(content_unit)")}
+    if "is_marked" in cols:
+        logger.info("v11 迁移已应用，跳过")
+        return
+
+    # === 1. content_unit 表重建：status → is_marked + 新增 path_key ===
+    conn.executescript(
+        """
+        CREATE TABLE content_unit_new (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            path_key TEXT NOT NULL UNIQUE,
+            title TEXT,
+            content_type TEXT NOT NULL DEFAULT 'mod',
+            source_url TEXT,
+            cover_path TEXT,
+            is_marked INTEGER NOT NULL DEFAULT 1 CHECK(is_marked IN (0, 1)),
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+
+    # 回填数据：status='unmarked' → is_marked=0，其他 → is_marked=1
+    # path_key 用 Python 计算后逐行回填（避免 SQL 表达 normcase/normpath）
+    from infrastructure.path_utils import make_path_key
+
+    rows = conn.execute(
+        "SELECT id, path, title, content_type, source_url, cover_path, "
+        "status, notes, created_at, updated_at FROM content_unit"
+    ).fetchall()
+    for row in rows:
+        is_marked = 0 if row["status"] == "unmarked" else 1
+        path_key = make_path_key(row["path"])
+        conn.execute(
+            """
+            INSERT INTO content_unit_new (
+                id, path, path_key, title, content_type, source_url,
+                cover_path, is_marked, notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["id"],
+                row["path"],
+                path_key,
+                row["title"],
+                row["content_type"],
+                row["source_url"],
+                row["cover_path"],
+                is_marked,
+                row["notes"],
+                row["created_at"],
+                row["updated_at"],
+            ),
+        )
+
+    # 替换旧表 + 重建索引
+    conn.executescript(
+        """
+        DROP TABLE content_unit;
+        ALTER TABLE content_unit_new RENAME TO content_unit;
+        CREATE INDEX IF NOT EXISTS idx_content_unit_is_marked ON content_unit(is_marked);
+        """
+    )
+
+    # === 2. 清理历史 undo 记录（D4 决策：撤销不再写入新记录）===
+    result = conn.execute("DELETE FROM operation_history WHERE operation_type = 'undo'")
+    if result.rowcount > 0:
+        logger.info("v11 迁移：清理 %d 条历史 undo 记录", result.rowcount)
+
+    # === 3. 清理冗余索引（M12）===
+    # 这些索引是对 UNIQUE 列或复合主键的冗余
+    conn.executescript(
+        """
+        DROP INDEX IF EXISTS idx_managed_root_path_key;
+        DROP INDEX IF EXISTS idx_content_unit_path;
+        DROP INDEX IF EXISTS idx_folder_cache_path;
+        DROP INDEX IF EXISTS idx_staging_area_path_key;
+        DROP INDEX IF EXISTS idx_content_unit_tag_cu;
+        """
+    )
+    logger.info("迁移 v10 → v11 完成")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -570,4 +690,5 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (8, migrate_v7_to_v8),
     (9, migrate_v8_to_v9),
     (10, migrate_v9_to_v10),
+    (11, migrate_v10_to_v11),
 ]

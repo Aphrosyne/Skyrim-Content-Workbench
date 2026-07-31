@@ -14,6 +14,7 @@ from __future__ import annotations
 import sqlite3
 
 from domain.models import Tag, TagCategory
+from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.content_unit_tag import ContentUnitTagRepository
 from infrastructure.repositories.tag import TagRepository
 from infrastructure.repositories.tag_category import TagCategoryRepository
@@ -40,8 +41,9 @@ def _seed_content_unit(
     conn: sqlite3.Connection, unit_id: str = "cu-1", path: str = "/mods/a"
 ) -> None:
     conn.execute(
-        "INSERT INTO content_unit (id, path, created_at, updated_at) VALUES (?, ?, 't', 't')",
-        (unit_id, path),
+        "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+        "VALUES (?, ?, ?, 1, 't', 't')",
+        (unit_id, path, make_path_key(path)),
     )
     conn.commit()
 

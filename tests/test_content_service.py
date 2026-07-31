@@ -19,19 +19,8 @@ import pytest
 
 from application.content_service import ContentService
 from domain.models import ContentUnit, FileEntry
-from infrastructure.db import get_connection, init_db
+from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.content_unit import ContentUnitRepository
-
-
-@pytest.fixture
-def db_connection(tmp_path: Path) -> sqlite3.Connection:
-    """临时数据库连接，使用 Row 工厂。"""
-    db_path = tmp_path / "test.db"
-    init_db(db_path)
-    conn = get_connection(db_path)
-    conn.row_factory = sqlite3.Row
-    yield conn
-    conn.close()
 
 
 @pytest.fixture
@@ -49,7 +38,7 @@ def _make_unit(
     path: str,
     title: str | None = None,
     created_at: str = "2026-07-12T00:00:00Z",
-    status: str = "organized",
+    is_marked: bool = True,
 ) -> ContentUnit:
     return ContentUnit(
         id=unit_id,
@@ -57,7 +46,7 @@ def _make_unit(
         created_at=created_at,
         updated_at=created_at,
         title=title,
-        status=status,
+        is_marked=is_marked,
     )
 
 
@@ -660,15 +649,15 @@ class TestCreateContentUnit:
         assert unit.path == str(path)
         assert unit.title is None
         assert unit.content_type == "mod"
-        assert unit.status == "organized"
+        assert unit.is_marked is True
         assert unit.created_at == "2026-07-14T00:00:00Z"
         # DB 中可查
         fetched = svc._repo.get_by_id("uuid-create-1")  # noqa: SLF001
         assert fetched is not None
         assert fetched.path == str(path)
 
-    def test_default_status_organized(self, db_connection, tmp_path: Path) -> None:
-        """默认 status=organized。"""
+    def test_default_is_marked_true(self, db_connection, tmp_path: Path) -> None:
+        """默认 is_marked=True。"""
         from application.content_service import ContentService
         from infrastructure.repositories.content_unit import ContentUnitRepository
 
@@ -678,7 +667,7 @@ class TestCreateContentUnit:
 
         unit = svc.create_content_unit(path)
 
-        assert unit.status == "organized"
+        assert unit.is_marked is True
 
     def test_duplicate_path_raises(self, db_connection, tmp_path: Path) -> None:
         """path 唯一约束：重复创建抛 ConstraintViolationError。"""
@@ -1014,10 +1003,10 @@ class TestUnmarkContentUnit:
 
         svc.unmark_content_unit(unit.id)
 
-        # 记录仍在 DB，但 status 为 "unmarked"
+        # 记录仍在 DB，但 is_marked 为 False
         result = svc._repo.get_by_id(unit.id)  # noqa: SLF001
         assert result is not None
-        assert result.status == "unmarked"
+        assert result.is_marked is False
 
     def test_unmark_preserves_content_unit_tag(self, db_connection, tmp_path: Path) -> None:
         """取消标记：保留 content_unit_tag（用户重新标记后可恢复标签）。"""
@@ -1189,7 +1178,7 @@ class TestListByPathPrefixNormalized:
                 path=posix_child_path,
                 title="child",
                 content_type="mod",
-                status="organized",
+                is_marked=True,
                 created_at="2026-07-14T00:00:00Z",
                 updated_at="2026-07-14T00:00:00Z",
             )
@@ -1213,8 +1202,9 @@ class TestUpdateMetadata:
     def test_update_title(self, service: ContentService, db_connection: sqlite3.Connection) -> None:
         unit = _make_unit("u1", "/mods/a")
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (unit.id, unit.path, unit.created_at, unit.updated_at),
+            "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+            "VALUES (?, ?, ?, 1, ?, ?)",
+            (unit.id, unit.path, make_path_key(unit.path), unit.created_at, unit.updated_at),
         )
         db_connection.commit()
 
@@ -1226,8 +1216,8 @@ class TestUpdateMetadata:
         self, service: ContentService, db_connection: sqlite3.Connection
     ) -> None:
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, created_at, updated_at) "
-            "VALUES ('u1', '/mods/a', 't', 't')"
+            "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', '/mods/a', 1, 't', 't')"
         )
         db_connection.commit()
 
@@ -1239,8 +1229,9 @@ class TestUpdateMetadata:
     ) -> None:
         """空字符串 title 应清空（设为 None）。"""
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, title, created_at, updated_at) "
-            "VALUES ('u1', '/mods/a', '原标题', 't', 't')"
+            "INSERT INTO content_unit (id, path, path_key, title, is_marked, "
+            "created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', '/mods/a', '原标题', 1, 't', 't')"
         )
         db_connection.commit()
 
@@ -1253,8 +1244,8 @@ class TestUpdateMetadata:
         from application.errors import InvalidMetadataError
 
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, created_at, updated_at) "
-            "VALUES ('u1', '/mods/a', 't', 't')"
+            "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', '/mods/a', 1, 't', 't')"
         )
         db_connection.commit()
 
@@ -1265,8 +1256,8 @@ class TestUpdateMetadata:
         self, service: ContentService, db_connection: sqlite3.Connection
     ) -> None:
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, created_at, updated_at) "
-            "VALUES ('u1', '/mods/a', 't', 't')"
+            "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', '/mods/a', 1, 't', 't')"
         )
         db_connection.commit()
 
@@ -1275,8 +1266,8 @@ class TestUpdateMetadata:
 
     def test_update_notes(self, service: ContentService, db_connection: sqlite3.Connection) -> None:
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, created_at, updated_at) "
-            "VALUES ('u1', '/mods/a', 't', 't')"
+            "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', '/mods/a', 1, 't', 't')"
         )
         db_connection.commit()
 
@@ -1287,8 +1278,9 @@ class TestUpdateMetadata:
         self, service: ContentService, db_connection: sqlite3.Connection
     ) -> None:
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, notes, created_at, updated_at) "
-            "VALUES ('u1', '/mods/a', '旧备注', 't', 't')"
+            "INSERT INTO content_unit (id, path, path_key, notes, is_marked, "
+            "created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', '/mods/a', '旧备注', 1, 't', 't')"
         )
         db_connection.commit()
 
@@ -1300,8 +1292,9 @@ class TestUpdateMetadata:
     ) -> None:
         """None 参数表示不改，应保留原值。"""
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, title, source_url, notes, created_at, updated_at) "
-            "VALUES ('u1', '/mods/a', '原标题', 'https://a.com', '原备注', 't', 't')"
+            "INSERT INTO content_unit (id, path, path_key, title, source_url, notes, is_marked, "
+            "created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', '/mods/a', '原标题', 'https://a.com', '原备注', 1, 't', 't')"
         )
         db_connection.commit()
 
@@ -1332,9 +1325,9 @@ class TestUpdateMetadataCoverPath:
         cover.write_bytes(b"\x00")
 
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, created_at, updated_at) "
-            "VALUES ('u1', ?, 't', 't')",
-            (str(unit_dir),),
+            "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+            "VALUES ('u1', ?, ?, 1, 't', 't')",
+            (str(unit_dir), make_path_key(str(unit_dir))),
         )
         db_connection.commit()
 
@@ -1347,8 +1340,9 @@ class TestUpdateMetadataCoverPath:
         db_connection: sqlite3.Connection,
     ) -> None:
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, cover_path, created_at, updated_at) "
-            "VALUES ('u1', '/mods/a', 'old.jpg', 't', 't')"
+            "INSERT INTO content_unit (id, path, path_key, cover_path, is_marked, "
+            "created_at, updated_at) "
+            "VALUES ('u1', '/mods/a', '/mods/a', 'old.jpg', 1, 't', 't')"
         )
         db_connection.commit()
 
@@ -1387,7 +1381,7 @@ class TestUpdateMetadataCoverPath:
                 id="u-m4",
                 path=str(unit_dir),
                 cover_path="cover_old.jpg",
-                status="organized",
+                is_marked=True,
                 created_at="2026-07-01T00:00:00Z",
                 updated_at="2026-07-01T00:00:00Z",
             )
@@ -1449,7 +1443,7 @@ class TestUpdateMetadataCoverPath:
             ContentUnit(
                 id="u-m4-none",
                 path=str(unit_dir),
-                status="organized",
+                is_marked=True,
                 created_at="2026-07-01T00:00:00Z",
                 updated_at="2026-07-01T00:00:00Z",
             )
@@ -1497,7 +1491,7 @@ class TestUpdateMetadataCoverPath:
                 id="u-m4-nochange",
                 path=str(unit_dir),
                 cover_path="cover.jpg",
-                status="organized",
+                is_marked=True,
                 created_at="2026-07-01T00:00:00Z",
                 updated_at="2026-07-01T00:00:00Z",
             )
@@ -1542,9 +1536,9 @@ class TestUpdateMetadataCoverPath:
         unit_dir.mkdir()
 
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, created_at, updated_at) "
-            "VALUES ('u1', ?, 't', 't')",
-            (str(unit_dir),),
+            "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+            "VALUES ('u1', ?, ?, 1, 't', 't')",
+            (str(unit_dir), make_path_key(str(unit_dir))),
         )
         db_connection.commit()
 
@@ -1565,9 +1559,9 @@ class TestUpdateMetadataCoverPath:
         cover.write_bytes(b"\x00")
 
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, created_at, updated_at) "
-            "VALUES ('u1', ?, 't', 't')",
-            (str(unit_dir),),
+            "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+            "VALUES ('u1', ?, ?, 1, 't', 't')",
+            (str(unit_dir), make_path_key(str(unit_dir))),
         )
         db_connection.commit()
 
@@ -1588,9 +1582,9 @@ class TestUpdateMetadataCoverPath:
         outside.write_bytes(b"\x00")
 
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, created_at, updated_at) "
-            "VALUES ('u1', ?, 't', 't')",
-            (str(unit_dir),),
+            "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+            "VALUES ('u1', ?, ?, 1, 't', 't')",
+            (str(unit_dir), make_path_key(str(unit_dir))),
         )
         db_connection.commit()
 
@@ -1610,9 +1604,9 @@ class TestUpdateMetadataCoverPath:
         (unit_dir / "cover.txt").write_bytes(b"\x00")
 
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, created_at, updated_at) "
-            "VALUES ('u1', ?, 't', 't')",
-            (str(unit_dir),),
+            "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+            "VALUES ('u1', ?, ?, 1, 't', 't')",
+            (str(unit_dir), make_path_key(str(unit_dir))),
         )
         db_connection.commit()
 

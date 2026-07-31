@@ -9,7 +9,7 @@
 - 空查询返回空列表
 - 无匹配返回空列表
 - 标签聚合（GROUP_CONCAT）
-- 仅搜索 organized 状态（Q2=B）
+- 仅搜索 is_marked=True 的内容单元（v11 Q2=B）
 - 结果按 matched_field 优先级 + title 排序
 """
 
@@ -20,6 +20,7 @@ import sqlite3
 import pytest
 
 from domain.models import SearchResult
+from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.search import SearchRepository
 
 
@@ -34,19 +35,20 @@ def _create_unit(
     path: str,
     title: str | None = None,
     notes: str | None = None,
-    status: str = "organized",
+    is_marked: bool = True,
     content_type: str = "mod",
 ) -> None:
-    """插入内容单元记录。"""
+    """插入内容单元记录（v11 schema：is_marked + path_key）。"""
     conn.execute(
-        "INSERT INTO content_unit (id, path, title, notes, status, content_type, "
-        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO content_unit (id, path, path_key, title, notes, is_marked, "
+        "content_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             unit_id,
             path,
+            make_path_key(path),
             title,
             notes,
-            status,
+            1 if is_marked else 0,
             content_type,
             "2026-07-30T00:00:00Z",
             "2026-07-30T00:00:00Z",
@@ -281,21 +283,21 @@ class TestTagAggregation:
         assert results[0].tags == []
 
 
-class TestStatusFilter:
-    """Q2=B：仅搜索 organized 状态，排除 unmarked。"""
+class TestIsMarkedFilter:
+    """v11 Q2=B：仅搜索 is_marked=True 的内容单元，排除 is_marked=False。"""
 
-    def test_searches_organized(self, search_repo, db_connection) -> None:
-        """organized 状态的内容单元被搜索到。"""
-        _create_unit(db_connection, "u1", "D:/mod.7z", title="测试", status="organized")
+    def test_searches_marked(self, search_repo, db_connection) -> None:
+        """is_marked=True 的内容单元被搜索到。"""
+        _create_unit(db_connection, "u1", "D:/mod.7z", title="测试", is_marked=True)
 
         results = search_repo.search("测试")
 
         assert len(results) == 1
-        assert results[0].status == "organized"
+        assert results[0].is_marked is True
 
     def test_excludes_unmarked(self, search_repo, db_connection) -> None:
-        """unmarked 状态的内容单元不被搜索（取消标记，不再是内容单元）。"""
-        _create_unit(db_connection, "u1", "D:/mod.7z", title="测试", status="unmarked")
+        """is_marked=False 的内容单元不被搜索（取消标记，不再是内容单元）。"""
+        _create_unit(db_connection, "u1", "D:/mod.7z", title="测试", is_marked=False)
 
         results = search_repo.search("测试")
 
@@ -369,7 +371,7 @@ class TestResultModel:
                 title="测试",
                 path="D:/mod.7z",
                 content_type="mod",
-                status="organized",
+                is_marked=True,
                 matched_field="invalid",
                 tags=[],
             )
@@ -382,7 +384,7 @@ class TestResultModel:
                 title="测试",
                 path="D:/mod.7z",
                 content_type="mod",
-                status="organized",
+                is_marked=True,
                 matched_field="title",
                 tags=[],
             )
@@ -395,7 +397,7 @@ class TestResultModel:
                 title="测试",
                 path="",
                 content_type="mod",
-                status="organized",
+                is_marked=True,
                 matched_field="title",
                 tags=[],
             )

@@ -8,9 +8,8 @@
 - tag.name（标签名，通过 content_unit_tag 关联）
 
 设计决策：
-- Q2=B：仅搜索 organized 状态，排除 unmarked。
-  理由：unmarked 是用户显式取消标记（不再是内容单元），搜索这些记录对用户无意义。
-  Stage 5 Task 7 收尾后 status 仅两态（organized / unmarked），详见 migrations v10。
+- Q2=B：仅搜索 is_marked=True 的内容单元（v11 重构后，原 status='organized' → is_marked=1）。
+  理由：is_marked=False 是用户显式取消标记（不再是内容单元），搜索这些记录对用户无意义。
 - Q6=A：单关键词子串匹配（LIKE '%query%'）。
 - Q7=B：匹配字段优先级排序（title > tag > notes）。
 - Q8=C：不限制结果数量。
@@ -80,7 +79,7 @@ class SearchRepository:
             cu.title AS title,
             cu.path AS path,
             cu.content_type AS content_type,
-            cu.status AS status,
+            cu.is_marked AS is_marked,
             CASE
                 WHEN LOWER(cu.title) LIKE LOWER(:pattern) ESCAPE '\\' THEN 'title'
                 WHEN EXISTS (
@@ -101,7 +100,7 @@ class SearchRepository:
                 ''
             ) AS tags_str
         FROM content_unit cu
-        WHERE cu.status = 'organized'
+        WHERE cu.is_marked = 1
           AND (
               LOWER(cu.title) LIKE LOWER(:pattern) ESCAPE '\\'
              OR LOWER(cu.notes) LIKE LOWER(:pattern) ESCAPE '\\'
@@ -139,7 +138,7 @@ class SearchRepository:
                     title=row["title"],
                     path=row["path"],
                     content_type=row["content_type"],
-                    status=row["status"],
+                    is_marked=bool(row["is_marked"]),
                     matched_field=row["matched_field"],
                     tags=tags,
                 )

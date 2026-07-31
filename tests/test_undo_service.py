@@ -93,7 +93,7 @@ def undo_env(tmp_path: Path):
 
 class TestUndoNewFolder:
     def test_undo_empty_folder_success(self, undo_env, tmp_path: Path) -> None:
-        """撤销新建的空文件夹：文件夹删除 + folder_cache 同步 + undo 记录写入。"""
+        """撤销新建的空文件夹：文件夹删除 + folder_cache 同步 + 原记录标记 undone_at。"""
         undo_svc, file_op, conn, history_repo, folder_cache_repo, _ = undo_env
         parent = tmp_path / "parent"
         parent.mkdir()
@@ -105,19 +105,14 @@ class TestUndoNewFolder:
         # folder_cache 中应有该节点
         assert folder_cache_repo.get_by_path(str(target)) is not None
 
-        # 撤销
-        undo_record = undo_svc.undo(history)
+        # 撤销（v11：不再写 undo 新记录，仅标记原记录 undone_at）
+        undo_svc.undo(history)
         conn.commit()
 
         # 文件夹已被删除
         assert not target.exists()
         # folder_cache 中该节点已删除
         assert folder_cache_repo.get_by_path(str(target)) is None
-        # undo 记录已写入
-        assert undo_record.operation_type == "undo"
-        assert undo_record.source_path == history.id  # 指向原 history.id
-        assert undo_record.can_undo is False
-        assert undo_record.undone_at is None
         # 原记录被标记为已撤销
         updated = history_repo.get_by_id(history.id)
         assert updated is not None
@@ -178,17 +173,14 @@ class TestUndoRename:
         assert new_path.is_file()
         assert not src.exists()
 
-        # 撤销
-        undo_record = undo_svc.undo(history)
+        # 撤销（v11：不再写 undo 新记录）
+        undo_svc.undo(history)
         conn.commit()
 
         # 文件名还原
         assert src.is_file()
         assert not new_path.exists()
         assert src.read_bytes() == b"data"
-        # undo 记录写入
-        assert undo_record.operation_type == "undo"
-        assert undo_record.source_path == history.id
         # 原记录被标记为已撤销
         updated = history_repo.get_by_id(history.id)
         assert updated is not None
@@ -207,7 +199,7 @@ class TestUndoRename:
             path=str(archive),
             title="mod",
             content_type="mod",
-            status="organized",
+            is_marked=True,
             created_at="2026-07-30T00:00:00Z",
             updated_at="2026-07-30T00:00:00Z",
         )
@@ -282,15 +274,14 @@ class TestUndoMove:
         assert dst.is_file()
         assert not src.exists()
 
-        # 撤销
-        undo_record = undo_svc.undo(history)
+        # 撤销（v11：不再写 undo 新记录）
+        undo_svc.undo(history)
         conn.commit()
 
         # 文件回到原位置
         assert src.is_file()
         assert not dst.exists()
         assert src.read_bytes() == b"content"
-        assert undo_record.operation_type == "undo"
 
     def test_undo_move_directory_success(self, undo_env, tmp_path: Path) -> None:
         """撤销移动目录：目录回到原位置 + ContentUnit.path 同步。"""
@@ -304,7 +295,7 @@ class TestUndoMove:
             path=str(archive),
             title="mod",
             content_type="mod",
-            status="organized",
+            is_marked=True,
             created_at="2026-07-30T00:00:00Z",
             updated_at="2026-07-30T00:00:00Z",
         )
@@ -374,18 +365,21 @@ class TestUndoNotAllowed:
             undo_svc.undo(history)
 
     def test_undo_undo_record_not_allowed(self, undo_env, tmp_path: Path) -> None:
-        """undo 自身不会进入可无限 undo 循环：undo 记录不可再撤销。"""
+        """v11：undo 类型记录不可再撤销（向后兼容校验，v11 后不再产生新 undo 记录）。"""
         undo_svc, file_op, conn, history_repo, _, _ = undo_env
-        # 先做一次正常撤销，产生 undo 记录
-        parent = tmp_path / "parent"
-        parent.mkdir()
-        target = parent / "NewFolder"
-        history = file_op.new_folder(target)
-        conn.commit()
-        undo_record = undo_svc.undo(history)
+        # 直接构造 undo 类型记录（v11 不再产生新 undo 记录，但保留校验以防历史数据）
+        undo_record = OperationHistory(
+            id="undo-hist-1",
+            operation_type="undo",
+            source_path="orig-id",
+            created_at="2026-07-30T00:00:00Z",
+            target_path=None,
+            can_undo=False,
+        )
+        OperationHistoryRepository(conn).create(undo_record)
         conn.commit()
 
-        # 再次撤销 undo 记录应被拒绝
+        # 撤销 undo 记录应被拒绝
         with pytest.raises(UndoNotAllowedError, match="撤销记录本身不可再次撤销"):
             undo_svc.undo(undo_record)
 
@@ -491,14 +485,12 @@ class TestRestartRestore:
         assert histories[0].id == history.id
         assert histories[0].operation_type == "new_folder"
 
-        # 跨会话撤销
-        undo_record = undo_svc2.undo(histories[0])
+        # 跨会话撤销（v11：不再写 undo 新记录）
+        undo_svc2.undo(histories[0])
         conn2.commit()
 
         # 文件夹已被删除
         assert not target.exists()
-        # undo 记录已写入
-        assert undo_record.operation_type == "undo"
         # 原记录被标记为已撤销
         updated = history_repo2.get_by_id(history.id)
         assert updated is not None
@@ -571,26 +563,22 @@ class TestListRecent:
         assert histories[2].id == "hist-7"
 
     def test_list_recent_includes_undone_records(self, undo_env, tmp_path: Path) -> None:
-        """list_recent 返回已撤销的原记录（UI 决定是否过滤显示）。"""
+        """v11：list_recent 返回已撤销的原记录（不再有 undo 新记录）。"""
         undo_svc, file_op, conn, _, _, _ = undo_env
         parent = tmp_path / "parent"
         parent.mkdir()
         target = parent / "NewFolder"
         history = file_op.new_folder(target)
         conn.commit()
-        # 撤销
+        # 撤销（v11：不写 undo 新记录，仅标记原记录 undone_at）
         undo_svc.undo(history)
         conn.commit()
 
         histories = undo_svc.list_recent(limit=100)
-        # 应包含原记录（已标记 undone_at）和 undo 记录
-        assert len(histories) == 2
-        # undo 记录最新（在上）
-        assert histories[0].operation_type == "undo"
-        assert histories[0].can_undo is False
-        # 原记录已标记为已撤销
-        assert histories[1].operation_type == "new_folder"
-        assert histories[1].undone_at is not None
+        # v11：只有 1 条原记录（已标记 undone_at），不再有 undo 新记录
+        assert len(histories) == 1
+        assert histories[0].operation_type == "new_folder"
+        assert histories[0].undone_at is not None
 
 
 # === OperationHistory 数据模型校验（schema v8） ===

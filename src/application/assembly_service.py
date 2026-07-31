@@ -240,7 +240,7 @@ class AssemblyService:
         if not is_image_file(image_path):
             raise InvalidContentUnitPathError(f"文件不是支持的图片格式：{image_path}")
 
-        # Mod 组名 = 文件夹名（与 ModGroupService 一致）
+        # Mod 组名 = 文件夹名（与 ContentUnitCreationService 一致）
         mod_name = folder_path.name
         ext = image_path.suffix  # 保留原扩展名（含点）
 

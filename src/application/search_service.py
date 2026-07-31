@@ -4,7 +4,9 @@
 
 spec §8：搜索仅针对数据库中的内容单元元数据，不搜索文件系统。
 Q1=A：回车触发（service 不关心触发方式，由 UI 层处理）。
-Q2=A：搜索所有状态的内容单元（含 unmarked / missing）。
+Q2=B：仅搜索 organized 状态，排除 unmarked。
+  理由：unmarked 是用户显式取消标记（不再是内容单元），搜索这些记录对用户无意义。
+  Stage 5 Task 7 收尾后 status 仅两态（organized / unmarked），详见 migrations v10。
 Q6=A：单关键词子串匹配。
 Q7=B：匹配字段优先级排序（title > tag > notes），由 Repository 实现。
 Q8=C：不限制结果数量。

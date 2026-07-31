@@ -136,7 +136,7 @@ class TestScanRootFull:
 
         repo = ContentUnitRepository(db_connection)
         for unit in repo.list_all():
-            assert unit.status == "organized"
+            assert unit.is_marked is True
             assert unit.content_type == "mod"
 
     def test_full_scan_content_unit_title_is_filename_with_ext(

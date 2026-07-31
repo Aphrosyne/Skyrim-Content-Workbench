@@ -33,11 +33,12 @@ def db_connection(tmp_path: Path) -> sqlite3.Connection:
         CREATE TABLE content_unit (
             id TEXT PRIMARY KEY,
             path TEXT NOT NULL UNIQUE,
+            path_key TEXT NOT NULL UNIQUE,
             title TEXT,
             content_type TEXT NOT NULL,
             source_url TEXT,
             cover_path TEXT,
-            status TEXT NOT NULL,
+            is_marked INTEGER NOT NULL DEFAULT 1 CHECK(is_marked IN (0, 1)),
             notes TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL

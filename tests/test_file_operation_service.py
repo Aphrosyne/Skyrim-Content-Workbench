@@ -395,7 +395,7 @@ def service_with_sync(
 
 
 def _seed_content_unit(
-    repo: ContentUnitRepository, unit_id: str, path: str, status: str = "organized"
+    repo: ContentUnitRepository, unit_id: str, path: str, is_marked: bool = True
 ) -> ContentUnit:
     """插入一条 ContentUnit 测试数据。"""
     unit = ContentUnit(
@@ -403,7 +403,7 @@ def _seed_content_unit(
         path=path,
         title=path.rsplit("/", 1)[-1],
         content_type="mod",
-        status=status,
+        is_marked=is_marked,
         created_at="2026-07-28T00:00:00Z",
         updated_at="2026-07-28T00:00:00Z",
     )
@@ -1439,7 +1439,7 @@ class TestCopyAutoSync:
             content_unit_repo,
             unit_id="unit-src",
             path=str(src),
-            status="organized",
+            is_marked=True,
         )
         conn.commit()
 
@@ -1456,7 +1456,7 @@ class TestCopyAutoSync:
         assert len(new_units) == 1
         assert new_units[0].path == str(dst)
         assert new_units[0].id != original_unit.id  # 新 id
-        assert new_units[0].status == "organized"  # 元数据保留
+        assert new_units[0].is_marked is True  # 元数据保留
 
     def test_copy_file_duplicates_content_unit(self, service_with_sync, tmp_path: Path) -> None:
         """文件复制后复制对应 ContentUnit（如有）。"""

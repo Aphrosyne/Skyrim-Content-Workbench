@@ -113,7 +113,7 @@ class TestListAll:
 class TestUpsertMtime:
     def test_upsert_mtime_updates_existing(self, repo: FolderCacheRepository) -> None:
         repo.create(_make_folder(folder_id="f-1", path="/a"))
-        repo.upsert_mtime(path="/a", mtime=1000.5, folder_id="f-1")
+        repo.upsert_mtime(mtime=1000.5, folder_id="f-1")
 
         fetched = repo.get_by_id("f-1")
         assert fetched is not None
@@ -121,7 +121,7 @@ class TestUpsertMtime:
 
     def test_upsert_mtime_overwrites(self, repo: FolderCacheRepository) -> None:
         repo.create(_make_folder(folder_id="f-1", path="/a", last_scanned_mtime=1000.0))
-        repo.upsert_mtime(path="/a", mtime=2000.0, folder_id="f-1")
+        repo.upsert_mtime(mtime=2000.0, folder_id="f-1")
 
         fetched = repo.get_by_id("f-1")
         assert fetched is not None
@@ -129,7 +129,7 @@ class TestUpsertMtime:
 
     def test_upsert_mtime_not_exist_raises(self, repo: FolderCacheRepository) -> None:
         with pytest.raises(NotFoundError):
-            repo.upsert_mtime(path="/x", mtime=1.0, folder_id="nonexistent")
+            repo.upsert_mtime(mtime=1.0, folder_id="nonexistent")
 
 
 class TestParentSelfReference:

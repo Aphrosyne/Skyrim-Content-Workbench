@@ -10,6 +10,98 @@
 
 ---
 
+## [0.41.0] - 2026-07-31
+
+Stage 5 完成后全面 Code Review 修复版本
+
+Stage 5 全部完成后进行的阶段性审查修复。目标：找出架构/设计/代码质量问题，清理技术债，区分"现在修复"与"进入后续版本"，为下一阶段开发建立基础。完整审查报告见 [docs/stage5-code-review.md](docs/stage5-code-review.md)。本版本落地 8 个批次的修复，所有 Stage 5 Code Review 范围内的问题已处理完毕。
+
+**批次 1：文档与注释修正（H1 / H2 / H3 / M9）**
+
+- **H1 文档同步**：[architecture.md](docs/architecture.md) 从 schema v6 更新到 v11，补充 v7-v11 迁移说明、staging_area 表、thumbnail_cache 复合主键描述
+- **H2 注释矛盾修正**：[search_service.py](src/application/search_service.py) Q2=A → Q2=B 注释修正，与实际实现一致
+- **H3 语义说明**：[undo_service.py](src/application/undo_service.py) undo 记录 source_path 语义说明（后随 D4 决策一并消除）
+- **M9 docstring 修正**：[logging_setup.py](src/app/logging_setup.py) 路径名 `SkyrimModWorkbench` → `SkyrimContentWorkbench`，补充数据目录解析优先级
+
+**批次 2：死代码清理（M1 / M2 / M3）**
+
+- **M1**：[file_classify.py](src/infrastructure/file_classify.py) 删除 `AssetHint` / `classify_by_extension` / `IMAGE_EXTENSIONS` 及对应测试，保留 `ARCHIVE_EXTENSIONS` 和 `get_extension`
+- **M2**：[errors.py](src/application/errors.py) 删除从未被使用的 `ScanError` 类
+- **M3**：[conftest.py](tests/conftest.py) 删除无引用的 `sample_mod_tree` fixture
+
+**批次 3：测试修正（M4 / M5 / M6）**
+
+- **M4**：删除误导性测试 `test_delete_commits_without_explicit_commit` / `test_remove_root_persists_without_explicit_commit`（虚假保障，与设计契约冲突）
+- **M5**：[test_content_service.py](tests/test_content_service.py) 删除局部 `db_connection` fixture 遮蔽，统一使用 conftest
+- **M6**：[test_managed_root_service.py](tests/test_managed_root_service.py) 删除 `__import__("sqlite3").Row` hack（随 M4 一并删除）
+
+**批次 4：类型与 API 修正（M7 / M8 / M14）**
+
+- **M7**：[folder_tree_service.py](src/application/folder_tree_service.py) `fc_root_map: dict[str, object]` → `dict[str, FolderCache]`，移除 `# type: ignore`
+- **M8**：[folder_cache.py](src/infrastructure/repositories/folder_cache.py) `upsert_mtime` 移除冗余 `path` 参数，签名改为 `upsert_mtime(mtime, folder_id)`，同步更新 3 处调用方
+- **M14**：[scan_service.py](src/application/scan_service.py) 删除 `ScanSummary.success` 属性（恒返回 True 具误导性），docstring 说明调用方应使用 `has_errors`
+
+**批次 5：Domain 校验 + 事务边界（M10 / M11 / M13）**
+
+- **M10 事务边界**：[db.py](src/infrastructure/db.py) init_db 在 v0 基线 INSERT 后添加显式 `conn.commit()`，与 docstring 契约一致
+- **M11 冗余状态**：[main_window.py](src/app/main_window.py) 删除 `_on_scan_started` 中冗余的 `STATUS_SCANNING` 设置
+- **M13 Domain 校验**：[models.py](src/domain/models.py) `ContentUnit.content_type` 新增 `VALID_CONTENT_TYPES` 取值范围校验，与 `OperationHistory.operation_type` 校验对齐
+
+**批次 6：D1 ModGroupService 代码层重命名**
+
+- **D1 决策落地（决策 A）**：代码层重命名，UI 文本保留 "Mod 组"
+  - `ModGroupService` → `ContentUnitCreationService`（[content_unit_creation_service.py](src/application/content_unit_creation_service.py)）
+  - `create_mod_group` → `create_content_unit_from_file`
+  - 错误类 `ModGroupSourceNotInStagingError` / `InvalidModGroupNameError` → `SourceNotInStagingError` / `InvalidContentUnitNameError`
+  - 同步更新 [main.py](src/app/main.py) / [main_window.py](src/app/main_window.py) / [assembly_service.py](src/application/assembly_service.py) / [unit_of_work.py](src/infrastructure/unit_of_work.py) / [file_operation_service.py](src/infrastructure/file_operation_service.py) / [folder_cache_sync_helper.py](src/infrastructure/folder_cache_sync_helper.py) 等
+  - 测试文件名和 `TestCreateModGroup` 类名保留（代码层重命名，UI 术语保留）
+
+**批次 7：schema v11 迁移（D2/D3 + D4 + H5 + M12）**
+
+- **D2/D3 决策落地（决策 B + C）**：ContentUnit.status → is_marked: bool（破坏性 schema 迁移）
+  - content_unit 表移除 `status` 列，新增 `is_marked INTEGER NOT NULL DEFAULT 1 CHECK(is_marked IN (0, 1))`
+  - 数据迁移：`status='organized'` → `is_marked=1`，`status='unmarked'` → `is_marked=0`
+  - Domain 层 `ContentUnit` / `SearchResult` 字段 `status: str` → `is_marked: bool`，`__post_init__` 增加 bool 类型校验
+  - Repository / Service / UI 全链路改用 `is_marked`，消除 "organized" 字面歧义
+- **D4 决策落地（决策 A，用户修正）**：撤销操作不再写入 operation_history
+  - `UndoService.undo()` 不再创建新 OperationHistory 记录，仅调用 `_repo.mark_undone(history.id, self._now())` 标记原记录
+  - 迁移函数清理历史 `operation_type='undo'` 记录
+  - H3 问题（source_path 存 ID 而非路径）随之消失，无需新增 `original_op_id` 列
+- **H5 + TD-H9**：content_unit 表新增 `path_key TEXT NOT NULL UNIQUE` 列
+  - 与 managed_root / staging_area 模式一致，DB 层强制路径归一化唯一
+  - 迁移时回填 `path_key = make_path_key(path)`，ContentUnitRepository.create / update 自动计算 path_key
+- **M12 冗余索引清理**：删除 5 个对 UNIQUE/复合主键的冗余索引
+  - `idx_managed_root_path_key` / `idx_content_unit_path` / `idx_folder_cache_path` / `idx_staging_area_path_key` / `idx_content_unit_tag_cu`
+  - 新增有效索引：`idx_content_unit_is_marked`
+- [db.py](src/infrastructure/db.py) `CURRENT_SCHEMA_VERSION` 10 → 11
+- [migrations.py](src/infrastructure/migrations.py) 新增 `migrate_v10_to_v11`
+
+**批次 8：文档更新**
+
+- [technical-debt.md](docs/technical-debt.md) 标记已修复项（TD-H9 / TD-H11 / TD-L6 / TD-L10 / TD-L11 / TD-L12 / TD-L15 / TD-L17 / TD-L22 / TD-M1 / TD-M3 / TD-M4 / TD-M18 / TD-M19 / TD-M20），新增技术债（TD-H12 / TD-M31-M35 / TD-L23-L29），更新处理优先级建议
+- [open-questions.md](docs/open-questions.md) 关闭 Q1 / Q2 / Q7，更新 Q3-Q6 现状，新增 D1-D5 决策记录
+- 新增 [stage5-code-review.md](docs/stage5-code-review.md) 完整 Code Review 报告
+
+**架构改进**
+
+- **schema v11 统一迁移**：将 H5（path_key 列）、D2/D3（status → is_marked）、D4（撤销不记录）、M12（冗余索引清理）四项 schema 变更一次性落地，避免分散迁移成本
+- **概念清晰化**：ContentUnit 从字符串状态（organized/unmarked）简化为布尔语义（is_marked），消除字面歧义
+- **路径归一化 DB 层强制**：content_unit 新增 path_key UNIQUE 约束，与 managed_root / staging_area 模式一致，消除应用层兜底的不完全保障
+- **撤销链路简化**：撤销操作不再写入新记录，仅标记原记录 `undone_at`，UI 通过该字段判断灰色状态
+
+**延期处理（归入后续版本）**
+
+- **UI 重构版本**（用户决策：单独开分支）：TD-M21 + TD-M31（MainWindow God Object 拆分）、TD-H10（FileOperationService 分层迁移）、TD-M26（MainWindow 集成测试）、TD-M35（异常类型统一）、UI 重构清单 8 项
+- **数据一致性版本**（Stage 6 前）：TD-H12（文件操作事务不一致补偿）、TD-M32（undo 安全校验快照）、TD-M33（mark_undone 重复撤销）
+- **性能优化版本**：TD-H3（UI 冻结）、TD-M28（N+1 查询）
+
+**测试**
+
+- 全量回归：1341 passed, 5 skipped（5 个 skip 为 Windows 权限相关，与本次改动无关）
+- ruff check + format 全通过
+
+---
+
 ## [0.40.0] - 2026-07-30
 
 Stage 5 Task 7：全局搜索 + ContentUnit.status 简化

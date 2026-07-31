@@ -15,6 +15,7 @@ from domain.models import (
     OperationHistory,
     Tag,
     TagCategory,
+    ThumbnailCache,
 )
 
 # === ContentUnit ===
@@ -31,7 +32,7 @@ class TestContentUnit:
         assert unit.id == "u-1"
         assert unit.path == "/mods/armor"
         assert unit.content_type == "mod"
-        assert unit.status == "organized"
+        assert unit.is_marked is True
         assert unit.title is None
 
     def test_create_with_all_fields(self) -> None:
@@ -44,11 +45,11 @@ class TestContentUnit:
             content_type="mod",
             source_url="https://example.com",
             cover_path="/mods/weapon/cover.png",
-            status="organized",
+            is_marked=True,
             notes="测试备注",
         )
         assert unit.title == "龙之剑"
-        assert unit.status == "organized"
+        assert unit.is_marked is True
 
     def test_empty_id_raises(self) -> None:
         with pytest.raises(ValueError, match="id"):
@@ -74,6 +75,29 @@ class TestContentUnit:
             updated_at="t",
         )
         assert "护甲" in unit.path
+
+    # === M13 / v11：is_marked / content_type 取值范围校验 ===
+
+    def test_default_is_marked_true(self) -> None:
+        unit = ContentUnit(id="u", path="/x", created_at="t", updated_at="t")
+        assert unit.is_marked is True
+
+    def test_is_marked_false(self) -> None:
+        unit = ContentUnit(id="u", path="/x", created_at="t", updated_at="t", is_marked=False)
+        assert unit.is_marked is False
+
+    def test_invalid_is_marked_type_raises(self) -> None:
+        """v11：is_marked 必须是 bool。"""
+        with pytest.raises(ValueError, match="is_marked"):
+            ContentUnit(  # type: ignore[arg-type]
+                id="u", path="/x", created_at="t", updated_at="t", is_marked="true"
+            )
+
+    def test_invalid_content_type_raises(self) -> None:
+        with pytest.raises(ValueError, match="content_type"):
+            ContentUnit(
+                id="u", path="/x", created_at="t", updated_at="t", content_type="collection"
+            )
 
 
 # === TagCategory ===
@@ -325,3 +349,53 @@ class TestManagedRoot:
                 created_at="t",
                 updated_at="t",
             )
+
+
+# === ThumbnailCache ===
+
+
+class TestThumbnailCache:
+    def _make_valid(self, **overrides) -> ThumbnailCache:
+        """构造合法 ThumbnailCache 供测试覆写。"""
+        defaults = dict(
+            content_unit_id="u-1",
+            size=256,
+            source_size_bytes=1024,
+            source_modified_at="2026-07-12T00:00:00Z",
+            cache_filename="u-1_256.webp",
+            status="ok",
+            generated_at="2026-07-12T00:00:00Z",
+        )
+        defaults.update(overrides)
+        return ThumbnailCache(**defaults)
+
+    def test_create_valid(self) -> None:
+        cache = self._make_valid()
+        assert cache.content_unit_id == "u-1"
+        assert cache.status == "ok"
+        assert cache.is_ok() is True
+
+    def test_valid_status_missing(self) -> None:
+        cache = self._make_valid(status="missing")
+        assert cache.status == "missing"
+        assert cache.is_ok() is False
+
+    def test_valid_status_corrupt(self) -> None:
+        cache = self._make_valid(status="corrupt", error_message="bad data")
+        assert cache.status == "corrupt"
+
+    def test_valid_status_unsupported(self) -> None:
+        cache = self._make_valid(status="unsupported")
+        assert cache.status == "unsupported"
+
+    def test_valid_status_error(self) -> None:
+        cache = self._make_valid(status="error", error_message="unexpected")
+        assert cache.status == "error"
+
+    def test_invalid_status_raises(self) -> None:
+        with pytest.raises(ValueError, match="status"):
+            self._make_valid(status="invalid")
+
+    def test_empty_content_unit_id_raises(self) -> None:
+        with pytest.raises(ValueError, match="content_unit_id"):
+            self._make_valid(content_unit_id="")

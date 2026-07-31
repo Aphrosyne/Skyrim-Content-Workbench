@@ -152,7 +152,7 @@ class ContentService:
         path: Path,
         title: str | None = None,
         content_type: str = "mod",
-        status: str = "organized",
+        is_marked: bool = True,
     ) -> ContentUnit:
         """创建新 ContentUnit。
 
@@ -160,7 +160,7 @@ class ContentService:
             path: 内容单元对应的真实路径（文件或文件夹）。
             title: 标题，默认 None（显示时回退到路径名）。
             content_type: 类型，默认 "mod"。
-            status: 状态，默认 "organized"。
+            is_marked: 是否已标记为内容单元，默认 True。
 
         Returns:
             新创建的 ContentUnit。
@@ -174,7 +174,7 @@ class ContentService:
             path=str(path),
             title=title,
             content_type=content_type,
-            status=status,
+            is_marked=is_marked,
             created_at=now,
             updated_at=now,
         )
@@ -187,11 +187,11 @@ class ContentService:
         标记自动取消（避免父子同时标记）。
 
         行为：
-        - 若 path 已是 ContentUnit 且 status != "unmarked"：返回现有 unit（不重复创建）。
-        - 若 path 已是 ContentUnit 且 status == "unmarked"：恢复为 "organized"（重新标记）。
+        - 若 path 已是 ContentUnit 且 is_marked=True：返回现有 unit（不重复创建）。
+        - 若 path 已是 ContentUnit 且 is_marked=False：恢复为 is_marked=True（重新标记）。
         - 若 path 是文件夹：先 list_by_path_prefix_normalized 查询子项 ContentUnit
-          （不含自身），逐个 delete 非 "unmarked" 子项（ContentUnitRepository.delete
-          已级联清理 content_unit_tag）；"unmarked" 子项保留（用户显式取消标记的偏好
+          （不含自身），逐个 delete 已标记子项（ContentUnitRepository.delete
+          已级联清理 content_unit_tag）；is_marked=False 子项保留（用户显式取消标记的偏好
           不应被覆盖）；然后创建或恢复 ContentUnit。
         - 若 path 是文件：直接创建（不查子项）。
 
@@ -239,18 +239,18 @@ class ContentService:
         # 查询现有记录
         existing = self._repo.get_by_path(str(path))
 
-        # 已标记且非 unmarked：返回现有（不重复创建）
-        if existing is not None and existing.status != "unmarked":
+        # 已标记且 is_marked=True：返回现有（不重复创建）
+        if existing is not None and existing.is_marked:
             return existing
 
-        # 文件夹：取消子项标记（保留 "unmarked" 子项）
+        # 文件夹：取消子项标记（保留 is_marked=False 子项）
         if is_dir:
             children = self._repo.list_by_path_prefix_normalized(str(path))
             # 排除 path 自身（list_by_path_prefix_normalized 含 prefix 自身）
             failures: list[tuple[str, str]] = []
             for child in children:
                 if make_path_key(child.path) != make_path_key(str(path)):
-                    if child.status == "unmarked":
+                    if not child.is_marked:
                         continue  # 保留用户显式取消标记的偏好
                     try:
                         self._repo.delete(child.id)
@@ -266,10 +266,10 @@ class ContentService:
                     failures=failures,
                 )
 
-        # 创建新记录或恢复 unmarked 记录
+        # 创建新记录或恢复 is_marked=False 记录
         if existing is not None:
-            # existing.status == "unmarked" → 恢复为 organized
-            updated = replace(existing, status="organized", updated_at=self._now())
+            # existing.is_marked == False → 恢复为 is_marked=True
+            updated = replace(existing, is_marked=True, updated_at=self._now())
             result = self._repo.update(updated)
         else:
             # 默认 title=path.name（文件名或文件夹名），避免元数据面板显示"（无标题）"
@@ -327,11 +327,11 @@ class ContentService:
     def unmark_content_unit(self, unit_id: str) -> None:
         """取消内容单元标记。
 
-        将 ContentUnit 的 status 设为 "unmarked"（而非删除记录），使扫描不再
+        将 ContentUnit 的 is_marked 设为 False（而非删除记录），使扫描不再
         重复创建该路径的内容单元（roadmap：扫描候选的纠错能力）。**不删除真实文件**。
 
-        UI 层将 "unmarked" 状态视为无内容单元（不显示标记、不响应双击）。
-        若用户再次 mark_as_content_unit，status 恢复为 "organized"。
+        UI 层将 is_marked=False 状态视为无内容单元（不显示标记、不响应双击）。
+        若用户再次 mark_as_content_unit，is_marked 恢复为 True。
 
         Args:
             unit_id: 待取消的 ContentUnit ID。
@@ -342,9 +342,9 @@ class ContentService:
         unit = self._repo.get_by_id(unit_id)
         if unit is None:
             raise ContentUnitNotFoundError(f"内容单元不存在：{unit_id}")
-        if unit.status == "unmarked":
+        if not unit.is_marked:
             return  # 已取消标记，幂等
-        updated = replace(unit, status="unmarked", updated_at=self._now())
+        updated = replace(unit, is_marked=False, updated_at=self._now())
         self._repo.update(updated)
 
     def list_directory_entries(self, dir_path: str) -> list[FileEntry]:
@@ -406,14 +406,14 @@ class ContentService:
             return []
 
         # 批量预查 content_unit：一次 SQL 拿回所有相关单元，构建 path_key 映射
-        # "unmarked" 状态的单元不纳入映射（视为无内容单元）
+        # is_marked=False 的单元不纳入映射（视为无内容单元）
         # 使用 list_by_path_prefix_normalized（统一归一化接口，原 list_by_path_prefix
         # 已在 TD-L20 清理中删除）
         unit_map: dict[str, ContentUnit] = {}
         try:
             units = self._repo.list_by_path_prefix_normalized(staging_path)
             for unit in units:
-                if unit.status == "unmarked":
+                if not unit.is_marked:
                     continue
                 unit_map[make_path_key(unit.path)] = unit
         except (RepositoryError, sqlite3.Error):  # 数据库查询失败不阻塞文件系统遍历
@@ -660,8 +660,8 @@ class ContentService:
         content_unit: ContentUnit | None = None
         try:
             content_unit = self._repo.get_by_path(str(child))
-            # "unmarked" 状态视为无内容单元（用户显式取消标记）
-            if content_unit is not None and content_unit.status == "unmarked":
+            # is_marked=False 视为无内容单元（用户显式取消标记）
+            if content_unit is not None and not content_unit.is_marked:
                 content_unit = None
         except (RepositoryError, sqlite3.Error):  # 数据库查询失败不应中断遍历
             logger.exception("查询 content_unit 失败：path=%s", child)

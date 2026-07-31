@@ -5,7 +5,7 @@ Stage 5 Task 3a：新增 rename + delete_to_recycle_bin，补齐基础文件 CRU
 
 Stage 4.5 H4：可选注入 FolderCacheSyncHelper + ContentUnitRepository，
 new_folder/move 自动同步 folder_cache + ContentUnit.path，消除调用方
-（ModGroupService/QuickInsertService/AssemblyService）手动同步的隐式契约（TD-M22）。
+（ContentUnitCreationService/QuickInsertService/AssemblyService）手动同步的隐式契约（TD-M22）。
 注入后调用方无需再各自实现 _resolve_parent_id_by_path / _sync_folder_cache 等
 重复逻辑；未注入（helper/repo 为 None）时保持原行为，向后兼容。
 
@@ -383,7 +383,7 @@ class FileOperationService:
                 content_type=unit.content_type,
                 source_url=unit.source_url,
                 cover_path=unit.cover_path,
-                status=unit.status,
+                is_marked=unit.is_marked,
                 notes=unit.notes,
                 created_at=unit.created_at,
                 updated_at=unit.updated_at,
@@ -884,7 +884,7 @@ class FileOperationService:
                 content_type=unit.content_type,
                 source_url=unit.source_url,
                 cover_path=unit.cover_path,
-                status=unit.status,
+                is_marked=unit.is_marked,
                 notes=unit.notes,
                 created_at=now,
                 updated_at=now,

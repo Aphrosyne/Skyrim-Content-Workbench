@@ -6,7 +6,7 @@
 - 子目录阻止（目标在源子树内抛 SelfSubdirectoryError）
 - 重名冲突（目标已存在抛 ConflictError）
 - 中文路径支持
-- folder_cache mtime 同步（与 ModGroupService 一致）
+- folder_cache mtime 同步（与 ContentUnitCreationService 一致）
 - ContentUnit 不存在（抛 ContentUnitNotFoundError）
 """
 
@@ -152,7 +152,7 @@ def test_quick_insert_syncs_folder_cache_complete(db_env, mod_group_env) -> None
     """快速插入后应完整同步 folder_cache：删除旧节点 + 插入新节点 + 更新父目录 mtime。
 
     2026-07-17 用户验收修复：原实现只清理旧路径，导致目录树目标目录不刷新。
-    现在与 ModGroupService 模式一致——服务层负责完整同步，UI 层只需 _refresh_tree。
+    现在与 ContentUnitCreationService 模式一致——服务层负责完整同步，UI 层只需 _refresh_tree。
     """
     service, _, conn, unit, mod_folder, target_dir, folder_cache_repo, _ = mod_group_env
 
@@ -346,7 +346,7 @@ def test_quick_insert_cleans_stale_content_unit_at_target_path(db_env, tmp_path:
         path=str(stale_path),
         title="旧残留记录",
         content_type="mod",
-        status="organized",
+        is_marked=True,
         created_at="2026-07-17T00:00:00Z",
         updated_at="2026-07-17T00:00:00Z",
     )
@@ -402,7 +402,7 @@ def test_quick_insert_cleans_stale_child_content_units(db_env, tmp_path: Path) -
         path=str(stale_child_path),
         title="旧子项记录",
         content_type="mod",
-        status="organized",
+        is_marked=True,
         created_at="2026-07-17T00:00:00Z",
         updated_at="2026-07-17T00:00:00Z",
     )
@@ -464,7 +464,7 @@ def test_quick_insert_cleans_stale_content_unit_with_path_normalization(
         path=stale_path_with_trailing_sep,
         title="尾随分隔符旧记录",
         content_type="mod",
-        status="organized",
+        is_marked=True,
         created_at="2026-07-17T00:00:00Z",
         updated_at="2026-07-17T00:00:00Z",
     )
@@ -523,7 +523,7 @@ def test_quick_insert_cleanup_before_move_allows_safe_rollback(db_env, tmp_path:
         path=str(target_dir / "MyMod"),
         title="旧记录",
         content_type="mod",
-        status="organized",
+        is_marked=True,
         created_at="2026-07-17T00:00:00Z",
         updated_at="2026-07-17T00:00:00Z",
     )
@@ -677,39 +677,41 @@ def test_quick_insert_sync_folder_cache_failure_rolls_back_transaction(
 
 
 def test_mod_group_create_folder_cache_failure_rolls_back(db_env, tmp_path: Path) -> None:
-    """H2 修复验证：ModGroupService.create_mod_group 的 folder_cache 写入失败时回滚。
+    """H2 修复验证：folder_cache 写入失败时回滚 create_content_unit_from_file。
+
+    D1 重命名：原 ModGroupService.create_mod_group。
 
     Stage 4.5 H4 调整：folder_cache 同步由 FileOperationService.new_folder 内部的
     FolderCacheSyncHelper 完成。失败仍应清理空文件夹 + 抛出 FileOperationError。
 
-    场景：create_mod_group 步骤 1（new_folder）内部调用
+    场景：create_content_unit_from_file 步骤 1（new_folder）内部调用
     FolderCacheSyncHelper.on_folder_created，folder_cache.create 失败。
     新实现（H2 修复）应：清理已创建的空文件夹 + 抛出 FileOperationError，
     让上层 rollback。旧实现会吞异常继续 move，最终把部分提交态 commit 进数据库。
     """
-    from application.mod_group_service import ModGroupService
+    from application.content_unit_creation_service import ContentUnitCreationService
 
     service, content_service, conn, _, _ = db_env
 
     # Stage 4.5 H4：替换 FileOperationService 内部 helper 的 folder_cache_repo
-    # （ModGroupService 不再持有 folder_cache_repo，同步由 FileOperationService 内部完成）
+    # （ContentUnitCreationService 不持有 folder_cache_repo，同步由 FileOperationService 内部完成）
     from infrastructure.repositories.folder_cache import FolderCacheRepository
 
     real_fc_repo = FolderCacheRepository(conn)
     flaky_fc_repo = _FlakyFolderCacheRepository(real_fc_repo, fail_on_create=True)
     service._file_op._folder_cache_helper._repo = flaky_fc_repo  # noqa: SLF001
 
-    # ModGroupService 新签名：(file_op, content_service, uow=uow)
-    mod_group_svc = ModGroupService(service._file_op, content_service)
+    # ContentUnitCreationService 新签名：(file_op, content_service, uow=uow)
+    mod_group_svc = ContentUnitCreationService(service._file_op, content_service)
 
     staging = tmp_path / "Stash"
     staging.mkdir()
     src = staging / "mod 1.0.7z"
     src.write_bytes(b"data")
 
-    # 执行 create_mod_group：应抛出 FileOperationError（H2 修复）
+    # 执行 create_content_unit_from_file：应抛出 FileOperationError（H2 修复）
     with pytest.raises(FileOperationError, match="写入 folder_cache 失败"):
-        mod_group_svc.create_mod_group(src, staging)
+        mod_group_svc.create_content_unit_from_file(src, staging)
 
     # 模拟 MainWindow 的 rollback
     conn.rollback()

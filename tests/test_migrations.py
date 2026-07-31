@@ -33,7 +33,7 @@ def test_migrations_sorted_by_target() -> None:
     """MIGRATIONS 列表应按 target 升序可排序（init_db 内部排序）。"""
     targets = [t for t, _ in MIGRATIONS]
     assert targets == sorted(targets)
-    assert len(MIGRATIONS) >= 9
+    assert len(MIGRATIONS) >= 10
     assert MIGRATIONS[0][0] == 1
     assert MIGRATIONS[1][0] == 2
     assert MIGRATIONS[2][0] == 3
@@ -44,11 +44,12 @@ def test_migrations_sorted_by_target() -> None:
     assert MIGRATIONS[7][0] == 8
     assert MIGRATIONS[8][0] == 9
     assert MIGRATIONS[9][0] == 10
+    assert MIGRATIONS[10][0] == 11
 
 
-def test_current_schema_version_is_ten() -> None:
-    """Stage 5 Task 7 收尾：当前 schema 版本应为 10（ContentUnit.status 简化为两态）。"""
-    assert CURRENT_SCHEMA_VERSION == 10
+def test_current_schema_version_is_eleven() -> None:
+    """Stage 5 Code Review：当前 schema 版本应为 11（is_marked + path_key + D4 + M12）。"""
+    assert CURRENT_SCHEMA_VERSION == 11
 
 
 def test_migrate_v0_to_v1_idempotent() -> None:
@@ -509,7 +510,7 @@ def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
     db_path = tmp_path / "test.db"
     version = init_db(db_path)
     assert version == CURRENT_SCHEMA_VERSION
-    assert version == 10
+    assert version == 11
 
     # v7 后 managed_root 表仍存在
     conn = sqlite3.connect(str(db_path))
@@ -603,9 +604,9 @@ def test_init_db_migrates_v3_db_to_v6(tmp_path) -> None:
     finally:
         conn.close()
 
-    # init_db 应识别 v3 并依次应用 v3→v4→v5→v6→v7→v8→v9→v10
+    # init_db 应识别 v3 并依次应用 v3→v4→v5→v6→v7→v8→v9→v10→v11
     version = init_db(db_path)
-    assert version == 10
+    assert version == 11
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row

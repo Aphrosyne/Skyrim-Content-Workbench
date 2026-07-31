@@ -6,6 +6,9 @@
 > 第三批已修复：TD-H7（收敛为 normalized 接口）、TD-H8（folder_cache 同步事务一致性）。
 > 第四批已修复：TD-M25（application 层 except Exception 收窄）、TD-L20（删除旧 list_by_path_prefix）。
 > 第五批已修复（Stage 4.5）：TD-H2（ScanService 事务边界）、TD-M22（folder_cache 同步 helper）、TD-L18（mtime 同步策略统一）。
+> Stage 5 Code Review 已修复：TD-H9、TD-L6/L10/L11/L12/L15/L17/L22、TD-M1/M3/M4/M18/M19/M20
+> （详见 CHANGELOG v0.41.0）；D1 ModGroupService→ContentUnitCreationService 代码层重命名、
+> D2/D3 status→is_marked、D4 撤销不记录、H5 path_key + M12 冗余索引清理统一在 schema v11 迁移完成。
 > 以下问题按严重级别排列，将在阶段 3 及后续迭代中逐步处理。
 
 ---
@@ -93,11 +96,11 @@
 
 ## Medium（影响可维护性、性能、测试质量）
 
-### TD-M1: ScanSummary.success 恒返回 True
+### TD-M1: ScanSummary.success 恒返回 True ✅ 已修复（Stage 5 Code Review）
 
 - **位置**: [scan_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/scan_service.py) `ScanSummary.success`
 - **问题**: 属性实现为 `return True`，docstring 暗示会基于 errors 判定，具有误导性。
-- **建议**: 实现为 `return not self.has_errors`，或删除该属性。
+- **修复**: 删除 `success` 属性。docstring 明确说明调用方应使用 `has_errors` 判断错误。
 
 ### TD-M2: ScanService 访问 FileScanner 私有方法 _mtime_equal
 
@@ -105,17 +108,17 @@
 - **问题**: Application 层直接调用 Infrastructure 层的下划线前缀方法，封装泄漏。
 - **建议**: 将 `_mtime_equal` 改为 public `mtime_equal`，或抽到共享工具模块。
 
-### TD-M3: application.errors.ScanError 死代码
+### TD-M3: application.errors.ScanError 死代码 ✅ 已修复（Stage 5 Code Review）
 
 - **位置**: [errors.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/errors.py) 第 25-26 行
 - **问题**: `ScanError` 异常类从未被 raise/except/import，与 `file_scanner.ScanError` dataclass 同名易混淆。
-- **建议**: 删除，或加 TODO 注释说明保留意图。
+- **修复**: 删除 `application.errors.ScanError` 类。
 
-### TD-M4: FolderTreeService.list_root_nodes 类型信息丢失
+### TD-M4: FolderTreeService.list_root_nodes 类型信息丢失 ✅ 已修复（Stage 5 Code Review）
 
 - **位置**: [folder_tree_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/folder_tree_service.py) 第 92 行
 - **问题**: `fc_root_map: dict[str, object]` 应为 `dict[str, FolderCache]`，访问 `.id` 需 `# type: ignore`。
-- **建议**: 改为正确类型标注，移除 type: ignore。
+- **修复**: 导入 `FolderCache`，类型标注改为 `dict[str, FolderCache]`，删除 `# type: ignore` 注释。
 
 ### TD-M5: FolderTreeService 重复扫描 folder_cache 根节点列表
 
@@ -196,23 +199,23 @@
 - **问题**: `sqlite3.Connection` 的上下文管理器仅提交/回滚事务，不关闭连接。WAL 模式下文件句柄泄漏，Windows 上无法删除 db 文件。
 - **建议**: 改用 `try/finally: conn.close()`，或用 `contextlib.closing` 包装。
 
-### TD-M18: 误导性测试声称 delete/remove_root 自提交
+### TD-M18: 误导性测试声称 delete/remove_root 自提交 ✅ 已修复（Stage 5 Code Review）
 
 - **位置**: [test_managed_root_repository.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/tests/test_managed_root_repository.py) `test_delete_commits_without_explicit_commit` / [test_managed_root_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/tests/test_managed_root_service.py) `test_remove_root_persists_without_explicit_commit`
 - **问题**: 测试名称和 docstring 声称"自提交"，但实际因 rollback 通过（create 也被回滚）。与 H5 修复后的设计契约冲突，给出虚假保障。
-- **建议**: 重写为正确验证事务边界，或删除。
+- **修复**: 删除这两个误导性测试。当前 Repository 不自提交是设计契约，测试"自提交"本身已无意义。
 
-### TD-M19: FolderCacheRepository.upsert_mtime 的 path 参数未使用
+### TD-M19: FolderCacheRepository.upsert_mtime 的 path 参数未使用 ✅ 已修复（Stage 5 Code Review）
 
 - **位置**: [folder_cache.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/repositories/folder_cache.py) `upsert_mtime`
 - **问题**: `path` 参数声明后从未参与 SQL 或逻辑，调用方误以为 WHERE 用 path 过滤。
-- **建议**: 删除 `path` 参数，或加 `AND path = ?` 防御性校验。
+- **修复**: 移除 `path` 参数，签名改为 `upsert_mtime(mtime, folder_id)`。同步更新 3 处调用方：`folder_cache_sync_helper.py` / `scan_service.py` / `test_folder_cache_repository.py`。
 
-### TD-M20: test_content_service.py 局部 fixture 遮蔽 conftest
+### TD-M20: test_content_service.py 局部 fixture 遮蔽 conftest ✅ 已修复（Stage 5 Code Review）
 
 - **位置**: [test_content_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/tests/test_content_service.py) 第 26-34 行
 - **问题**: 局部 `db_connection` fixture 用 `tmp_path / "test.db"` 而非 conftest 的 `temp_app_data` 隔离路径，与项目约定相悖，且与 conftest 完全等价重复。
-- **建议**: 删除局部 fixture，使用 conftest 的 `db_connection`。
+- **修复**: 删除局部 fixture，统一使用 conftest 的 `db_connection`。
 
 ---
 
@@ -245,10 +248,11 @@
 - **位置**: [folder_tree_model.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/folder_tree_model.py) 第 131 行
 - **问题**: `f"{name}（未扫描）"` 硬编码，而 `ui_constants.TREE_UNSCANNED_HINT` 已定义但未引用。
 
-### TD-L6: logging_setup.py docstring 路径名过时
+### TD-L6: logging_setup.py docstring 路径名过时 ✅ 已修复（Stage 5 Code Review）
 
 - **位置**: [logging_setup.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/logging_setup.py) 第 3 行
 - **问题**: 写 `SkyrimModWorkbench`，实际为 `SkyrimContentWorkbench`。
+- **修复**: 更新 docstring，说明日志写入应用数据目录下的 `logs/app.log`，并列出数据目录解析优先级。
 
 ### TD-L7: _ELIDE_PATH_PREFIXES 硬编码字符串前缀
 
@@ -266,20 +270,23 @@
 - **问题**: main.py 位于 UI 层目录但直接导入 infrastructure.repositories 创建实例，与 AGENTS.md 规则 3 有张力。
 - **建议**: 移至独立 bootstrap 模块，或在文档中明确组合根角色。
 
-### TD-L10: _on_scan_started 与 _begin_scanning 状态设置重复
+### TD-L10: _on_scan_started 与 _begin_scanning 状态设置重复 ✅ 已修复（Stage 5 Code Review）
 
 - **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) 第 692、709-710 行
 - **问题**: 两处都设置 `STATUS_SCANNING`，属冗余。
+- **修复**: 删除 `_on_scan_started` 中的状态设置，统一由 `_begin_scanning` 设置。
 
-### TD-L11: file_classify.py 死代码
+### TD-L11: file_classify.py 死代码 ✅ 已修复（Stage 5 Code Review）
 
 - **位置**: [file_classify.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/file_classify.py)
 - **问题**: `AssetHint` 枚举、`classify_by_extension` 函数、`IMAGE_EXTENSIONS` 常量无外部引用，docstring 引用已不存在的 FileAsset 表。
+- **修复**: 删除 `AssetHint` / `classify_by_extension` / `IMAGE_EXTENSIONS` 及对应测试。保留 `ARCHIVE_EXTENSIONS` 和 `get_extension`（仍被 file_scanner.py 使用）。
 
-### TD-L12: conftest.py sample_mod_tree fixture 死代码
+### TD-L12: conftest.py sample_mod_tree fixture 死代码 ✅ 已修复（Stage 5 Code Review）
 
 - **位置**: [conftest.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/tests/conftest.py) 第 66-103 行
 - **问题**: 无任何测试引用，各测试文件都自定义本地 mod_tree fixture。
+- **修复**: 删除 `sample_mod_tree` fixture。
 
 ### TD-L13: conftest.py db_connection 冗余设置 row_factory
 
@@ -291,20 +298,22 @@
 - **位置**: [test_migrations.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/tests/test_migrations.py) 第 411-415 行
 - **问题**: 虽无注入风险，但破坏参数化查询风格一致性。
 
-### TD-L15: init_db schema_version 初始化与首次迁移同事务
+### TD-L15: init_db schema_version 初始化与首次迁移同事务 ✅ 已修复（Stage 5 Code Review）
 
 - **位置**: [db.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/db.py) 第 72-89 行
 - **问题**: 建表 + v0 基线 INSERT 实际和 v0→v1 迁移落在同一事务，与 docstring 声称的"每步迁移在独立事务中执行"不一致。
+- **修复**: 在 v0 基线 INSERT 后添加显式 `conn.commit()`，使 v0 基线与首次迁移分属独立事务，与 docstring 契约一致。
 
 ### TD-L16: test_migrations.py 三个测试用 tmp_path 而非 temp_app_data
 
 - **位置**: [test_migrations.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/tests/test_migrations.py) 第 491、521、529 行
 - **问题**: 与 test_db.py 的 fixture 体系不一致，缺少类型标注。
 
-### TD-L17: test_managed_root_service.py 用 __import__ hack
+### TD-L17: test_managed_root_service.py 用 __import__ hack ✅ 已修复（Stage 5 Code Review）
 
 - **位置**: [test_managed_root_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/tests/test_managed_root_service.py) 第 352、366 行
 - **问题**: `__import__("sqlite3").Row` 而非顶部 `import sqlite3`，可读性差。M12 修复后该设置本身也冗余。
+- **修复**: 配合 M18 删除误导性测试后，`__import__` hack 一并随之删除。
 
 ---
 
@@ -476,17 +485,17 @@
 > Stage 4.5 已修复的问题（H1-H4、H6-H7、M4、M19 等）详见 CHANGELOG。
 > 编号接续既有 TD 序列。
 
-### TD-H9: content_unit.path UNIQUE 约束绕过 make_path_key
+### TD-H9: content_unit.path UNIQUE 约束绕过 make_path_key ✅ 已修复（Stage 5 Code Review schema v11）
 
 - **位置**: [db.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/db.py) `content_unit` 表 schema
 - **背景**: `content_unit.path` 列有 UNIQUE 约束，但数据库存储的路径字符串
   大小写/分隔符不一致时（Windows 大小写不敏感），UNIQUE 约束无法防止
   "同一路径不同表示"的重复记录。`make_path_key`（normcase + normpath）
   在应用层统一了比较，但 DB 层 UNIQUE 约束未使用 path_key。
-- **影响范围**: 极端场景下可能产生重复 ContentUnit 记录（不同大小写路径）。
-- **推荐修复方案**: v7 schema 迁移时新增 `path_key` 列并加 UNIQUE 约束，
-  或改用 path_key 作为唯一性判断依据。
-- **建议修复阶段**: **v7 schema 迁移时**（非阻塞，当前应用层 make_path_key 已规避）。
+- **修复（schema v11）**: content_unit 表新增 `path_key TEXT NOT NULL UNIQUE` 列，
+  与 managed_root / staging_area 模式一致。迁移时回填 `path_key = make_path_key(path)`，
+  ContentUnitRepository.create / update 自动计算 path_key。DB 层强制路径归一化唯一，
+  消除应用层兜底的不完全保障。
 
 ### TD-H10: FileOperationService 分层归属
 
@@ -541,13 +550,133 @@
 - **推荐修复方案**: Stage 5 或后续迭代中实现，或从 spec 中移除。
 - **建议修复阶段**: **需用户决策后确定**（D7: C 登记为 TD）。
 
-### TD-L22: ContentUnit.status 字段可进一步重构为布尔字段 ✅ 已部分清理（Stage 5 Task 7）
+### TD-L22: ContentUnit.status 字段重构为 is_marked: bool ✅ 已修复（Stage 5 Code Review schema v11）
 
 - **位置**: [models.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/domain/models.py) `ContentUnit.status`
 - **问题**: Stage 5 Task 7 收尾清理后，status 仅剩两态（`organized` / `unmarked`），语义等价于布尔 `is_marked`。使用字符串字段略显冗余，且 schema DEFAULT 仍为旧值 `unorganized`（SQLite 不便修改 DEFAULT，由应用层 ContentUnit 默认值接管）。
-- **现状处理**：已废弃 `unorganized` / `organized`（"已整理"）/ `missing` 三个取值，保留 `organized` / `unmarked` 两态。`unmarked` 承载核心业务逻辑（取消标记后阻止扫描器重建），不可删除。
-- **未来方向**：若需进一步简化，可将 status 重构为 `is_marked: bool` 并迁移 schema。属于破坏性重构，超出 Stage 5 冻结范围，留待日后评估。
-- **建议修复阶段**: 日后（当前两态已满足需求，无紧迫性）。
+- **修复（schema v11，D2=B / D3=C 决策）**: 将 status 字段重构为 `is_marked: bool`，破坏性 schema 迁移：
+  - content_unit 表移除 `status` 列，新增 `is_marked INTEGER NOT NULL DEFAULT 1 CHECK(is_marked IN (0, 1))`
+  - 数据迁移：`status='organized'` → `is_marked=1`，`status='unmarked'` → `is_marked=0`
+  - Domain 层 `ContentUnit` / `SearchResult` 字段 `status: str` → `is_marked: bool`，`__post_init__` 增加 bool 类型校验
+  - Repository / Service / UI 全链路改用 `is_marked`
+  - 简化两态语义为布尔值，消除 "organized" 字面歧义
+
+---
+
+## Stage 5 Code Review 新增（2026-07-31）
+
+> 以下问题来自 Stage 5 完成后的全面 Code Review，经用户决策后登记为技术债延后处理。
+> 已修复项（H1/H2/H3 文档说明、H5 path_key、M1-M14、TD-H9、TD-L6/L10/L11/L12/L15/L17/L22 等）
+> 详见 CHANGELOG v0.41.0。编号接续既有 TD 序列。
+
+### TD-H11: operation_history.source_path 在 undo 记录中存 ID 而非路径（H3）✅ 已修复（Stage 5 Code Review schema v11）
+
+- **位置**: [undo_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/undo_service.py) `undo()`
+- **背景**: undo 记录的 `source_path` 存的是原 history.id 而非路径（H3），字段名与实际用途不符。
+- **修复（schema v11，D4=A 决策）**: 撤销操作不再写入 `operation_history` 新记录。撤销只标记原记录的 `undone_at` 时间戳，UI 通过 `undone_at` 判断灰色状态。迁移时清理历史 `operation_type='undo'` 记录。H3 问题（source_path 存 ID）随之消失，无需新增 `original_op_id` 列。
+
+### TD-H12: 文件操作与 DB 事务不一致窗口未补偿（H4）
+
+- **位置**: [file_operation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/file_operation_service.py) `move` / `rename` / `copy`
+- **背景**: 文件已成功 + DB 同步失败时，文件无法回滚，仅抛 `FileOperationError` 让 UoW 回滚 DB。导致文件系统与 DB 状态不一致——文件已在新位置，DB 仍记录旧路径。这是文件系统固有约束（shutil 不支持事务）。
+- **影响范围**: 极端场景下（DB 锁、磁盘满）用户文件已移动但应用显示旧位置。
+- **推荐修复方案**: 引入"补偿日志"机制（记录文件已成功移动但 DB 未更新），下次启动时尝试补偿；或在错误提示中明确告知用户"文件已移动但元数据更新失败，请手动刷新或重新扫描"。
+- **建议修复阶段**: **Stage 6 或后续迭代**（数据一致性版本）。
+
+### TD-M31: MainWindow 业务逻辑泄漏 ✅ 已登记（UI 重构版本处理）
+
+- **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
+- **背景**: MainWindow 3823 行、95 个方法、60+ 实例变量、6 个并行状态机。承担 21 处 `_commit()` + 文件操作编排 + 冲突解决编排（2 个重复方法）。Stage 4/5 期间 Q8:C 决策"边开发边小规模拆分"实际未执行，反而新增了快捷键 handler（14 个）、导航历史栈等逻辑。
+- **影响范围**: 任何 UI 改动成本极高，且 UI 层承担了本应在 Application 层的事务边界职责。
+- **推荐修复方案**: UI 重构版本前置任务。至少拆出 `ScanController` / `AssemblyController` / `MetadataView` / `ModeController` / `TransactionScope`（事务边界从 UI 移到 Application 层）。
+- **建议修复阶段**: **UI 重构版本（前置）**（用户决策：UI 重构单独开分支处理）。
+
+### TD-M32: UndoService 安全校验无 size/mtime 比对
+
+- **位置**: [undo_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/undo_service.py) `_safety_check`
+- **背景**: 当前 undo 安全校验仅诊断记录，未存储操作前快照，无法检测文件已被外部修改。撤销可能覆盖用户在 undo 期间的外部修改。
+- **影响范围**: 撤销安全性不足，极端场景可能丢失用户外部修改。
+- **推荐修复方案**: schema 扩展存储操作前快照（size + mtime），undo 前比对当前文件状态与快照。
+- **建议修复阶段**: **Stage 6 或后续**（数据一致性版本，与 TD-H12 一并处理）。
+
+### TD-M33: mark_undone 失败可能导致重复撤销
+
+- **位置**: [undo_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/undo_service.py) `undo()` 第 5 步
+- **背景**: 反向文件操作已执行但 `mark_undone` 失败时，原记录未标记 `undone_at`，用户可能再次触发撤销，导致重复反向操作。当前仅记日志，由调用方决定是否提示用户。
+- **影响范围**: 极端场景下（DB 锁）可能重复撤销。
+- **推荐修复方案**: 引入版本号或乐观锁，或在 `mark_undone` 失败时回滚反向操作（成本高）。
+- **建议修复阶段**: **Stage 6 或后续**（与 TD-M32 一并处理）。
+
+### TD-M34: 覆盖模式子节点 folder_cache 不立即重建
+
+- **位置**: [file_operation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/file_operation_service.py) 覆盖模式分支
+- **背景**: 覆盖模式下子节点 folder_cache 不立即重建，需等下次扫描才修复。当前扫描速度可接受，用户感知低。
+- **影响范围**: 覆盖后目录树可能短暂缺节点，下次扫描后恢复。
+- **推荐修复方案**: 下次扫描优化时一并处理。
+- **建议修复阶段**: **下次扫描优化时**（非阻塞）。
+
+### TD-M35: rename 跨盘抛 FileOperationError，move 抛 CrossDriveError，异常类型不一致
+
+- **位置**: [file_operation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/file_operation_service.py) `rename` / `move`
+- **背景**: 同一语义的跨盘操作，rename 抛 `FileOperationError`，move 抛 `CrossDriveError`，UI 层需分别捕获。
+- **影响范围**: 不影响正确性，但异常处理代码冗余。
+- **推荐修复方案**: 统一异常类型。
+- **建议修复阶段**: **UI 重构版本**（与 TD-M31 一并处理）。
+
+### TD-L23: content_unit.content_type 默认 'mod' 与实体名不一致
+
+- **位置**: [models.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/domain/models.py) `ContentUnit.content_type`
+- **背景**: `content_type` 默认值 `'mod'`，但实体名为 `ContentUnit`（内容单元），不是 "Mod"。当前仅支持单一类型，字段预留多类型扩展。
+- **影响范围**: 不影响正确性，仅命名不一致。
+- **推荐修复方案**: 未来支持多类型时重构。
+- **建议修复阶段**: **未来支持多类型时**（非阻塞）。
+
+### TD-L24: FileEntry 类名与注释不一致
+
+- **位置**: [content_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/content_service.py) `FileEntry`
+- **背景**: 类名 `FileEntry`，注释"目录条目"。实际既可能是文件也可能是目录。
+- **影响范围**: 不影响正确性，仅认知负担。
+- **推荐修复方案**: UI 重构时一并考虑。
+- **建议修复阶段**: **UI 重构时**（非阻塞）。
+
+### TD-L25: FileOperationService._sync_on_delete 访问 helper 私有 `_repo`
+
+- **位置**: [file_operation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/file_operation_service.py) `_sync_on_delete`
+- **背景**: 通过 `self._helper._repo` 访问 FolderCacheSyncHelper 的私有 `_repo`，标注 `# noqa: SLF001`。
+- **影响范围**: 封装泄漏，但不影响正确性。
+- **推荐修复方案**: FolderCacheSyncHelper 增加"按路径前缀批量删除"语义化方法。
+- **建议修复阶段**: **UI 重构版本**（与 TD-H10 一并处理）。
+
+### TD-L26: time 字段后缀不统一（`_mtime` vs `_at`，REAL vs TEXT）
+
+- **位置**: 多处 schema 与 domain 模型
+- **背景**: `folder_cache.mtime` 用 REAL，`content_unit.created_at` 用 TEXT；`_mtime` 与 `_at` 后缀语义模糊。
+- **影响范围**: 不影响正确性，仅文档约定。
+- **推荐修复方案**: 文档统一约定。
+- **建议修复阶段**: **文档统一约定即可**（非阻塞）。
+
+### TD-L27: ClipboardEntry.timestamp 字段未使用（潜在死代码）
+
+- **位置**: [clipboard_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/clipboard_service.py) `ClipboardEntry`
+- **背景**: `timestamp` 字段定义后从未被读取。
+- **影响范围**: 潜在死代码。
+- **推荐修复方案**: 确认是否预留，否则删除。
+- **建议修复阶段**: **确认用途后决定**（非阻塞）。
+
+### TD-L28: UI 中"目录"和"文件夹"混用
+
+- **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) / [ui_constants.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/ui_constants.py) 多处
+- **背景**: UI 文本中"目录"和"文件夹"混用，未统一。
+- **影响范围**: 不影响正确性，仅术语一致性。
+- **推荐修复方案**: UI 重构时统一为"文件夹"或"目录"。
+- **建议修复阶段**: **UI 重构时**（非阻塞）。
+
+### TD-L29: M13 Domain 校验已扩展到 ContentUnit.content_type（Stage 5 Code Review）
+
+- **位置**: [models.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/domain/models.py) `ContentUnit.VALID_CONTENT_TYPES`
+- **背景**: Stage 5 Code Review M13 为 `ContentUnit.content_type` 添加了 Domain 层取值范围校验（`VALID_CONTENT_TYPES = frozenset({"mod"})`），与 `OperationHistory.operation_type` 的严格校验对齐。
+- **现状**：已修复，无需进一步处理。当前 `content_type` 仅 `'mod'`，未来扩展类型时需同步更新此集合。
+- **建议修复阶段**: **未来扩展类型时**（已修复，仅记录约定）。
 
 ---
 
@@ -586,11 +715,51 @@
    - ~~TD-L19（OperationHistory.can_undo 恒为 True，Stage 5 实现 undo 时校验）~~ ✅ 已修复（Stage 5 Task 0）
    - ~~TD-M11（_commit 数据库提交失败无 UI 反馈，Stage 5 频繁写操作需用户反馈）~~ ✅ 已修复（Stage 5 Task 0）
 
-6. **后续迭代批量处理**（非阻塞，性能优化为主）：
-   - TD-H9（content_unit.path UNIQUE 绕过 make_path_key，v7 迁移时处理）
+5b. ~~**Stage 5 Code Review 已修复**~~（v0.41.0，详见 CHANGELOG）：
+   - ~~TD-H9（content_unit.path UNIQUE 绕过 make_path_key，v11 schema 新增 path_key 列）~~ ✅
+   - ~~TD-H11（operation_history.source_path 在 undo 记录中存 ID，D4 决策撤销不再写新记录）~~ ✅
+   - ~~TD-L6（logging_setup.py docstring 路径名过时）~~ ✅
+   - ~~TD-L10（_on_scan_started 与 _begin_scanning 状态设置重复）~~ ✅
+   - ~~TD-L11（file_classify.py 死代码）~~ ✅
+   - ~~TD-L12（conftest.py sample_mod_tree fixture 死代码）~~ ✅
+   - ~~TD-L15（init_db schema_version 初始化与首次迁移同事务）~~ ✅
+   - ~~TD-L17（test_managed_root_service.py 用 __import__ hack）~~ ✅
+   - ~~TD-L22（ContentUnit.status 重构为 is_marked: bool，D2/D3 决策 schema v11）~~ ✅
+   - ~~TD-M1（ScanSummary.success 恒返回 True）~~ ✅
+   - ~~TD-M3（application.errors.ScanError 死代码）~~ ✅
+   - ~~TD-M4（FolderTreeService.list_root_nodes 类型信息丢失）~~ ✅
+   - ~~TD-M18（误导性测试声称 delete/remove_root 自提交）~~ ✅
+   - ~~TD-M19（FolderCacheRepository.upsert_mtime 的 path 参数未使用）~~ ✅
+   - ~~TD-M20（test_content_service.py 局部 fixture 遮蔽 conftest）~~ ✅
+   - D1 决策落地：ModGroupService → ContentUnitCreationService 代码层重命名（UI 文本保留 "Mod 组"）
+   - M12 冗余索引清理（5 个对 UNIQUE/复合主键的冗余索引删除）
+   - M13 Domain 校验扩展（ContentUnit.content_type / is_marked 类型校验）
+   - M10 事务边界修正（init_db v0 基线与首次迁移分属独立事务）
+   - 文档同步：architecture.md 更新到 schema v11；search_service.py Q2=A→Q2=B 注释修正
+
+6. **UI 重构版本处理**（用户决策：单独开分支）：
+   - TD-M21 + TD-M31（MainWindow God Object 拆分 + 业务逻辑泄漏）
+   - TD-H10 + TD-L25（FileOperationService 分层迁移 + helper 私有访问）
+   - TD-M26（MainWindow 集成测试，与拆分同步）
+   - TD-M35（rename/move 跨盘异常类型统一）
+   - TD-L24（FileEntry 类名与注释不一致）
+   - TD-L28（UI 中"目录"和"文件夹"混用）
+   - UI 重构清单 8 项（详见 open-questions.md）
+
+7. **Stage 6 前处理**（数据一致性版本）：
+   - TD-H12（文件操作与 DB 事务不一致窗口未补偿）
+   - TD-M32（UndoService 安全校验无 size/mtime 比对）
+   - TD-M33（mark_undone 失败可能导致重复撤销）
+
+8. **后续迭代批量处理**（非阻塞，性能优化为主）：
    - TD-M23（folder_cache 同步多次 list_all() 全表扫描）
    - TD-M28（7 处 N+1 查询，Stage 5 中期与 TD-H3 一并处理）
    - TD-M29（测试组织风格不统一，Stage 5 中期）
    - TD-M30（spec §10.3 "最近常用置顶"，需用户决策）
    - TD-L21（UI 样式表硬编码颜色，暗色模式时处理）
+   - TD-M34（覆盖模式子节点 folder_cache 不立即重建）
+   - TD-L23（content_unit.content_type 默认 'mod' 与实体名不一致）
+   - TD-L26（time 字段后缀不统一）
+   - TD-L27（ClipboardEntry.timestamp 字段未使用）
+   - TD-L29（已修复，仅记录 content_type 扩展约定）
    - 其余 Medium/Low 级别的代码质量/测试覆盖问题

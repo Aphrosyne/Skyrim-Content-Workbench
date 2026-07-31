@@ -27,6 +27,7 @@ from application.errors import (
     TagNotFoundError,
 )
 from application.tag_service import TAGS_JSON_SCHEMA_VERSION, TagService
+from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.content_unit_tag import ContentUnitTagRepository
 from infrastructure.repositories.tag import TagRepository
 from infrastructure.repositories.tag_category import TagCategoryRepository
@@ -159,8 +160,8 @@ class TestDeleteCategory:
 
         # 插入 content_unit + 关联
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, created_at, updated_at) "
-            "VALUES ('cu-1', '/p', 't', 't')"
+            "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+            "VALUES ('cu-1', '/p', '/p', 1, 't', 't')"
         )
         cut_repo = ContentUnitTagRepository(db_connection)
         cut_repo.attach("cu-1", tag1.id)
@@ -295,8 +296,8 @@ class TestDeleteTag:
         tag2 = service.create_tag("轻甲", cat.id)
 
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, created_at, updated_at) "
-            "VALUES ('cu-1', '/p', 't', 't')"
+            "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+            "VALUES ('cu-1', '/p', '/p', 1, 't', 't')"
         )
         cut_repo = ContentUnitTagRepository(db_connection)
         cut_repo.attach("cu-1", tag1.id)
@@ -665,8 +666,9 @@ class TestLoadDefaultTagsIfEmpty:
 def _seed_content_unit(conn: sqlite3.Connection, unit_id: str, path: str) -> None:
     """直接 INSERT 一个 content_unit 行（绕过 service，仅用于测试）。"""
     conn.execute(
-        "INSERT INTO content_unit (id, path, created_at, updated_at) VALUES (?, ?, 't', 't')",
-        (unit_id, path),
+        "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+        "VALUES (?, ?, ?, 1, 't', 't')",
+        (unit_id, path, make_path_key(path)),
     )
     conn.commit()
 

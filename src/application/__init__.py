@@ -1,8 +1,8 @@
 """应用服务层包。
 
 包含领域服务的应用层封装：ManagedRootService / StagingService / ContentService /
-FolderTreeService / ScanService / ModGroupService / AssemblyService /
-QuickInsertService / TagService（Stage 4 Task 1 起）。
+FolderTreeService / ScanService / ContentUnitCreationService（D1 重命名，原 ModGroupService） /
+AssemblyService / QuickInsertService / TagService（Stage 4 Task 1 起）。
 
 约束：
 - Application 层协调 UI 与领域逻辑，不包含领域规则（领域规则在 Domain 层实体校验中）。

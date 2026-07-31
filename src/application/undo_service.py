@@ -4,8 +4,13 @@
 - 加载最近操作历史（list_recent）
 - 对 can_undo=True 的操作执行撤销（undo）
 - 撤销前安全校验：路径存在 + size/mtime 校验
-- 撤销后写一条 operation_type='undo' 记录（source_path 指向原 history.id）
-- 标记原记录 undone_at 时间戳（避免重复撤销）
+- 撤销后标记原记录 undone_at 时间戳（避免重复撤销）
+
+v11 schema（Stage 5 Code Review D4 决策）：
+- 撤销操作不再写入 operation_history（用户决策：撤销只标记原记录 undone_at）
+- 移除原"写 operation_type='undo' 记录"逻辑
+- 保留 undone_at 标记原操作已撤销
+- 历史 undo 记录已在 v11 迁移中清理
 
 设计要点（用户补充要求 #2）：
 - undo 不直接复用普通文件操作方法后简单取反，而是明确记录：
@@ -29,7 +34,7 @@
 - rename → 反向重命名（target_path → source_path.name）
 - move → 反向移动（target_path → source_path）
 - delete → 拒绝（can_undo=False，提示用户从回收站手动还原）
-- undo → 拒绝（避免无限循环）
+- undo → 拒绝（避免无限循环；v11 后不再写入新 undo 记录，但保留校验以防历史数据）
 """
 
 from __future__ import annotations
@@ -148,7 +153,7 @@ class UndoService:
 
     # === 撤销主流程 ===
 
-    def undo(self, history: OperationHistory) -> OperationHistory:
+    def undo(self, history: OperationHistory) -> None:
         """撤销一条操作历史记录。
 
         流程（用户补充要求 #2：明确记录各阶段状态）：
@@ -156,20 +161,19 @@ class UndoService:
         2. 安全校验：source_path / target_path 当前状态 + size/mtime 比对
         3. 执行反向操作（按 operation_type 分派）
         4. 同步 folder_cache + ContentUnit.path
-        5. 写一条 operation_type='undo' 记录（source_path=原 history.id）
-        6. 标记原记录 undone_at 时间戳
+        5. 标记原记录 undone_at 时间戳（避免重复撤销）
+
+        v11 schema（D4 决策）：不再写 operation_type='undo' 新记录。
+        撤销只标记原记录的 undone_at，UI 通过 undone_at 判断灰色状态。
 
         Args:
             history: 待撤销的操作历史记录。
-
-        Returns:
-            新写入的 operation_type='undo' 记录。
 
         Raises:
             UndoNotAllowedError: 该操作不允许撤销（delete/undo/can_undo=False）。
             UndoAlreadyUndoneError: 该操作已被撤销（undone_at 非空）。
             UndoSafetyError: 安全校验失败（源不存在/已被外部修改/目标已存在）。
-            FileOperationError: 反向文件操作失败。
+            FileOperationError: 反向文件操作失败或标记原记录失败。
         """
         # 1. 前置校验
         self._check_undo_allowed(history)
@@ -191,41 +195,18 @@ class UndoService:
         # 4. 同步 folder_cache + ContentUnit.path
         self._sync_on_undo(history)
 
-        # 5. 写 undo 记录（指向原 history.id，形成审计链）
-        undo_record = OperationHistory(
-            id=self._new_uuid(),
-            operation_type="undo",
-            source_path=history.id,  # 指向被撤销的原 history.id
-            created_at=self._now(),
-            target_path=None,
-            can_undo=False,  # undo 本身不可再撤销，避免无限循环
-            undone_at=None,
-        )
-        try:
-            self._repo.create(undo_record)
-        except Exception as e:  # noqa: BLE001
-            # 写 undo 记录失败：反向文件操作已执行，无法回滚
-            # 记日志，由调用方决定是否提示用户
-            logger.exception(
-                "写入 undo 记录失败（原 history_id=%s）：反向操作已执行，但审计链不完整",
-                history.id,
-            )
-            raise FileOperationError(f"写入撤销记录失败：{e}") from e
-
-        # 6. 标记原记录为已撤销
+        # 5. 标记原记录为已撤销（v11：不再写 undo 新记录，仅标记原记录）
         try:
             self._repo.mark_undone(history.id, self._now())
         except Exception as e:  # noqa: BLE001
-            # 标记失败：undo 记录已写入，但原记录未标记，可能导致重复撤销
+            # 标记失败：反向文件操作已执行，但原记录未标记，可能导致重复撤销
             # 记日志，由调用方决定是否提示用户
             logger.exception(
-                "标记原记录 undone_at 失败（history_id=%s）：undo 记录已写入，"
+                "标记原记录 undone_at 失败（history_id=%s）：反向操作已执行，"
                 "但原记录未标记，可能导致重复撤销",
                 history.id,
             )
             raise FileOperationError(f"标记原操作为已撤销失败：{e}") from e
-
-        return undo_record
 
     # === 前置校验 ===
 

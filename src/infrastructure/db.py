@@ -18,7 +18,7 @@ from infrastructure.migrations import MIGRATIONS
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 10
+CURRENT_SCHEMA_VERSION = 11
 
 
 def get_connection(db_path: Path, timeout: float = 5.0) -> sqlite3.Connection:
@@ -82,6 +82,10 @@ def init_db(db_path: Path) -> int:
         current = _get_current_version(conn)
         if current == -1:
             conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+            # 显式提交 v0 基线，确保与首次迁移事务独立（TD-L15）。
+            # 不加此 commit，v0 INSERT 会与 v0→v1 迁移落入同一隐式事务，
+            # 与 docstring "每步迁移在独立事务中执行" 契约不一致。
+            conn.commit()
             logger.info("数据库初始化完成，schema_version=0（基线）")
             current = 0
 

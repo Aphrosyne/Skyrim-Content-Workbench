@@ -2,6 +2,11 @@
 
 负责 ContentUnit dataclass 与 content_unit 表之间的转换。
 不访问文件系统；path 仅作为字符串存储。
+
+v11 schema（Stage 5 Code Review）：
+- status 列移除，新增 is_marked INTEGER NOT NULL DEFAULT 1
+- 新增 path_key TEXT NOT NULL UNIQUE 列（DB 层强制路径归一化唯一）
+- create 时自动回填 path_key = make_path_key(path)
 """
 
 from __future__ import annotations
@@ -28,23 +33,25 @@ class ContentUnitRepository:
         self._conn = conn
 
     def create(self, unit: ContentUnit) -> ContentUnit:
-        """插入 ContentUnit。path 唯一冲突抛 ConstraintViolationError。"""
+        """插入 ContentUnit。path/path_key 唯一冲突抛 ConstraintViolationError。"""
+        path_key = make_path_key(unit.path)
         try:
             self._conn.execute(
                 """
                 INSERT INTO content_unit (
-                    id, path, title, content_type, source_url,
-                    cover_path, status, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, path, path_key, title, content_type, source_url,
+                    cover_path, is_marked, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     unit.id,
                     unit.path,
+                    path_key,
                     unit.title,
                     unit.content_type,
                     unit.source_url,
                     unit.cover_path,
-                    unit.status,
+                    int(unit.is_marked),
                     unit.notes,
                     unit.created_at,
                     unit.updated_at,
@@ -129,27 +136,30 @@ class ContentUnitRepository:
 
     def update(self, unit: ContentUnit) -> ContentUnit:
         """全字段更新。实体不存在时抛 NotFoundError。"""
+        path_key = make_path_key(unit.path)
         try:
             cur = self._conn.execute(
                 """
                 UPDATE content_unit SET
                     path = ?,
+                    path_key = ?,
                     title = ?,
                     content_type = ?,
                     source_url = ?,
                     cover_path = ?,
-                    status = ?,
+                    is_marked = ?,
                     notes = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
                 (
                     unit.path,
+                    path_key,
                     unit.title,
                     unit.content_type,
                     unit.source_url,
                     unit.cover_path,
-                    unit.status,
+                    int(unit.is_marked),
                     unit.notes,
                     unit.updated_at,
                     unit.id,
@@ -204,7 +214,7 @@ class ContentUnitRepository:
             content_type=row["content_type"],
             source_url=row["source_url"],
             cover_path=row["cover_path"],
-            status=row["status"],
+            is_marked=bool(row["is_marked"]),
             notes=row["notes"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],

@@ -1,6 +1,7 @@
-"""Mod 组创建服务。
+"""内容单元创建服务（D1 重命名：原 ModGroupService）。
 
 阶段 3 Task 3：从暂存区零散压缩包文件创建标准化 Mod 组文件夹。
+（UI 术语保留 "Mod 组"，代码层面使用 ContentUnitCreationService 以消除概念混乱）
 
 工作流：
 1. 从文件名提取主要名称（剔除版本号、扩展名）。
@@ -11,7 +12,7 @@
    取消子项标记；默认 title=path.name）。
 
 Stage 4.5 H4（TD-M22）：FileOperationService 注入 FolderCacheSyncHelper 后，
-new_folder/move 自动同步 folder_cache，ModGroupService 不再手动同步。
+new_folder/move 自动同步 folder_cache，本服务不再手动同步。
 移除了 _resolve_parent_id_by_path / _new_folder_cache_id / _now_iso 等
 重复逻辑（已集中到 FolderCacheSyncHelper）。
 
@@ -36,8 +37,8 @@ from application.content_service import ContentService
 from application.errors import (
     ApplicationError,
     FileOperationError,
-    InvalidModGroupNameError,
-    ModGroupSourceNotInStagingError,
+    InvalidContentUnitNameError,
+    SourceNotInStagingError,
 )
 from domain.models import ContentUnit
 from infrastructure.file_operation_service import FileOperationService
@@ -133,15 +134,20 @@ def extract_mod_name(filename: str) -> str:
     return stem
 
 
-class ModGroupService:
-    """Mod 组创建服务。
+class ContentUnitCreationService:
+    """内容单元创建服务（D1 重命名：原 ModGroupService）。
+
+    UI 术语保留 "Mod 组"（用户认知友好），代码层面使用 ContentUnitCreationService
+    以消除"Mod 组"与"ContentUnit"概念混用问题。
 
     Stage 4.5 H4（TD-M22）：folder_cache 同步由 FileOperationService 内部
     的 FolderCacheSyncHelper 自动处理，本服务不再手动同步。
 
     使用方式：
-        service = ModGroupService(file_op_service, content_service, uow=uow)
-        unit = service.create_mod_group(Path("D:/Stash/file.7z"), Path("D:/Stash"), "NewMod")
+        service = ContentUnitCreationService(file_op_service, content_service, uow=uow)
+        unit = service.create_content_unit_from_file(
+            Path("D:/Stash/file.7z"), Path("D:/Stash"), "NewMod"
+        )
     """
 
     def __init__(
@@ -150,27 +156,27 @@ class ModGroupService:
         content_service: ContentService,
         uow: UnitOfWork | None = None,
     ) -> None:
-        """初始化 ModGroupService。
+        """初始化 ContentUnitCreationService。
 
         Args:
             file_op_service: 文件操作服务（Stage 4.5 H4：应注入 FolderCacheSyncHelper，
                 new_folder/move 自动同步 folder_cache）。
             content_service: 内容单元服务。
             uow: 事务边界管理器（可选）。Stage 4.5 H6 修复：
-                注入后 create_mod_group 的多步写操作在事务内执行，保证原子性。
+                注入后 create_content_unit_from_file 的多步写操作在事务内执行，保证原子性。
                 None 时保持原行为（调用方控制事务边界）。
         """
         self._file_op = file_op_service
         self._content = content_service
         self._uow = uow
 
-    def create_mod_group(
+    def create_content_unit_from_file(
         self,
         source_file: Path,
         staging_path: Path,
         name: str | None = None,
     ) -> ContentUnit:
-        """创建 Mod 组：在暂存区建文件夹 + 移入源文件 + 标记 ContentUnit。
+        """创建 Mod 组（UI 术语）：在暂存区建文件夹 + 移入源文件 + 标记 ContentUnit。
 
         Args:
             source_file: 源压缩包文件路径（必须在 staging_path 之下）。
@@ -178,17 +184,17 @@ class ModGroupService:
             name: Mod 组名称。None 时从 source_file 文件名自动提取。
 
         Returns:
-            新创建的 ContentUnit（path 指向新文件夹，title=文件夹名，status=organized）。
+            新创建的 ContentUnit（path 指向新文件夹，title=文件夹名，is_marked=True）。
 
         Raises:
-            ModGroupSourceNotInStagingError: source_file 不在 staging_path 下。
-            InvalidModGroupNameError: name 为空或仅含空白。
+            SourceNotInStagingError: source_file 不在 staging_path 下。
+            InvalidContentUnitNameError: name 为空或仅含空白。
             ConflictError: 目标文件夹已存在（FileOperationService 抛出）。
             FileOperationError: 其他文件操作失败。
         """
         # 校验 source_file 在 staging_path 下
         if not _is_in_directory(source_file, staging_path):
-            raise ModGroupSourceNotInStagingError(
+            raise SourceNotInStagingError(
                 f"源文件不在暂存区下：{source_file} 不在 {staging_path} 内"
             )
 
@@ -197,7 +203,7 @@ class ModGroupService:
             name = extract_mod_name(source_file.name)
         name = name.strip()
         if not name:
-            raise InvalidModGroupNameError("Mod 组名称不能为空")
+            raise InvalidContentUnitNameError("Mod 组名称不能为空")
 
         target_folder = staging_path / name
         target_file = target_folder / source_file.name
@@ -207,19 +213,19 @@ class ModGroupService:
         # 各步骤的 except 块会做文件清理 + re-raise → UoW 回滚 DB 写操作。
         if self._uow is not None:
             with self._uow.transaction():
-                return self._create_mod_group_core(
+                return self._create_content_unit_core(
                     source_file, staging_path, target_folder, target_file
                 )
-        return self._create_mod_group_core(source_file, staging_path, target_folder, target_file)
+        return self._create_content_unit_core(source_file, staging_path, target_folder, target_file)
 
-    def _create_mod_group_core(
+    def _create_content_unit_core(
         self,
         source_file: Path,
         staging_path: Path,
         target_folder: Path,
         target_file: Path,
     ) -> ContentUnit:
-        """create_mod_group 的核心逻辑（文件操作 + DB 写）。
+        """create_content_unit_from_file 的核心逻辑（文件操作 + DB 写）。
 
         Stage 4.5 H4（TD-M22）：folder_cache 同步由 FileOperationService.new_folder
         内部的 FolderCacheSyncHelper 自动完成（删除旧 + 插入新 + 更新父 mtime），

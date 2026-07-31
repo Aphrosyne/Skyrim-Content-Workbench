@@ -25,6 +25,7 @@ import logging
 from dataclasses import dataclass
 
 from application.staging_service import StagingService
+from domain.models import FolderCache
 from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
@@ -123,7 +124,7 @@ class FolderTreeService:
         fc_roots = self._folder_cache_repo.list_by_parent(parent_id=None)
 
         # 构造 path_key → folder_cache 映射，用于关联
-        fc_root_map: dict[str, object] = {}
+        fc_root_map: dict[str, FolderCache] = {}
         for fc in fc_roots:
             fc_root_map[make_path_key(fc.path)] = fc
 
@@ -141,7 +142,7 @@ class FolderTreeService:
                         category="managed_root",
                         is_managed_root=True,
                         managed_root_id=root.id,
-                        folder_cache_id=fc.id,  # type: ignore[union-attr]
+                        folder_cache_id=fc.id,
                         parent_id=None,
                         is_staging=is_staging,
                     )

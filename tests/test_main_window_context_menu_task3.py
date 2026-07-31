@@ -1,7 +1,7 @@
 """MainWindow 右键菜单集成测试（阶段 3 Task 3）。
 
 覆盖：
-- 创建 Mod 组菜单项仅在整理模式 + 单选文件 + 注入 ModGroupService 时显示
+- 创建 Mod 组菜单项仅在整理模式 + 单选文件 + 注入 ContentUnitCreationService 时显示
 - 标记为内容单元 / 取消内容单元标记 菜单项根据 entry.content_unit 切换
 - 多选显示"批量标记为内容单元"
 - 复制路径始终显示
@@ -25,9 +25,9 @@ from PySide6.QtWidgets import QMessageBox  # noqa: E402
 
 from app.main_window import MainWindow  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
+from application.content_unit_creation_service import ContentUnitCreationService  # noqa: E402
 from application.folder_tree_service import FolderTreeService  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
-from application.mod_group_service import ModGroupService  # noqa: E402
 from application.scan_service import ScanService  # noqa: E402
 from application.staging_service import StagingService  # noqa: E402
 from domain.models import AppMode, FileEntry  # noqa: E402
@@ -57,7 +57,7 @@ def _make_mod_tree(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def main_window_env(qapp, tmp_path: Path):
-    """构造完整 MainWindow 测试环境（含暂存区 + ModGroupService 注入）。"""
+    """构造完整 MainWindow 测试环境（含暂存区 + ContentUnitCreationService 注入）。"""
     db_path = tmp_path / "test.db"
     init_db(db_path)
     conn = get_connection(db_path)
@@ -97,8 +97,8 @@ def main_window_env(qapp, tmp_path: Path):
         folder_cache_helper=FolderCacheSyncHelper(FolderCacheRepository(conn)),
         content_unit_repo=ContentUnitRepository(conn),
     )
-    # Stage 4.5 H4：ModGroupService 不再需要 folder_cache_repo
-    mod_group_service = ModGroupService(file_op_service, content_service)
+    # Stage 4.5 H4：ContentUnitCreationService 不再需要 folder_cache_repo
+    content_unit_creation_service = ContentUnitCreationService(file_op_service, content_service)
 
     root_dir = _make_mod_tree(tmp_path)
     root = managed_service.add_root(root_dir)
@@ -116,7 +116,7 @@ def main_window_env(qapp, tmp_path: Path):
         db_path,
         commit_callback=conn.commit,
         staging_service=staging_service,
-        mod_group_service=mod_group_service,
+        content_unit_creation_service=content_unit_creation_service,
     )
     yield window, conn, root_dir, root
 
@@ -246,10 +246,10 @@ def test_unmark_content_unit_refreshes_list(qapp, main_window_env) -> None:
     window._on_unmark_content_unit(entry)  # noqa: SLF001
     qapp.processEvents()
 
-    # DB 中该 ContentUnit status 应为 "unmarked"（不删除记录，防止扫描重建）
+    # DB 中该 ContentUnit is_marked 应为 False（不删除记录，防止扫描重建）
     unit = window._content_service.get_by_path(entry.path)  # noqa: SLF001
     assert unit is not None
-    assert unit.status == "unmarked"
+    assert unit.is_marked is False
 
     # 列表刷新后该条目不再显示 [内容单元] 标记
     refreshed_entry = _find_entry_by_name(window, "BDOR Black Knight 1.0.7z")
@@ -291,7 +291,7 @@ def test_create_mod_group_full_flow(qapp, main_window_env) -> None:
     unit = window._content_service.get_by_path(str(target_folder))  # noqa: SLF001
     assert unit is not None
     assert unit.title == "BDOR Black Knight"
-    assert unit.status == "organized"
+    assert unit.is_marked is True
     # operation_history 写入 2 条
     rows = conn.execute("SELECT * FROM operation_history").fetchall()
     assert len(rows) == 2
@@ -310,9 +310,9 @@ def test_create_mod_group_full_flow(qapp, main_window_env) -> None:
 def test_create_mod_group_appears_in_tree(qapp, main_window_env) -> None:
     """创建 Mod 组后目录树立即显示新文件夹（无需重新扫描）。
 
-    回归测试（2026-07-16）：main.py 之前未向 ModGroupService 注入
+    回归测试（2026-07-16）：main.py 之前未向 ContentUnitCreationService 注入
     FolderCacheRepository，导致创建 Mod 组后 folder_cache 未写入，
-    目录树不显示新文件夹。修复后 ModGroupService 同步写入 folder_cache，
+    目录树不显示新文件夹。修复后 ContentUnitCreationService 同步写入 folder_cache，
     _refresh_tree 后新节点立即可见。
     """
     window, conn, root_dir, _ = main_window_env
@@ -478,11 +478,11 @@ def test_batch_unmark_content_unit(qapp, main_window_env) -> None:
     window._on_batch_unmark_content_unit(target_entries)  # noqa: SLF001
     qapp.processEvents()
 
-    # 所有条目应取消标记（status 变为 unmarked）
+    # 所有条目应取消标记（is_marked 变为 False）
     for e in target_entries:
         unit = window._content_service.get_by_path(e.path)  # noqa: SLF001
         assert unit is not None, "取消标记不删除记录"
-        assert unit.status == "unmarked", f"{e.name} 状态应为 unmarked"
+        assert unit.is_marked is False, f"{e.name} is_marked 应为 False"
 
 
 def test_batch_unmark_skips_unmarked_entries(qapp, main_window_env) -> None:

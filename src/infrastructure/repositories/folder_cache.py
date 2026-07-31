@@ -102,7 +102,7 @@ class FolderCacheRepository:
             raise RepositoryError(f"无法列出 FolderCache：{e}") from e
         return [self._row_to_model(r) for r in rows]
 
-    def upsert_mtime(self, path: str, mtime: float, folder_id: str) -> None:
+    def upsert_mtime(self, mtime: float, folder_id: str) -> None:
         """更新 last_scanned_mtime。不存在抛 NotFoundError。
 
         mtime 为 epoch 秒（float）。

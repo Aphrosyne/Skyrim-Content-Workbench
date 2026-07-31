@@ -41,7 +41,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ScanSummary:
-    """扫描结果的摘要，用于 UI 展示。"""
+    """扫描结果的摘要，用于 UI 展示。
+
+    success 属性已移除（TD-M1）：原实现恒返回 True，与 docstring 声称的
+    "无整体性错误"语义不一致。调用方应使用 has_errors 判断是否存在错误。
+    """
 
     root_id: str
     root_path: str
@@ -53,12 +57,6 @@ class ScanSummary:
     @property
     def has_errors(self) -> bool:
         return bool(self.errors)
-
-    @property
-    def success(self) -> bool:
-        """扫描成功：无整体性错误。单个目录的扫描错误计入 errors 但不影响 success 判定。"""
-        # 当前实现：只要扫描流程完成即视为成功，errors 为单目录错误集合
-        return True
 
 
 def _default_now_utc() -> str:
@@ -216,12 +214,10 @@ class ScanService:
             existing = existing_folder_map.get(entry_key)
             if existing is not None:
                 # 更新 mtime
-                if existing.last_scanned_mtime is None or not self._scanner._mtime_equal(
+                if existing.last_scanned_mtime is None or not self._scanner.mtime_equal(
                     existing.last_scanned_mtime, entry.mtime
                 ):
-                    self._folder_cache_repo.upsert_mtime(
-                        path=entry.path, mtime=entry.mtime, folder_id=existing.id
-                    )
+                    self._folder_cache_repo.upsert_mtime(mtime=entry.mtime, folder_id=existing.id)
             else:
                 # 新建
                 parent_id = self._resolve_parent_id(entry.parent_path, existing_folder_map)
@@ -262,7 +258,7 @@ class ScanService:
                 path=archive_path,
                 title=Path(archive_path).name,
                 content_type="mod",
-                status="organized",
+                is_marked=True,
                 created_at=now,
                 updated_at=now,
             )

@@ -21,7 +21,13 @@ class ContentUnit:
     """内容单元。spec §4.1（2026-07-18 移除 rating 字段）。
 
     一个内容单元对应一个真实路径（文件夹或单文件）。
-    path 原样存储（可为中文），数据库以 path 列的 UNIQUE 约束去重。
+    path 原样存储（可为中文），数据库以 path + path_key 列的 UNIQUE 约束去重
+    （path_key 为 make_path_key(path)，DB 层强制路径归一化唯一）。
+
+    v11 schema（Stage 5 Code Review D2/D3）：
+    - 移除 status 字段，重构为 is_marked: bool
+    - True = 已标记为内容单元（原 'organized'），False = 已取消标记（原 'unmarked'）
+    - 简化两态语义为布尔值，消除 "organized" 字面歧义
     """
 
     id: str
@@ -32,8 +38,12 @@ class ContentUnit:
     content_type: str = "mod"
     source_url: str | None = None
     cover_path: str | None = None
-    status: str = "organized"
+    is_marked: bool = True
     notes: str | None = None
+
+    # M13：Domain 层取值范围校验（与 OperationHistory.operation_type 校验对齐）
+    # content_type 当前仅 'mod'；未来扩展类型时需同步更新此集合
+    VALID_CONTENT_TYPES: ClassVar[frozenset[str]] = frozenset({"mod"})
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -44,6 +54,15 @@ class ContentUnit:
             raise ValueError("ContentUnit.created_at 不能为空")
         if not self.updated_at:
             raise ValueError("ContentUnit.updated_at 不能为空")
+        if not isinstance(self.is_marked, bool):
+            raise ValueError(
+                f"ContentUnit.is_marked 必须是 bool，得到：{type(self.is_marked).__name__}"
+            )
+        if self.content_type not in self.VALID_CONTENT_TYPES:
+            raise ValueError(
+                f"ContentUnit.content_type 必须是 {sorted(self.VALID_CONTENT_TYPES)} 之一，"
+                f"得到：{self.content_type}"
+            )
 
 
 @dataclass
@@ -224,6 +243,20 @@ class ThumbnailCache:
     generated_at: str  # ISO 8601 UTC
     error_message: str | None = None
 
+    # M13：与 DB CHECK 约束对齐，Domain 层同步校验以早期暴露非法取值
+    VALID_STATUSES: ClassVar[frozenset[str]] = frozenset(
+        {"ok", "missing", "corrupt", "unsupported", "error"}
+    )
+
+    def __post_init__(self) -> None:
+        if not self.content_unit_id:
+            raise ValueError("ThumbnailCache.content_unit_id 不能为空")
+        if self.status not in self.VALID_STATUSES:
+            raise ValueError(
+                f"ThumbnailCache.status 必须是 {sorted(self.VALID_STATUSES)} 之一，"
+                f"得到：{self.status}"
+            )
+
     def is_ok(self) -> bool:
         """返回缓存是否可用（status == 'ok'）。"""
         return self.status == "ok"
@@ -273,7 +306,7 @@ class SearchResult:
     - title：内容单元标题（可能为 None，UI 显示时回退到 path）
     - path：内容单元路径
     - content_type：内容单元类型
-    - status：内容单元状态（Q2=B 仅搜索 organized，排除 unmarked）
+    - is_marked：是否已标记为内容单元（v11：Q2=B 仅搜索 is_marked=True）
     - matched_field：命中的字段名（'title' / 'tag' / 'notes'），按优先级取
     - tags：聚合的标签名列表（可能为空列表）
     """
@@ -282,7 +315,7 @@ class SearchResult:
     title: str | None
     path: str
     content_type: str
-    status: str
+    is_marked: bool
     matched_field: str
     tags: list[str]
 
@@ -291,6 +324,10 @@ class SearchResult:
             raise ValueError("SearchResult.unit_id 不能为空")
         if not self.path:
             raise ValueError("SearchResult.path 不能为空")
+        if not isinstance(self.is_marked, bool):
+            raise ValueError(
+                f"SearchResult.is_marked 必须是 bool，得到：{type(self.is_marked).__name__}"
+            )
         if self.matched_field not in ("title", "tag", "notes"):
             raise ValueError(
                 f"SearchResult.matched_field 必须是 'title' / 'tag' / 'notes' 之一，"

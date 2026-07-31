@@ -96,6 +96,7 @@ from app.thumbnail_coordinator import ThumbnailCoordinator
 from application.assembly_service import AssemblyService
 from application.clipboard_service import ClipboardService
 from application.content_service import ContentService
+from application.content_unit_creation_service import ContentUnitCreationService
 from application.errors import (
     ApplicationError,
     ConflictError,
@@ -106,7 +107,6 @@ from application.errors import (
 )
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
-from application.mod_group_service import ModGroupService
 from application.quick_insert_service import QuickInsertService
 from application.scan_service import ScanSummary
 from application.search_service import SearchService
@@ -227,7 +227,7 @@ class MainWindow(QMainWindow):
         db_path: Path,
         commit_callback: Callable[[], None] | None = None,
         staging_service: StagingService | None = None,
-        mod_group_service: ModGroupService | None = None,
+        content_unit_creation_service: ContentUnitCreationService | None = None,
         assembly_service: AssemblyService | None = None,
         quick_insert_service: QuickInsertService | None = None,
         rollback_callback: Callable[[], None] | None = None,
@@ -247,7 +247,7 @@ class MainWindow(QMainWindow):
         self._commit_callback = commit_callback
         self._rollback_callback = rollback_callback
         self._staging_service = staging_service
-        self._mod_group_service = mod_group_service
+        self._content_unit_creation_service = content_unit_creation_service
         self._assembly_service = assembly_service
         self._quick_insert_service = quick_insert_service
         self._tag_service = tag_service
@@ -1659,7 +1659,7 @@ class MainWindow(QMainWindow):
         Stage 5 Task 3a：空白区域右键显示"新建文件夹"（基于当前目录）。
 
         菜单项：
-        - 创建 Mod 组：仅整理模式 + 单选文件 + 注入了 ModGroupService 时显示。
+        - 创建 Mod 组：仅整理模式 + 单选文件 + 注入了 ContentUnitCreationService 时显示。
         - 加入装配：仅整理模式 + 单选文件（非目录）+ 装配面板已绑定 Mod 组时显示。
         - 标记为内容单元 / 把每个文件标记为内容单元：未标记条目。
         - 取消标记：已标记 ContentUnit。
@@ -1748,9 +1748,9 @@ class MainWindow(QMainWindow):
         # actions 元素：(label, handler, enabled)
         actions: list[tuple[str, Callable[[], None], bool]] = []
 
-        # 创建 Mod 组：仅整理模式 + 单选 + 文件（非目录）+ 注入了 ModGroupService
+        # 创建 Mod 组：仅整理模式 + 单选 + 文件（非目录）+ 注入了 ContentUnitCreationService
         if (
-            self._mod_group_service is not None
+            self._content_unit_creation_service is not None
             and self._mode_manager.is_organize()
             and len(entries) == 1
             and not entries[0].is_dir
@@ -1913,15 +1913,15 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(ui.MENU_QUICK_SET_COVER_NO_IMAGE, 3000)
 
     def _on_create_mod_group(self, entry: FileEntry) -> None:
-        """创建 Mod 组：弹出对话框选择/编辑名称，调用 ModGroupService。"""
-        if self._mod_group_service is None:
+        """创建 Mod 组：弹出对话框选择/编辑名称，调用 ContentUnitCreationService。"""
+        if self._content_unit_creation_service is None:
             return
         if self._organize_workarea_path is None:
             QMessageBox.warning(self, ui.CREATE_MOD_GROUP_FAILED, "未选中暂存区工作区。")
             return
 
         # 提取两种命名选项
-        from application.mod_group_service import extract_mod_name
+        from application.content_unit_creation_service import extract_mod_name
 
         pure_name = extract_mod_name(entry.name)
         # 完整原名：去扩展名
@@ -1933,12 +1933,12 @@ class MainWindow(QMainWindow):
             return  # 用户取消
 
         try:
-            unit = self._mod_group_service.create_mod_group(
+            unit = self._content_unit_creation_service.create_content_unit_from_file(
                 Path(entry.path),
                 Path(self._organize_workarea_path),
                 name=chosen_name,
             )
-            # D3：ModGroupService 已注入 UoW，事务由 Service 内部管理，无需 _commit
+            # D3：ContentUnitCreationService 已注入 UoW，事务由 Service 内部管理，无需 _commit
             # 刷新目录树（新文件夹已写入 folder_cache）
             self._refresh_tree()
             # 刷新暂存区文件列表
@@ -2281,7 +2281,7 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             logger.exception("查询 ContentUnit 失败：path=%s", node.real_path)
             return
-        if unit is None or unit.status == "unmarked":
+        if unit is None or not unit.is_marked:
             return  # 非 Mod 组节点：保持当前绑定
         # 仅绑定文件夹类型的 ContentUnit（Mod 组本质是文件夹）
         try:
@@ -3160,8 +3160,8 @@ class MainWindow(QMainWindow):
         Stage 4 Task 2：若有 MetadataPanel，加载到编辑表单；同时保留
         `_metadata_full_text` 多行文本格式以兼容现有测试（metadata_full_text()）。
 
-        Stage 5 Task 7 收尾：移除"整理状态"显示行（status 简化为两态，
-        organized/unmarked，unmarked 不进入此方法，故状态恒为 organized，显示无意义）。
+        Stage 5 Task 7 收尾：移除"整理状态"显示行（v11 后 is_marked 两态，
+        is_marked=False 不进入此方法，故状态恒为已标记，显示无意义）。
         """
         title = unit.title or "（无标题）"
         source_url = unit.source_url or ui.METADATA_SOURCE_URL_EMPTY

@@ -1,6 +1,6 @@
 """folder_cache 同步辅助（Stage 4.5 TD-M22 + H4 + TD-L18）。
 
-集中各 Service（ModGroupService / QuickInsertService / AssemblyService）中
+集中各 Service（ContentUnitCreationService / QuickInsertService / AssemblyService）中
 重复的 folder_cache 同步逻辑，避免 Stage 5 undo 实现时反向同步逻辑复制粘贴。
 
 放置在 infrastructure 层：FileOperationService（infrastructure）需注入本 helper
@@ -162,7 +162,7 @@ class FolderCacheSyncHelper:
                 return
             for fc in self._repo.list_all():
                 if make_path_key(fc.path) == target_key:
-                    self._repo.upsert_mtime(fc.path, mtime, fc.id)
+                    self._repo.upsert_mtime(mtime, fc.id)
                     return
         except (RepositoryError, sqlite3.Error, OSError):
             logger.exception("更新 folder_cache mtime 失败：path=%s", folder_path)
@@ -211,7 +211,7 @@ class FolderCacheSyncHelper:
             return
         for fc in self._repo.list_all():
             if make_path_key(fc.path) == target_key:
-                self._repo.upsert_mtime(fc.path, mtime, fc.id)
+                self._repo.upsert_mtime(mtime, fc.id)
                 return
 
 

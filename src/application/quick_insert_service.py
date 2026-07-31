@@ -177,7 +177,7 @@ class QuickInsertService:
                 content_type=unit.content_type,
                 source_url=unit.source_url,
                 cover_path=unit.cover_path,
-                status=unit.status,
+                is_marked=unit.is_marked,
                 notes=unit.notes,
                 created_at=unit.created_at,
                 updated_at=unit.updated_at,

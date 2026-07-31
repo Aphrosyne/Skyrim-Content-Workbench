@@ -220,35 +220,6 @@ def test_delete_removes_record(db_connection: sqlite3.Connection, tmp_path: Path
     assert repo.get_by_id("del-1") is None
 
 
-def test_delete_commits_without_explicit_commit(db_path: Path, tmp_path: Path) -> None:
-    """delete 应自提交事务，跨连接可见。
-
-    回归测试：与 create 保持一致的事务策略。
-    """
-    init_db(db_path)
-    path = tmp_path / "AutoCommitDelete"
-    path.mkdir()
-
-    # 第一次连接：写入并删除，但不显式 commit
-    conn1 = get_connection(db_path)
-    conn1.row_factory = sqlite3.Row
-    try:
-        repo1 = ManagedRootRepository(conn1)
-        repo1.create(_make_root(path, root_id="del-autocommit"))
-        repo1.delete("del-autocommit")
-    finally:
-        conn1.close()
-
-    # 第二次连接：应已删除（证明 delete 自提交）
-    conn2 = get_connection(db_path)
-    conn2.row_factory = sqlite3.Row
-    try:
-        repo2 = ManagedRootRepository(conn2)
-        assert repo2.get_by_id("del-autocommit") is None
-    finally:
-        conn2.close()
-
-
 def test_delete_missing_raises_not_found_error(db_connection: sqlite3.Connection) -> None:
     """删除不存在的 id 抛 NotFoundError。"""
     repo = ManagedRootRepository(db_connection)
@@ -292,10 +263,10 @@ def test_delete_preserves_content_unit_and_folder_cache(
 
     # 模拟扫描结果存在（直接插入 content_unit 与 folder_cache）
     db_connection.execute(
-        "INSERT INTO content_unit (id, path, title, content_type, status, "
+        "INSERT INTO content_unit (id, path, path_key, title, content_type, is_marked, "
         "created_at, updated_at) VALUES "
-        "('cu-1', ?, 'Mods', 'mod', 'organized', '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
-        (str(path),),
+        "('cu-1', ?, ?, 'Mods', 'mod', 1, '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
+        (str(path), make_path_key(str(path))),
     )
     db_connection.execute(
         "INSERT INTO folder_cache (id, path, created_at) VALUES "

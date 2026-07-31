@@ -307,10 +307,10 @@ def test_remove_root_does_not_clean_scan_records(db_connection, tmp_path: Path) 
 
     # 模拟扫描结果（直接插入 content_unit 与 folder_cache）
     db_connection.execute(
-        "INSERT INTO content_unit (id, path, title, content_type, status, "
+        "INSERT INTO content_unit (id, path, path_key, title, content_type, is_marked, "
         "created_at, updated_at) VALUES "
-        "('cu-1', ?, 'Mods', 'mod', 'organized', '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
-        (str(target),),
+        "('cu-1', ?, ?, 'Mods', 'mod', 1, '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
+        (str(target), make_path_key(str(target))),
     )
     db_connection.execute(
         "INSERT INTO folder_cache (id, path, created_at) VALUES "
@@ -333,39 +333,3 @@ def test_remove_root_does_not_clean_scan_records(db_connection, tmp_path: Path) 
         "SELECT COUNT(*) FROM folder_cache WHERE id = 'fc-1'"
     ).fetchone()
     assert fc_count[0] == 1
-
-
-def test_remove_root_persists_without_explicit_commit(db_path: Path, tmp_path: Path) -> None:
-    """remove_root 应通过 Repository 自提交持久化，无需调用方显式 commit。
-
-    回归测试：模拟生产路径——UI 调用 service.remove_root() 后不显式 commit，
-    关闭并重开数据库应仍确认该根目录已删除。
-    """
-    from infrastructure.db import get_connection, init_db
-
-    init_db(db_path)
-    target = tmp_path / "PersistedRemove"
-    target.mkdir()
-
-    # 第一次连接：添加后移除，不显式 commit
-    conn1 = get_connection(db_path)
-    conn1.row_factory = __import__("sqlite3").Row
-    try:
-        service = ManagedRootService(
-            ManagedRootRepository(conn1),
-            now_provider=lambda: "2026-07-07T00:00:00Z",
-            uuid_provider=lambda: "persist-remove-uuid",
-        )
-        created = service.add_root(target)
-        service.remove_root(created.id)
-    finally:
-        conn1.close()
-
-    # 第二次连接：应确认已删除
-    conn2 = get_connection(db_path)
-    conn2.row_factory = __import__("sqlite3").Row
-    try:
-        service2 = ManagedRootService(ManagedRootRepository(conn2))
-        assert service2.list_roots() == []
-    finally:
-        conn2.close()

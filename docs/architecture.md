@@ -339,7 +339,7 @@ SearchService ──→ ContentService + TagService（阶段 5）
 | 模块 | 文件 | 职责 |
 |------|------|------|
 | 数据库初始化 | `db.py` | SQLite 连接、WAL 模式、外键、版本管理 |
-| Schema 迁移 | `migrations.py` | v3→v4→v5→v6 迁移（建新表、移除旧表、移除 rating、加 UNIQUE 约束） |
+| Schema 迁移 | `migrations.py` | v0→v10 迁移注册表（建新表、移除旧表、加 UNIQUE 约束、thumbnail_cache 复合主键、operation_history 撤销/复制支持、status 两态简化） |
 | Repository 层 | `repositories/` | 每个实体对应一个 Repository |
 | 文件扫描器 | `file_scanner.py` | 递归扫描、增量 mtime 判断、内容识别 |
 | 文件操作服务 | `file_operation_service.py` | 文件移动/重命名/删除/撤销（简化版） |
@@ -350,15 +350,17 @@ SearchService ──→ ContentService + TagService（阶段 5）
 
 ```text
 repositories/
-  ├── content_unit.py       # 新建
-  ├── tag_category.py        # 新建
-  ├── tag.py                 # 新建
-  ├── content_unit_tag.py    # 新建
-  ├── operation_history.py   # 新建
-  ├── folder_cache.py        # 新建（简化版 folder_node）
-  ├── managed_root.py        # 保留
-  ├── thumbnail_cache.py     # 保留
-  └── errors.py              # 保留（RepositoryError 等）
+  ├── content_unit.py       # ContentUnit 仓储
+  ├── tag_category.py        # TagCategory 仓储
+  ├── tag.py                 # Tag 仓储
+  ├── content_unit_tag.py    # ContentUnitTag 关联仓储
+  ├── operation_history.py   # OperationHistory 仓储（含 list_recent / count / delete_oldest_exceeding）
+  ├── folder_cache.py        # FolderCache 仓储（简化版 folder_node）
+  ├── managed_root.py        # ManagedRoot 仓储（保留）
+  ├── staging_area.py        # StagingArea 仓储（阶段 3 Task 1 新增）
+  ├── thumbnail_cache.py     # ThumbnailCache 仓储（v7 起复合主键 content_unit_id + size）
+  ├── search.py              # SearchRepository（阶段 5 Task 7，跨表 LIKE 全局搜索）
+  └── errors.py              # RepositoryError 等
 ```
 
 ### 6.3 移除的 Repository
@@ -370,11 +372,16 @@ repositories/
 
 ### 6.4 SQLite 数据库结构
 
-**数据库位置：** `{project_root}/data/app.db`
+**数据库位置：** 数据目录下 `app.db`（数据目录解析优先级见 §10）
 
-**Schema v6 表清单（v5→v6 变更：移除 content_unit.rating；tag_category.name 加 UNIQUE；tag (name, category_id) 加 UNIQUE）：**
+**Schema v10 表清单：**
 
 ```text
+schema_version
+  - version INTEGER NOT NULL
+  - applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+  # 由 init_db 维护，每步迁移成功后插入一行
+
 content_unit
   - id TEXT PRIMARY KEY
   - path TEXT NOT NULL UNIQUE
@@ -387,7 +394,8 @@ content_unit
   - created_at TEXT NOT NULL
   - updated_at TEXT NOT NULL
   # v6 移除：rating INTEGER（私人数据库用不上）
-  # v10 变更：status 默认值 unorganized → organized（语义重命名，旧 organized/"已整理"语义已废弃）
+  # v10 变更：所有 'unorganized' → 'organized'（语义重命名，旧 organized/"已整理"语义已废弃）
+  #  注：表 DEFAULT 未改（SQLite 不便修改），由应用层 ContentUnit 默认值接管为 'organized'
 
 tag_category
   - id TEXT PRIMARY KEY
@@ -414,11 +422,21 @@ operation_history
   - created_at TEXT NOT NULL
   - can_undo INTEGER NOT NULL DEFAULT 1
   - undone_at TEXT NULL  # v8 新增，撤销时间戳；NULL 表示未撤销
+  # v8：CHECK 约束扩展 'undo'（Stage 5 Task 6）
   # v9：CHECK 约束扩展 'copy'（Stage 5 Task 3b）
   # 自动清理上限：max_history_records=1000，写入前预清理，保留可撤销记录
 
 managed_root（保留）
   - id, real_path, path_key UNIQUE, display_name, created_at, updated_at
+
+staging_area  # v5 新增：暂存区标记持久化（独立于 folder_cache）
+  - id TEXT PRIMARY KEY
+  - real_path TEXT NOT NULL
+  - path_key TEXT NOT NULL UNIQUE
+  - display_name TEXT
+  - created_at TEXT NOT NULL
+  - updated_at TEXT NOT NULL
+  # 不与 managed_root 建外键：暂存区路径不必在受管理根目录下
 
 folder_cache
   - id TEXT PRIMARY KEY
@@ -427,15 +445,37 @@ folder_cache
   - last_scanned_mtime REAL
   - created_at TEXT NOT NULL
 
-thumbnail_cache（保留）
-  - asset_id TEXT PRIMARY KEY REFERENCES content_unit(id)  ← 关联改为 content_unit_id
-  - source_size_bytes INTEGER
-  - source_modified_at TEXT
-  - cache_filename TEXT
-  - status TEXT CHECK(status IN ('ok','missing','corrupt','unsupported','error'))
+thumbnail_cache
+  - content_unit_id TEXT NOT NULL  # v4 起关联键由旧 asset_id 改为 content_unit_id
+  - size INTEGER NOT NULL DEFAULT 64  # v7 新增：支持多尺寸缓存
+  - source_size_bytes INTEGER NOT NULL
+  - source_modified_at TEXT NOT NULL
+  - cache_filename TEXT NOT NULL
+  - status TEXT NOT NULL CHECK(status IN ('ok','missing','corrupt','unsupported','error'))
   - error_message TEXT
-  - generated_at TEXT
+  - generated_at TEXT NOT NULL
+  - PRIMARY KEY (content_unit_id, size)  # v7 改为复合主键
+  # v7 变更：从单档 PNG 改为多尺寸 WebP，旧 64 档记录迁移保留，旧文件由 GC 清理
+  # 缓存文件命名：{content_unit_id}_{size}.webp
 ```
+
+**迁移历史摘要：**
+
+| 版本 | 阶段 | 关键变更 |
+|------|------|---------|
+| v0→v1 | 阶段 2 前置 | 创建 mod_item / file_asset / folder_node / operation_log 旧表（方向 C 已废弃） |
+| v1→v2 | 阶段 2 Task 1 | 新增 managed_root 表 |
+| v2→v3 | 阶段 2 Task 1 | 新增 thumbnail_cache 旧表（关联 asset_id） |
+| v3→v4 | 阶段 2 Task 1 | 方向 C 重建：建 content_unit / tag_category / tag / content_unit_tag / operation_history / folder_cache；重建 thumbnail_cache（关联键改为 content_unit_id）；移除旧表 |
+| v4→v5 | 阶段 3 Task 1 | 新增 staging_area 表（暂存区持久化） |
+| v5→v6 | 阶段 4 Task 1 | 移除 content_unit.rating；tag_category.name 加 UNIQUE；tag (name, category_id) 加 UNIQUE |
+| v6→v7 | 阶段 5 Task 1a | thumbnail_cache 改复合主键 (content_unit_id, size)，缓存格式 PNG → WebP |
+| v7→v8 | 阶段 5 Task 6 | operation_history 新增 undone_at 列；CHECK 扩展 'undo' |
+| v8→v9 | 阶段 5 Task 3b | operation_history CHECK 扩展 'copy' |
+| v9→v10 | 阶段 5 Task 7 收尾 | content_unit.status 'unorganized' → 'organized'（语义简化为两态） |
+
+所有迁移函数幂等（CREATE TABLE IF NOT EXISTS / 列存在性检查 / SQL 文本检查）。
+迁移注册表见 `migrations.py` 末尾 `MIGRATIONS` 列表，`init_db` 按 target 升序应用。
 
 ### 6.5 路径工具
 
@@ -451,23 +491,35 @@ thumbnail_cache（保留）
 
 ```text
 FileOperationService
-  - move(src: Path, dst: Path) → OperationResult     # 移动（含冲突检查）
+  - new_folder(path: Path) → Path                     # 新建文件夹（含 ContentUnit 标记）
+  - move(src: Path, dst: Path, *, overwrite=False) → OperationResult  # 移动（含冲突检查）
+  - copy(src: Path, dst: Path, *, overwrite=False) → OperationResult  # 复制（Stage 5 Task 3b，can_undo=0）
   - rename(path: Path, new_name: str) → Path          # 重命名 + 更新 ContentUnit
   - delete(path: Path) → None                         # 移到回收站
-  - undo(op_id: str) → OperationResult                # 撤销操作
+  - undo(op_id: str) → OperationResult                # 撤销操作（Stage 5 Task 6）
 ```
 
 ### 7.2 安全规则（实现于服务层）
 
-- `move()` 执行前校验冲突，冲突时抛 `ConflictError`，由 UI 弹窗选择。
-- 跨盘移动检测（`st_dev` 比较），检测到时抛 `CrossDriveError`。
+- `move()` / `copy()` 执行前校验冲突，冲突时抛 `ConflictError`，由 UI 弹窗选择
+  （`ConflictResolutionDialog` 提供 覆盖/跳过/重命名 三选项，`overwrite=True` 时直接覆盖）。
+- 跨盘移动检测（`st_dev` 比较），`move` 检测到时抛 `CrossDriveError`；
+  `copy` 允许跨盘（语义上复制本就跨盘）。
 - 自目录移动检测（`path_key` 比较），检测到时抛 `SelfSubdirectoryError`。
-- `undo()` 执行前校验源文件存在性和状态一致性。
+- `undo()` 执行前校验源文件存在性和状态一致性（路径存在 + size/mtime 校验，
+  Stage 5 Task 6 严格安全检查；非空 new_folder 撤销时弹窗阻止）。
+- 撤销操作不写入新的 `operation_history` 记录（原记录通过 `undone_at` 标记为已撤销）。
 
 ### 7.3 操作记录
 
-每次操作（move / delete / rename / new_folder）后自动写入 `operation_history` 表。
+每次操作（move / delete / rename / new_folder / copy）后自动写入 `operation_history` 表。
 写入由 FileOperationService 内部完成，调用方不需要手动写。
+
+- `move` / `delete` / `rename` / `new_folder`：`can_undo=1`，可被撤销。
+- `copy`：`can_undo=0`，不可撤销（语义上复制不应反向撤销）。
+- `undo`：不写新记录，仅更新原记录的 `undone_at` 字段。
+- 自动清理上限：`max_history_records=1000`，写入前预清理；
+  仅删除 `can_undo=0` 或 `undone_at IS NOT NULL` 的记录（保留可撤销记录）。
 
 ---
 
@@ -509,24 +561,27 @@ ScanService.scan(managed_root)
 
 ## 9. 缩略图架构
 
-> 阶段 4 Task 4（封面预览）已实现。完整流程：UI 请求 → Coordinator 调度 →
-> Worker 在 QThread 中调用 ThumbnailService.generate → Pillow 只读加载源图并
-> 写入缓存 PNG。缓存命中时 UI 同步获得 QPixmap。
+> 阶段 4 Task 4（封面预览）已实现，阶段 5 Task 1a 升级为多尺寸 WebP 缓存。
+> 完整流程：UI 请求 → Coordinator 调度 → Worker 在 QThread 中调用
+> ThumbnailService.generate → Pillow 只读加载源图并写入缓存 WebP。
+> 缓存命中时 UI 同步获得 QPixmap。
 
 ### 分层与职责
 
 - `infrastructure/thumbnail_generator.py`：纯生成逻辑。Pillow 只读加载源图、
-  保持宽高比缩放到配置尺寸（默认 64×64，Q1:C 可配置）、应用圆角遮罩（Q2:C）、
-  写入 PNG。异常分类：`ThumbnailSourceNotFoundError` / `ThumbnailSourceCorruptError` /
+  保持宽高比缩放到调用方指定尺寸（默认 256×256，列表/卡片视图基础档位；
+  Task 1a 起支持 256/512 双档）、应用圆角遮罩、写入 WebP。
+  异常分类：`ThumbnailSourceNotFoundError` / `ThumbnailSourceCorruptError` /
   `ThumbnailSourceUnsupportedError`。
 - `infrastructure/repositories/thumbnail_cache.py`：`thumbnail_cache` 表 CRUD
-  （upsert / get_by_id / delete / list_all / list_by_unit_ids）。
+  （v7 起复合主键 (content_unit_id, size)；方法：`get_by_id_and_size` /
+  `upsert` / `delete` / `list_all` / `list_by_unit` / `list_by_unit_ids`）。
 - `application/thumbnail_service.py`：业务编排。
-  - `get_cache(unit_id, source_path)`：缓存命中同步返回 Path，未命中返回 None
-  - `generate(unit_id, source_path)`：生成 + 写入缓存记录，按异常分类记录 status
+  - `get_cache(unit_id, source_path, size)`：缓存命中同步返回 Path，未命中返回 None
+  - `generate(unit_id, source_path, size)`：生成 + 写入缓存记录，按异常分类记录 status
     （ok / missing / corrupt / unsupported / error）
-  - `invalidate(unit_id)`：删除缓存记录与文件（封面更换/清除时调用）
-  - `cleanup_orphans()`：启动时清理无对应 content_unit 的缓存记录与孤立 PNG 文件
+  - `invalidate(unit_id)`：删除该内容单元所有尺寸的缓存记录与文件（封面更换/清除时调用）
+  - `cleanup_orphans()`：启动时清理无对应 content_unit 的缓存记录与孤立缓存文件
     （Q8:B）
 - `app/thumbnail_worker.py`：QObject + QThread worker。在 `run()` 内创建独立 SQLite
   连接，调用 `ThumbnailService.generate`，发射 `thumbnail_ready(unit_id, status)`
@@ -540,11 +595,11 @@ ScanService.scan(managed_root)
 
 ### 关键约束
 
-- 关联键：`content_unit_id`
+- 关联键：`content_unit_id`（v4 起由旧 `asset_id` 改名）
 - 源路径：`ContentUnit.path` + `cover_path`（仅 `cover_path` 非空时生成）
-- 缩略图缓存目录：`{project_root}/data\thumbnails\`
-- 缓存文件命名：`{content_unit_id}.png`
-- 缓存有效性基于 `content_unit_id + source_size + source_modified_at + 文件存在`
+- 缩略图缓存目录：数据目录下 `thumbnails\`（数据目录解析见 §10）
+- 缓存文件命名：`{content_unit_id}_{size}.webp`（v7 起多档位）
+- 缓存有效性基于 `content_unit_id + size + source_size_bytes + source_modified_at + 文件存在`
 - 后台线程生成（QThread + 独立 SQLite 连接），不冻结 UI
 - 始终只读访问用户原图；不修改、不压缩、不覆盖
 - UI 层（FileListModel）通过注入的 `thumbnail_provider` 回调获取 QPixmap，
@@ -554,12 +609,21 @@ ScanService.scan(managed_root)
 
 ## 10. 应用数据目录
 
+数据目录解析优先级（见 `app/app_paths.get_app_data_root()`）：
+
+1. `SCW_DATA_DIR` 环境变量指定路径
+2. 项目根 `data/`（开发环境默认）
+3. `%LOCALAPPDATA%\SkyrimContentWorkbench\`（Windows 回退）
+
+旧版 AppData 目录（`%LOCALAPPDATA%\SkyrimContentWorkbench\`）数据不自动删除，
+首次启动时按需迁移（迁移过程记录日志、校验数据库可用性、确认缓存目录迁移成功）。
+
 ```text
-{project_root}/data\
-  ├── app.db              # SQLite 数据库（schema v6）
-  ├── thumbnails\         # 缩略图缓存
-  ├── exports\            # AI JSON 导出
-  └── logs\               # 应用日志
+{data_root}/
+  ├── app.db              # SQLite 数据库（schema v10）
+  ├── thumbnails/         # 缩略图缓存（{content_unit_id}_{size}.webp）
+  ├── exports/            # AI JSON 导出
+  └── logs/               # 应用日志（app.log，UTF-8，滚动）
 ```
 
 用户 Mod 文件不应被复制到应用数据目录。唯一例外是缩略图缓存（可随时删除并重建）。
@@ -573,11 +637,13 @@ ScanService.scan(managed_root)
 - 内容单元 CRUD 与中文路径
 - 增量扫描逻辑与 mtime 判断
 - 内容单元识别规则（含压缩包 → 候选）
-- 文件夹操作（移动/重命名/删除）与安全规则
-- 操作历史读写与撤销
+- 文件夹操作（移动/重命名/删除/复制）与安全规则
+- 操作历史读写、撤销与上限清理
 - 标签 CRUD、自动补全、筛选
+- 全局搜索（标题/备注/标签，仅 organized）
+- 缩略图多档缓存（256/512）与孤儿清理
 - UI 模式切换与数据联动
-- 数据库迁移（v3→v4→v5→v6 幂等、rating 列移除、UNIQUE 约束验证）
+- 数据库迁移（v0→v10 幂等：rating 列移除、UNIQUE 约束、复合主键、CHECK 扩展、status 两态简化）
 
 ### 11.2 保留的旧测试
 
@@ -590,7 +656,7 @@ ScanService.scan(managed_root)
 - `test_scan_worker.py` ✅
 - `test_thumbnail_ui.py` ⚠️（需调整关联）
 - `test_db.py` ✅
-- `test_migrations.py` ⚠️（已扩展至 v6）
+- `test_migrations.py` ⚠️（已扩展至 v10）
 
 ### 11.3 需重写或移除的旧测试
 
@@ -606,9 +672,13 @@ ScanService.scan(managed_root)
 
 当前代码（版本 ≤ v0.9.0）实现了旧版架构（ModItem / FileAsset / FileRole / OperationLog 四步状态机），与新架构不兼容。
 
-迁移策略：
+迁移策略（详见 §6.4 迁移历史摘要）：
 1. 阶段 2 Task 1：建立新数据库 schema v4，移除旧表（不迁移旧数据）。
 2. 阶段 3 Task 1：schema v4→v5（staging_area 表 + folder_cache 简化）。
 3. 阶段 4 Task 1：schema v5→v6（移除 content_unit.rating；tag_category.name 加 UNIQUE；tag (name, category_id) 加 UNIQUE）。
-4. 旧版代码文件逐步改造或重写，不保留旧版 Service 和 UI。
-5. 旧版文档已归档至 `archive/`。
+4. 阶段 5 Task 1a：schema v6→v7（thumbnail_cache 改复合主键，PNG → WebP 多档缓存）。
+5. 阶段 5 Task 6：schema v7→v8（operation_history 加 undone_at 列，CHECK 扩展 'undo'）。
+6. 阶段 5 Task 3b：schema v8→v9（operation_history CHECK 扩展 'copy'）。
+7. 阶段 5 Task 7 收尾：schema v9→v10（content_unit.status 简化为 organized/unmarked 两态）。
+8. 旧版代码文件逐步改造或重写，不保留旧版 Service 和 UI。
+9. 旧版文档已归档至 `archive/`。

@@ -21,9 +21,9 @@ from app.thumbnail_coordinator import ThumbnailCoordinator
 from application.assembly_service import AssemblyService
 from application.clipboard_service import ClipboardService
 from application.content_service import ContentService
+from application.content_unit_creation_service import ContentUnitCreationService
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
-from application.mod_group_service import ModGroupService
 from application.quick_insert_service import QuickInsertService
 from application.search_service import SearchService
 from application.staging_service import StagingService
@@ -109,7 +109,7 @@ def main() -> int:
     # Stage 4.5 D3：UnitOfWork 管理多步写事务，Service 内部通过 transaction()
     # 保证原子性，调用方（MainWindow）不负责业务事务控制。
     # uow 绑定到主线程连接 conn，所有共享该连接的 Service 注入同一实例，
-    # 支持跨 Service 嵌套事务（如 ModGroupService 调用 ContentService）。
+    # 支持跨 Service 嵌套事务（如 ContentUnitCreationService 调用 ContentService）。
     uow = UnitOfWork(conn)
 
     # Stage 4.5 M4：ContentService 注入 thumbnail_service，
@@ -121,7 +121,7 @@ def main() -> int:
     )
     # Stage 4.5 H4：FileOperationService 注入 FolderCacheSyncHelper + ContentUnitRepository，
     # new_folder/move 自动同步 folder_cache + ContentUnit.path，消除调用方手动同步。
-    # 各 Service（ModGroupService/AssemblyService/QuickInsertService）在 0.3c/d/e
+    # 各 Service（ContentUnitCreationService/AssemblyService/QuickInsertService）在 0.3c/d/e
     # 移除各自的重复同步逻辑后，统一由 FileOperationService 内部同步。
     folder_cache_repo = FolderCacheRepository(conn)
     content_unit_repo = ContentUnitRepository(conn)
@@ -131,9 +131,11 @@ def main() -> int:
         folder_cache_helper=folder_cache_helper,
         content_unit_repo=content_unit_repo,
     )
-    # Stage 4.5 H4：ModGroupService 不再需要 folder_cache_repo，
+    # Stage 4.5 H4：ContentUnitCreationService 不再需要 folder_cache_repo，
     # folder_cache 同步由 FileOperationService 内部的 helper 自动完成。
-    mod_group_service = ModGroupService(file_operation_service, content_service, uow=uow)
+    content_unit_creation_service = ContentUnitCreationService(
+        file_operation_service, content_service, uow=uow
+    )
     # 装配服务（阶段 3 Task 4）：使用同一个 file_operation_service 和 content_unit_repo
     # Stage 4.5 H4：folder_cache mtime 同步由 FileOperationService 内部 helper 自动完成，
     # AssemblyService 不再需要 folder_cache_repo。
@@ -205,7 +207,7 @@ def main() -> int:
         db_path,
         commit_callback=conn.commit,
         staging_service=staging_service,
-        mod_group_service=mod_group_service,
+        content_unit_creation_service=content_unit_creation_service,
         assembly_service=assembly_service,
         quick_insert_service=quick_insert_service,
         rollback_callback=conn.rollback,

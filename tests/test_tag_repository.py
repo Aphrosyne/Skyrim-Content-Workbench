@@ -213,8 +213,8 @@ class TestDelete:
         _seed_cat(db_connection)
         # 直接插入 content_unit 与 content_unit_tag（绕过 Repository）
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, created_at, updated_at) "
-            "VALUES ('cu-1', '/p', 't', 't')"
+            "INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at) "
+            "VALUES ('cu-1', '/p', '/p', 1, 't', 't')"
         )
         db_connection.execute(
             "INSERT INTO tag (id, name, category_id) VALUES ('t-1', '重甲', 'c-1')"

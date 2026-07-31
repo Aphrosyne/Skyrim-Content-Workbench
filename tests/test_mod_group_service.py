@@ -1,8 +1,8 @@
-"""ModGroupService 测试。
+"""ContentUnitCreationService 测试（D1 重命名：原 ModGroupService）。
 
 覆盖：
 - 文件名提取规则（6 种格式）
-- create_mod_group 完整流程
+- create_content_unit_from_file 完整流程
 - 失败回滚（move 失败时清理空文件夹）
 - ContentUnit 创建
 - 中文路径
@@ -20,13 +20,16 @@ from pathlib import Path
 import pytest
 
 from application.content_service import ContentService
+from application.content_unit_creation_service import (
+    ContentUnitCreationService,
+    extract_mod_name,
+)
 from application.errors import (
     ConflictError,
     FileOperationError,
-    InvalidModGroupNameError,
-    ModGroupSourceNotInStagingError,
+    InvalidContentUnitNameError,
+    SourceNotInStagingError,
 )
-from application.mod_group_service import ModGroupService, extract_mod_name
 from domain.models import ContentUnit
 from infrastructure.db import get_connection, init_db
 from infrastructure.file_operation_service import FileOperationService
@@ -106,7 +109,7 @@ class TestExtractModName:
 
 @pytest.fixture
 def mod_group_env(tmp_path: Path):
-    """构造 ModGroupService + ContentService + FileOperationService + 已初始化 DB。"""
+    """构造 ContentUnitCreationService + ContentService + FileOperationService + 已初始化 DB。"""
     db_path = tmp_path / "test.db"
     init_db(db_path)
     conn = get_connection(db_path)
@@ -128,7 +131,7 @@ def mod_group_env(tmp_path: Path):
         now_provider=lambda: "2026-07-14T00:00:00Z",
         uuid_provider=fake_uuid,
     )
-    mod_group_svc = ModGroupService(file_op, content_svc)
+    mod_group_svc = ContentUnitCreationService(file_op, content_svc)
 
     # 构造暂存区目录
     staging = tmp_path / "Stash"
@@ -146,7 +149,7 @@ class TestCreateModGroup:
         src = staging / "BDOR Black Knight 1.0.7z"
         src.write_bytes(b"mod-content")
 
-        unit = svc.create_mod_group(src, staging)
+        unit = svc.create_content_unit_from_file(src, staging)
 
         # 文件夹被创建
         target_folder = staging / "BDOR Black Knight"
@@ -160,7 +163,7 @@ class TestCreateModGroup:
         assert isinstance(unit, ContentUnit)
         assert unit.path == str(target_folder)
         assert unit.title == "BDOR Black Knight"
-        assert unit.status == "organized"
+        assert unit.is_marked is True
 
     def test_writes_two_operation_history(self, mod_group_env) -> None:
         """创建 Mod 组写 2 条 operation_history：new_folder + move。"""
@@ -168,7 +171,7 @@ class TestCreateModGroup:
         src = staging / "mod 1.0.7z"
         src.write_bytes(b"data")
 
-        svc.create_mod_group(src, staging)
+        svc.create_content_unit_from_file(src, staging)
         conn.commit()
 
         rows = conn.execute("SELECT * FROM operation_history ORDER BY created_at").fetchall()
@@ -186,7 +189,7 @@ class TestCreateModGroup:
         (staging / "mod").mkdir()
 
         with pytest.raises(ConflictError):
-            svc.create_mod_group(src, staging, name="mod")
+            svc.create_content_unit_from_file(src, staging, name="mod")
 
     def test_move_failure_rolls_back_empty_folder(self, mod_group_env) -> None:
         """move 失败时清理已创建的空文件夹。"""
@@ -196,7 +199,7 @@ class TestCreateModGroup:
         src = staging / "nonexistent.7z"
 
         with pytest.raises(FileOperationError):
-            svc.create_mod_group(src, staging, name="NewMod")
+            svc.create_content_unit_from_file(src, staging, name="NewMod")
 
         # 空文件夹应被清理
         assert not (staging / "NewMod").exists()
@@ -207,39 +210,39 @@ class TestCreateModGroup:
         src = staging / "寒霜之心 1.0.7z"
         src.write_bytes(b"data")
 
-        unit = svc.create_mod_group(src, staging)
+        unit = svc.create_content_unit_from_file(src, staging)
 
         target_folder = staging / "寒霜之心"
         assert target_folder.is_dir()
         assert unit.title == "寒霜之心"
 
     def test_source_not_in_staging_raises(self, mod_group_env, tmp_path: Path) -> None:
-        """源文件不在暂存区下抛 ModGroupSourceNotInStagingError。"""
+        """源文件不在暂存区下抛 SourceNotInStagingError。"""
         svc, _, _, staging = mod_group_env
         # 在暂存区外构造源文件
         outside = tmp_path / "outside.7z"
         outside.write_bytes(b"data")
 
-        with pytest.raises(ModGroupSourceNotInStagingError):
-            svc.create_mod_group(outside, staging)
+        with pytest.raises(SourceNotInStagingError):
+            svc.create_content_unit_from_file(outside, staging)
 
     def test_invalid_name_raises(self, mod_group_env) -> None:
-        """空名称抛 InvalidModGroupNameError。"""
+        """空名称抛 InvalidContentUnitNameError。"""
         svc, _, _, staging = mod_group_env
         src = staging / "mod 1.0.7z"
         src.write_bytes(b"data")
 
-        with pytest.raises(InvalidModGroupNameError):
-            svc.create_mod_group(src, staging, name="")
+        with pytest.raises(InvalidContentUnitNameError):
+            svc.create_content_unit_from_file(src, staging, name="")
 
     def test_invalid_name_whitespace_only(self, mod_group_env) -> None:
-        """仅空白名称抛 InvalidModGroupNameError。"""
+        """仅空白名称抛 InvalidContentUnitNameError。"""
         svc, _, _, staging = mod_group_env
         src = staging / "mod 1.0.7z"
         src.write_bytes(b"data")
 
-        with pytest.raises(InvalidModGroupNameError):
-            svc.create_mod_group(src, staging, name="   ")
+        with pytest.raises(InvalidContentUnitNameError):
+            svc.create_content_unit_from_file(src, staging, name="   ")
 
     def test_explicit_name_overrides_extraction(self, mod_group_env) -> None:
         """显式指定 name 时跳过文件名提取。"""
@@ -247,7 +250,7 @@ class TestCreateModGroup:
         src = staging / "mod 1.0.7z"
         src.write_bytes(b"data")
 
-        unit = svc.create_mod_group(src, staging, name="CustomName")
+        unit = svc.create_content_unit_from_file(src, staging, name="CustomName")
 
         target_folder = staging / "CustomName"
         assert target_folder.is_dir()
@@ -260,7 +263,7 @@ class TestCreateModGroup:
         content = b"\x00" * 1024 + b"end"
         src.write_bytes(content)
 
-        svc.create_mod_group(src, staging)
+        svc.create_content_unit_from_file(src, staging)
 
         target_file = staging / "mod" / "mod 1.0.7z"
         assert target_file.read_bytes() == content
@@ -274,8 +277,8 @@ def mod_group_env_with_folder_cache(tmp_path: Path):
     """构造注入了 FolderCacheSyncHelper 的 FileOperationService 环境。
 
     Stage 4.5 H4（TD-M22）：folder_cache 同步由 FileOperationService 内部的
-    FolderCacheSyncHelper 自动完成，ModGroupService 不再手动同步。
-    用于测试 create_mod_group 后 folder_cache 的 parent_id 正确关联。
+    FolderCacheSyncHelper 自动完成，ContentUnitCreationService 不再手动同步。
+    用于测试 create_content_unit_from_file 后 folder_cache 的 parent_id 正确关联。
     """
     from domain.models import FolderCache
     from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper
@@ -310,8 +313,8 @@ def mod_group_env_with_folder_cache(tmp_path: Path):
         now_provider=lambda: "2026-07-14T00:00:00Z",
         uuid_provider=fake_uuid,
     )
-    # Stage 4.5 H4：ModGroupService 不再需要 folder_cache_repo
-    mod_group_svc = ModGroupService(file_op, content_svc)
+    # Stage 4.5 H4：ContentUnitCreationService 不再需要 folder_cache_repo
+    mod_group_svc = ContentUnitCreationService(file_op, content_svc)
 
     # 构造暂存区目录
     staging = tmp_path / "Stash"
@@ -334,7 +337,7 @@ def mod_group_env_with_folder_cache(tmp_path: Path):
 
 
 class TestFolderCacheSync:
-    """create_mod_group 同步写入 folder_cache 的 parent_id 关联测试。"""
+    """create_content_unit_from_file 同步写入 folder_cache 的 parent_id 关联测试。"""
 
     def test_writes_folder_cache_with_correct_parent_id(
         self, mod_group_env_with_folder_cache
@@ -344,7 +347,7 @@ class TestFolderCacheSync:
         src = staging / "BDOR Black Knight 1.0.7z"
         src.write_bytes(b"data")
 
-        svc.create_mod_group(src, staging)
+        svc.create_content_unit_from_file(src, staging)
         conn.commit()
 
         # 查询新文件夹的 folder_cache 记录
@@ -378,10 +381,10 @@ class TestFolderCacheSync:
         )
         conn.commit()
 
-        # create_mod_group 传入反斜杠的 staging_path
+        # create_content_unit_from_file 传入反斜杠的 staging_path
         src = staging / "TestMod 1.0.7z"
         src.write_bytes(b"data")
-        svc.create_mod_group(src, staging)
+        svc.create_content_unit_from_file(src, staging)
         conn.commit()
 
         # 新文件夹的 parent_id 仍应正确指向暂存区记录

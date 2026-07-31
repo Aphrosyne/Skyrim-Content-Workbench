@@ -12,7 +12,7 @@ UnitOfWork 封装 SQLite 连接的 commit/rollback，提供 ``transaction()`` �
 
 嵌套场景示例::
 
-    # ModGroupService.create_mod_group 用 transaction() 包裹整个方法
+    # ContentUnitCreationService.create_content_unit_from_file 用 transaction() 包裹整个方法
     with self._uow.transaction():
         self._folder_cache_repo.create(folder)
         self._file_op.move(source, target)  # 文件操作不在事务范围
