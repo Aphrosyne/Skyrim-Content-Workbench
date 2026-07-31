@@ -31,6 +31,24 @@
   - 单选或多选文件 → 右键 → "创建 Mod 组" → 在当前目录原地创建文件夹（以第一个文件名提取 Mod 名）→ 选中文件移入 → 文件夹标记为内容单元
   - 命名逻辑与现有保持一致（自动剔除版本号、后缀等无用信息，下拉框提供纯 Mod 名/完整原名）
 
+**实施记录（Commit 1-3）：**
+
+- **Commit 1**：移除 ModeManager/AppMode/模式切换按钮/整理模式状态变量。
+- **Commit 2**：移除 StagingArea 实体/StagingService/StagingAreaRepository，新增 v11→v12 迁移删除 staging_area 表。
+- **Commit 3**：多选创建 Mod 组 + 装配逻辑调整。
+  - D1 调整：原 D1「逐个调用 + 容错」因文件夹已存在 ConflictError 不可行，改为新增 `ContentUnitCreationService.create_content_unit_from_files` 批量接口（一次建文件夹 + 逐个移入 + 容错汇总）。
+  - L2 提前：装配面板「移除文件」功能已在 Commit 3 移除（原计划 Task 4），UI/回调/常量一并清理。
+  - 装配面板始终可见，未绑定时显示空状态占位「无固定内容」（原 Task 2 的部分行为提前）。
+  - 快速插入按钮保持隐藏（C2），Task 4 正式移除 QuickInsertService。
+  - 死方法清理：`ContentService.list_staging_entries` / `MainWindow._refresh_staging_content_list` 已删除。
+
+**留给后续 Task 的项：**
+
+- Task 2：装配面板从中间区分割区域迁移到右栏下方（当前仍在中间区）。
+- Task 3：📌 钉住功能（Pin 只固定装配区域，元数据永远跟随当前选择）。
+- Task 4：QuickInsertService 正式移除；添加到钉住文件夹；拖拽支持。
+- Task 7：FileListView 统一问题——当前 FileListModel（中栏）和 AssemblyListModel（装配面板）两套模型，未来维护两份，建议统一为单一 FileListView（登记为技术债，Task 7 拆分时处理）。
+
 ### Task 2：装配面板迁移到右栏
 
 - 装配面板从中间区分割区域移到右栏下方

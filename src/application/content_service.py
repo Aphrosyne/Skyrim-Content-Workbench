@@ -379,77 +379,6 @@ class ContentService:
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower(), e.name))
         return entries
 
-    def list_staging_entries(self, staging_path: str) -> list[FileEntry]:
-        """递归返回暂存区 staging_path 下所有文件和文件夹条目，并关联 content_unit。
-
-        阶段 3 Task 2：暂存区文件列表。
-
-        与 list_directory_entries 区别：
-        - 递归遍历所有子目录（Path.rglob("*")），不只单层；
-        - 批量预查 content_unit（一次 list_by_path_prefix_normalized 取回所有
-          相关单元，构建 path_key → ContentUnit 映射），避免 N 次 DB 查询。
-
-        数据源为文件系统，仅读取元数据（is_dir / is_file / stat），跳过符号链接。
-        单条目读取失败不中断整体遍历（记日志后跳过）。
-
-        排序规则：文件夹在前（is_dir=True 优先），同类型按 name 升序（不区分大小写）。
-        排序为初始默认顺序；UI 层可通过 FileListModel.set_sort_key 切换排序键。
-
-        若 staging_path 不存在、不是目录或读取失败，返回空列表（记日志）。
-        """
-        root = Path(staging_path)
-        try:
-            if not root.is_dir():
-                return []
-        except OSError as e:
-            logger.warning("list_staging_entries: 路径检查失败 %s: %s", staging_path, e)
-            return []
-
-        # 批量预查 content_unit：一次 SQL 拿回所有相关单元，构建 path_key 映射
-        # is_marked=False 的单元不纳入映射（视为无内容单元）
-        # 使用 list_by_path_prefix_normalized（统一归一化接口，原 list_by_path_prefix
-        # 已在 TD-L20 清理中删除）
-        unit_map: dict[str, ContentUnit] = {}
-        try:
-            units = self._repo.list_by_path_prefix_normalized(staging_path)
-            for unit in units:
-                if not unit.is_marked:
-                    continue
-                unit_map[make_path_key(unit.path)] = unit
-        except (RepositoryError, sqlite3.Error):  # 数据库查询失败不阻塞文件系统遍历
-            logger.exception("list_staging_entries: 预查 content_unit 失败：%s", staging_path)
-
-        entries: list[FileEntry] = []
-        try:
-            for child in root.rglob("*"):
-                entry = self._build_entry_with_map(child, unit_map)
-                if entry is not None:
-                    entries.append(entry)
-        except OSError as e:
-            logger.warning("list_staging_entries: 递归读取失败 %s: %s", staging_path, e)
-            return []
-
-        # spec §7.3：暂存区文件列表显示"零散文件"。
-        # 若某个文件夹已被标记为内容单元（即 Mod 组文件夹），
-        # 其内部的子文件/子文件夹视为"已收纳"，不再显示在列表中。
-        # 这与 spec §5.4（标记文件夹时取消子项标记）的语义一致。
-        cu_folder_keys: set[str] = set()
-        for entry in entries:
-            if entry.is_dir and entry.content_unit is not None:
-                cu_folder_keys.add(make_path_key(entry.path))
-
-        if cu_folder_keys:
-            filtered: list[FileEntry] = []
-            for entry in entries:
-                if self._has_ancestor_in_set(entry.path, cu_folder_keys):
-                    continue
-                filtered.append(entry)
-            entries = filtered
-
-        # 文件夹在前，名称不区分大小写升序
-        entries.sort(key=lambda e: (not e.is_dir, e.name.lower(), e.name))
-        return entries
-
     # --- 元数据编辑（Stage 4 Task 2） ---
 
     def update_metadata(
@@ -674,49 +603,6 @@ class ContentService:
             size=size,
             content_unit=content_unit,
         )
-
-    def _build_entry_with_map(
-        self, child: Path, unit_map: dict[str, ContentUnit]
-    ) -> FileEntry | None:
-        """从单个 Path 构建 FileEntry，content_unit 从预构建的 path_key 映射查询。
-
-        用于 list_staging_entries 的批量关联场景，避免 N 次 DB 查询。
-        """
-        try:
-            if child.is_symlink():
-                return None
-            is_dir = child.is_dir()
-            stat = child.stat()
-            modified_at = _mtime_to_iso(stat.st_mtime)
-            size: int | None = None if is_dir else stat.st_size
-        except OSError as e:
-            logger.warning("list_staging_entries: 读取条目失败 %s: %s", child, e)
-            return None
-
-        content_unit = unit_map.get(make_path_key(str(child)))
-
-        return FileEntry(
-            name=child.name,
-            path=str(child),
-            is_dir=is_dir,
-            modified_at=modified_at,
-            size=size,
-            content_unit=content_unit,
-        )
-
-    def _has_ancestor_in_set(self, path: str, ancestor_keys: set[str]) -> bool:
-        """检查 path 的任一祖先（不含自身）是否在 ancestor_keys 集合中。
-
-        基于 make_path_key 归一化后比较。
-        从 path.parent 逐级向上直到根目录。
-        """
-        p = Path(path)
-        parent = p.parent
-        while parent != parent.parent:
-            if make_path_key(parent) in ancestor_keys:
-                return True
-            parent = parent.parent
-        return False
 
 
 def _mtime_to_iso(mtime: float) -> str:

@@ -31,6 +31,7 @@ import logging
 import os
 import re
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 from application.content_service import ContentService
@@ -47,6 +48,18 @@ from infrastructure.repositories.errors import RepositoryError
 from infrastructure.unit_of_work import UnitOfWork
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CreateContentUnitResult:
+    """批量创建 Mod 组的结果。
+
+    UX 重构 Phase 1 Task 1 Commit 3：多选创建 Mod 组。
+    """
+
+    unit: ContentUnit
+    success_count: int
+    failure_count: int
 
 
 # Nexus Mods 下载文件名正则模式。
@@ -217,6 +230,106 @@ class ContentUnitCreationService:
                     source_file, staging_path, target_folder, target_file
                 )
         return self._create_content_unit_core(source_file, staging_path, target_folder, target_file)
+
+    def create_content_unit_from_files(
+        self,
+        source_files: list[Path],
+        staging_path: Path,
+        name: str | None = None,
+    ) -> CreateContentUnitResult:
+        """批量创建 Mod 组：建文件夹 + 移入多个源文件 + 标记 ContentUnit。
+
+        UX 重构 Phase 1 Task 1 Commit 3：多选创建 Mod 组。
+        原 create_content_unit_from_file 逐个调用会因文件夹已存在抛 ConflictError，
+        故新增批量接口：创建一次文件夹 + 逐个移入文件（容错）+ 标记一次。
+
+        Args:
+            source_files: 源文件路径列表（必须全部在 staging_path 之下）。
+            staging_path: 暂存区根目录路径（新文件夹在此创建）。
+            name: Mod 组名称。None 时从第一个文件名自动提取。
+
+        Returns:
+            CreateContentUnitResult：包含 ContentUnit、成功数、失败数。
+
+        Raises:
+            SourceNotInStagingError: 任一源文件不在 staging_path 下。
+            InvalidContentUnitNameError: name 为空或仅含空白。
+            ConflictError: 目标文件夹已存在。
+            FileOperationError: 文件夹创建失败。
+        """
+        if not source_files:
+            raise InvalidContentUnitNameError("源文件列表不能为空")
+
+        # 校验所有源文件在 staging_path 下
+        for source_file in source_files:
+            if not _is_in_directory(source_file, staging_path):
+                raise SourceNotInStagingError(
+                    f"源文件不在暂存区下：{source_file} 不在 {staging_path} 内"
+                )
+
+        # 解析名称（F1：按列表顺序的第一项提取名，由调用方保证显示顺序）
+        first_file = source_files[0]
+        if name is None:
+            name = extract_mod_name(first_file.name)
+        name = name.strip()
+        if not name:
+            raise InvalidContentUnitNameError("Mod 组名称不能为空")
+
+        target_folder = staging_path / name
+
+        if self._uow is not None:
+            with self._uow.transaction():
+                return self._create_content_unit_from_files_core(source_files, target_folder)
+        return self._create_content_unit_from_files_core(source_files, target_folder)
+
+    def _create_content_unit_from_files_core(
+        self,
+        source_files: list[Path],
+        target_folder: Path,
+    ) -> CreateContentUnitResult:
+        """批量创建核心逻辑：建文件夹 + 逐个移入 + 取消旧标记 + 标记新 ContentUnit。
+
+        容错策略（D1）：逐个移动，失败记日志不中断，最终汇总返回。
+        """
+        # 步骤 1：创建新文件夹（若已存在抛 ConflictError，由调用方处理）
+        self._file_op.new_folder(target_folder)
+
+        # 步骤 2：逐个移入源文件（容错：失败记日志不中断）
+        success_count = 0
+        failure_count = 0
+        moved_files: list[Path] = []
+        for source_file in source_files:
+            target_file = target_folder / source_file.name
+            try:
+                self._file_op.move(source_file, target_file)
+                moved_files.append(source_file)
+                success_count += 1
+            except (FileOperationError, OSError) as move_err:
+                logger.warning("移动源文件失败，跳过：%s：%s", source_file, move_err)
+                failure_count += 1
+
+        # 步骤 3：取消已移动源文件的旧 ContentUnit 标记
+        for source_file in moved_files:
+            old_unit = self._content.get_by_path(str(source_file))
+            if old_unit is not None:
+                try:
+                    self._content.unmark_content_unit(old_unit.id)
+                except (ApplicationError, RepositoryError, sqlite3.Error):
+                    logger.exception("取消源文件旧 ContentUnit 标记失败：path=%s", source_file)
+
+        # 步骤 4：标记文件夹为 ContentUnit
+        try:
+            unit = self._content.mark_as_content_unit(target_folder)
+        except (ApplicationError, RepositoryError, sqlite3.Error) as create_err:
+            logger.exception(
+                "创建 ContentUnit 失败（文件已移动到 %s），请手动添加内容单元标记",
+                target_folder,
+            )
+            raise FileOperationError(f"创建 ContentUnit 失败：{create_err}") from create_err
+
+        return CreateContentUnitResult(
+            unit=unit, success_count=success_count, failure_count=failure_count
+        )
 
     def _create_content_unit_core(
         self,

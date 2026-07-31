@@ -260,7 +260,7 @@ def test_create_mod_group_full_flow(qapp, main_window_env) -> None:
     window._show_create_mod_group_dialog = lambda pure, full: pure  # noqa: SLF001
 
     try:
-        window._on_create_mod_group(entry)  # noqa: SLF001
+        window._on_create_mod_group([entry])  # noqa: SLF001
         qapp.processEvents()
     finally:
         window._show_create_mod_group_dialog = original_dialog  # noqa: SLF001
@@ -290,6 +290,93 @@ def test_create_mod_group_full_flow(qapp, main_window_env) -> None:
     # spec §7.3：暂存区文件列表显示"零散文件"，已收纳的子文件不显示
     old_entry = _find_entry_by_name(window, "BDOR Black Knight 1.0.7z")
     assert old_entry is None
+
+
+def _select_multiple_entries(qapp, window: MainWindow, names: list[str]) -> list:
+    """在中栏多选指定名称的条目，返回 FileEntry 列表。"""
+    from PySide6.QtCore import QItemSelectionModel
+
+    model = window._content_list_model  # noqa: SLF001
+    view = window._content_view  # noqa: SLF001
+    sm = view.selectionModel()
+    sm.clear()
+    entries = []
+    for row in range(model.entry_count()):
+        entry = model.entry_at(row)
+        if entry is not None and entry.name in names:
+            idx = model.index(row, 0)
+            sm.select(idx, QItemSelectionModel.SelectionFlag.Select)
+            entries.append(entry)
+    qapp.processEvents()
+    assert len(entries) == len(names), f"期望选中 {len(names)} 项，实际 {len(entries)} 项"
+    return entries
+
+
+def test_create_mod_group_multi_select(qapp, main_window_env) -> None:
+    """UX 重构 Phase 1 Task 1 Commit 3：多选文件创建 Mod 组，所有文件移入同一文件夹。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    # 多选两个压缩包文件
+    entries = _select_multiple_entries(
+        qapp, window, ["BDOR Black Knight 1.0.7z", "SkyUI 5.1 SE.zip"]
+    )
+
+    # Mock 对话框返回指定名称
+    original_dialog = window._show_create_mod_group_dialog  # noqa: SLF001
+    window._show_create_mod_group_dialog = lambda pure, full: "CombinedMod"  # noqa: SLF001
+
+    try:
+        window._on_create_mod_group(entries)  # noqa: SLF001
+        qapp.processEvents()
+    finally:
+        window._show_create_mod_group_dialog = original_dialog  # noqa: SLF001
+
+    # 文件夹被创建
+    target_folder = root_dir / "Stash" / "CombinedMod"
+    assert target_folder.is_dir()
+    # 两个源文件都被移入
+    assert (target_folder / "BDOR Black Knight 1.0.7z").is_file()
+    assert (target_folder / "SkyUI 5.1 SE.zip").is_file()
+    assert not (root_dir / "Stash" / "BDOR Black Knight 1.0.7z").exists()
+    assert not (root_dir / "Stash" / "SkyUI 5.1 SE.zip").exists()
+    # ContentUnit 创建
+    unit = window._content_service.get_by_path(str(target_folder))  # noqa: SLF001
+    assert unit is not None
+    assert unit.is_marked is True
+
+
+def test_create_mod_group_menu_hidden_when_dir_selected(qapp, main_window_env) -> None:
+    """E1：多选含文件夹时不显示「创建 Mod 组」菜单项。"""
+    from app import ui_constants as ui
+    from domain.models import FileEntry
+
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    # 选中 BDOR 文件 + preview.jpg（都是文件）→ 应显示创建 Mod 组
+    entries_files = _select_multiple_entries(
+        qapp, window, ["BDOR Black Knight 1.0.7z", "preview.jpg"]
+    )
+    actions = window._build_content_menu_actions(entries_files)  # noqa: SLF001
+    labels = [a[0] for a in actions]
+    assert ui.MENU_CREATE_MOD_GROUP in labels
+
+    # 选中文件 + 模拟文件夹条目 → 不应显示创建 Mod 组
+    fake_dir_entry = FileEntry(
+        name="fakedir",
+        path=str(root_dir / "Stash" / "fakedir"),
+        is_dir=True,
+        modified_at="2026-07-14T00:00:00Z",
+        size=None,
+        content_unit=None,
+    )
+    mixed_entries = [entries_files[0], fake_dir_entry]
+    actions_mixed = window._build_content_menu_actions(mixed_entries)  # noqa: SLF001
+    labels_mixed = [a[0] for a in actions_mixed]
+    assert ui.MENU_CREATE_MOD_GROUP not in labels_mixed
 
 
 def test_create_mod_group_appears_in_tree(qapp, main_window_env) -> None:
@@ -333,7 +420,7 @@ def test_create_mod_group_appears_in_tree(qapp, main_window_env) -> None:
         window._content_view.currentIndex().row()  # noqa: SLF001
     )
     window._show_create_mod_group_dialog = lambda pure, full: pure  # noqa: SLF001
-    window._on_create_mod_group(entry)  # noqa: SLF001
+    window._on_create_mod_group([entry])  # noqa: SLF001
     qapp.processEvents()
 
     # 刷新后暂存区子节点应包含新文件夹
@@ -355,7 +442,7 @@ def test_create_mod_group_cancel_dialog(qapp, main_window_env) -> None:
     # Mock 对话框返回 None（用户取消）
     window._show_create_mod_group_dialog = lambda pure, full: None  # noqa: SLF001
 
-    window._on_create_mod_group(entry)  # noqa: SLF001
+    window._on_create_mod_group([entry])  # noqa: SLF001
     qapp.processEvents()
 
     # 无文件夹创建
@@ -383,7 +470,7 @@ def test_create_mod_group_name_conflict(qapp, main_window_env, monkeypatch) -> N
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **kw: None)
 
     # 应不抛异常（QMessageBox 被 mock）
-    window._on_create_mod_group(entry)  # noqa: SLF001
+    window._on_create_mod_group([entry])  # noqa: SLF001
     qapp.processEvents()
 
     # 源文件仍在原位（未被移动）
@@ -595,7 +682,7 @@ def test_chinese_filename_mod_group(qapp, main_window_env) -> None:
     )
     window._show_create_mod_group_dialog = lambda pure, full: pure  # noqa: SLF001
 
-    window._on_create_mod_group(entry)  # noqa: SLF001
+    window._on_create_mod_group([entry])  # noqa: SLF001
     qapp.processEvents()
 
     target_folder = root_dir / "Stash" / "寒霜之心"

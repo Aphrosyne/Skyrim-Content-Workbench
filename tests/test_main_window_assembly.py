@@ -190,7 +190,7 @@ def _create_mod_group(qapp, window: MainWindow, source_name: str, chosen_name: s
     original_dialog = window._show_create_mod_group_dialog  # noqa: SLF001
     window._show_create_mod_group_dialog = lambda pure, full: chosen_name  # noqa: SLF001
     try:
-        window._on_create_mod_group(entry)  # noqa: SLF001
+        window._on_create_mod_group([entry])  # noqa: SLF001
         qapp.processEvents()
     finally:
         window._show_create_mod_group_dialog = original_dialog  # noqa: SLF001
@@ -207,10 +207,11 @@ def _create_mod_group(qapp, window: MainWindow, source_name: str, chosen_name: s
 # === 装配面板显隐 ===
 
 
-def test_assembly_panel_hidden_in_browse_mode(qapp, main_window_env) -> None:
-    """默认状态：装配面板隐藏。"""
+def test_assembly_panel_visible_by_default(qapp, main_window_env) -> None:
+    """UX 重构 Phase 1 Task 1 Commit 3：装配面板始终可见，未绑定时显示空状态。"""
     window, _, _, _ = main_window_env
-    assert not window.assembly_panel_visible()
+    assert window.assembly_panel_visible()
+    assert window.assembly_panel_current_unit_id() is None
 
 
 # === 创建 Mod 组后自动绑定 ===
@@ -311,60 +312,6 @@ def test_on_assembly_add_file_conflict(qapp, main_window_env, monkeypatch) -> No
 
     # 源文件未被移动（冲突）
     assert src_path.is_file()
-
-
-# === 装配面板回调：remove_file ===
-
-
-@pytest.mark.skip(reason="UX 重构 Phase 1 Task 1 L2：移除文件功能已禁用")
-def test_on_assembly_remove_file_moves_back_to_staging(qapp, main_window_env) -> None:
-    """_on_assembly_remove_file：Mod 组内文件移回暂存区根目录。"""
-    window, _, root_dir, _ = main_window_env
-    staging = root_dir / "Stash"
-    _select_staging(qapp, window)
-    qapp.processEvents()
-
-    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
-    # 把 preview.jpg 移入 Mod 组
-    window._on_assembly_add_file(staging / "preview.jpg")  # noqa: SLF001
-    qapp.processEvents()
-    assert (mod_folder / "preview.jpg").is_file()
-    assert window.assembly_panel_entry_count() == 2
-
-    # 移除 preview.jpg
-    window._on_assembly_remove_file("preview.jpg")  # noqa: SLF001
-    qapp.processEvents()
-
-    # 文件已移回暂存区根目录（不保留原子目录结构）
-    assert (staging / "preview.jpg").is_file()
-    assert not (mod_folder / "preview.jpg").exists()
-    # 装配面板刷新后只剩 1 个文件
-    assert window.assembly_panel_entry_count() == 1
-
-
-@pytest.mark.skip(reason="UX 重构 Phase 1 Task 1 L2：移除文件功能已禁用")
-def test_on_assembly_remove_file_conflict(qapp, main_window_env, monkeypatch) -> None:
-    """_on_assembly_remove_file：暂存区已存在同名文件 → ConflictError 提示。"""
-    window, _, root_dir, _ = main_window_env
-    staging = root_dir / "Stash"
-    _select_staging(qapp, window)
-    qapp.processEvents()
-
-    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
-    # 把 preview.jpg 移入 Mod 组
-    window._on_assembly_add_file(staging / "preview.jpg")  # noqa: SLF001
-    qapp.processEvents()
-
-    # 在暂存区手动放置同名文件，制造冲突
-    (staging / "preview.jpg").write_bytes(b"\x00" * 10)
-
-    monkeypatch.setattr("app.main_window.QMessageBox.warning", lambda *a, **kw: None)
-    # 移除 preview.jpg（目标暂存区已存在）
-    window._on_assembly_remove_file("preview.jpg")  # noqa: SLF001
-    qapp.processEvents()
-
-    # Mod 组内文件仍在（移动失败）
-    assert (mod_folder / "preview.jpg").is_file()
 
 
 # === 装配面板回调：rename_as_cover ===

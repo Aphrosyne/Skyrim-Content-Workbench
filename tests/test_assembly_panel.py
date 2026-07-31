@@ -17,7 +17,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QModelIndex, Qt  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
 
 from app.assembly_panel import AssemblyListModel, AssemblyPanel  # noqa: E402
 from application.assembly_service import AssemblyService  # noqa: E402
@@ -162,20 +162,19 @@ def test_list_model_refresh_clears_previous(qapp, mod_group_env) -> None:
 
 
 def test_panel_initial_state(qapp, assembly_service) -> None:
-    """新建装配面板：无绑定 + 移除按钮禁用。"""
+    """新建装配面板：无绑定。"""
     service, _ = assembly_service
     panel = AssemblyPanel(service)
     assert panel.current_unit() is None
     assert panel.current_unit_id() is None
     assert panel.entry_count() == 0
-    assert not panel._remove_button.isEnabled()  # noqa: SLF001
 
 
 def test_panel_bind_mod_group_loads_files(qapp, mod_group_env) -> None:
     """bind_mod_group 后面板加载 Mod 组文件夹内容。"""
     service, unit, mod_folder, staging, _ = mod_group_env
     panel = AssemblyPanel(service)
-    panel.bind_mod_group(unit, staging)
+    panel.bind_mod_group(unit)
 
     assert panel.current_unit() is not None
     assert panel.current_unit_id() == unit.id
@@ -183,27 +182,25 @@ def test_panel_bind_mod_group_loads_files(qapp, mod_group_env) -> None:
     entry = panel.entry_at(0)
     assert entry is not None
     assert entry.name == "source.7z"
-    assert panel._remove_button.isEnabled()  # noqa: SLF001
 
 
 def test_panel_bind_none_clears(qapp, mod_group_env) -> None:
     """bind_mod_group(None) 清空面板。"""
     service, unit, _, staging, _ = mod_group_env
     panel = AssemblyPanel(service)
-    panel.bind_mod_group(unit, staging)
+    panel.bind_mod_group(unit)
     assert panel.entry_count() == 1
 
-    panel.bind_mod_group(None, None)
+    panel.bind_mod_group(None)
     assert panel.current_unit() is None
     assert panel.entry_count() == 0
-    assert not panel._remove_button.isEnabled()  # noqa: SLF001
 
 
 def test_panel_refresh_current(qapp, mod_group_env) -> None:
     """refresh_current 重新加载文件列表。"""
     service, unit, mod_folder, staging, _ = mod_group_env
     panel = AssemblyPanel(service)
-    panel.bind_mod_group(unit, staging)
+    panel.bind_mod_group(unit)
     assert panel.entry_count() == 1
 
     # 在 Mod 组文件夹内新增文件
@@ -225,45 +222,6 @@ def test_panel_close_button_triggers_callback(qapp, assembly_service) -> None:
     assert closed_called["flag"]
 
 
-def test_panel_remove_button_invokes_callback(qapp, mod_group_env) -> None:
-    """移除按钮 → 触发 on_file_removed 回调（参数为文件名）。"""
-    service, unit, _, staging, _ = mod_group_env
-    removed_filename: list[str] = []
-
-    def on_removed(name: str) -> None:
-        removed_filename.append(name)
-
-    panel = AssemblyPanel(service, on_file_removed=on_removed)
-    panel.bind_mod_group(unit, staging)
-
-    # 选中第一项
-    idx = panel._list_model.index(0, 0)  # noqa: SLF001
-    panel._list_view.setCurrentIndex(idx)  # noqa: SLF001
-    panel._on_remove_clicked()  # noqa: SLF001
-
-    assert removed_filename == ["source.7z"]
-
-
-def test_panel_remove_button_no_selection(qapp, mod_group_env, monkeypatch) -> None:
-    """移除按钮但无选中 → 显示提示，不触发回调。"""
-    service, unit, _, staging, _ = mod_group_env
-    removed_called = {"flag": False}
-
-    def on_removed(name: str) -> None:
-        removed_called["flag"] = True
-
-    panel = AssemblyPanel(service, on_file_removed=on_removed)
-    panel.bind_mod_group(unit, staging)
-
-    # 不选中任何项
-    panel._list_view.setCurrentIndex(QModelIndex())  # noqa: SLF001
-
-    # Mock QMessageBox.information 避免阻塞
-    monkeypatch.setattr("app.assembly_panel.QMessageBox.information", lambda *a, **kw: None)
-    panel._on_remove_clicked()  # noqa: SLF001
-    assert not removed_called["flag"]
-
-
 # === 拖拽方案已取消（2026-07-17 调整为右键菜单「加入装配」） ===
 
 
@@ -283,7 +241,7 @@ def test_panel_context_menu_rename_image(qapp, mod_group_env, monkeypatch) -> No
         renamed_paths.append(p)
 
     panel = AssemblyPanel(service, on_cover_renamed=on_rename)
-    panel.bind_mod_group(unit, staging)
+    panel.bind_mod_group(unit)
     panel.refresh_current()
 
     # 找到 preview.jpg 条目
@@ -297,20 +255,3 @@ def test_panel_context_menu_rename_image(qapp, mod_group_env, monkeypatch) -> No
 
     panel._on_rename_cover(entry)  # noqa: SLF001
     assert renamed_paths == [Path(entry.path)]
-
-
-def test_panel_context_menu_remove_via_menu(qapp, mod_group_env, monkeypatch) -> None:
-    """右键菜单"移除" → 触发 on_file_removed 回调。"""
-    service, unit, _, staging, _ = mod_group_env
-    removed: list[str] = []
-
-    def on_removed(name: str) -> None:
-        removed.append(name)
-
-    panel = AssemblyPanel(service, on_file_removed=on_removed)
-    panel.bind_mod_group(unit, staging)
-
-    entry = panel.entry_at(0)
-    assert entry is not None
-    panel._on_remove_via_menu(entry)  # noqa: SLF001
-    assert removed == [entry.name]

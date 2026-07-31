@@ -701,15 +701,15 @@ class MainWindow(QMainWindow):
 
         self._middle_splitter.addWidget(self._content_group)
 
-        # 装配面板（阶段 3 Task 4）：默认隐藏，创建/双击 Mod 组时显示
+        # 装配面板（UX 重构 Phase 1 Task 1 Commit 3）：
+        # 始终可见，未绑定时显示空状态占位「无固定内容」。
+        # 移除文件功能已移除（L2），on_file_removed 回调不再注入。
         if self._assembly_service is not None:
             self._assembly_panel = AssemblyPanel(
                 self._assembly_service,
-                on_file_removed=self._on_assembly_remove_file,
                 on_cover_renamed=self._on_assembly_rename_cover,
                 on_panel_closed=self._on_assembly_closed,
             )
-            self._assembly_panel.setVisible(False)
             self._middle_splitter.addWidget(self._assembly_panel)
             # 初始拉伸比例：文件列表占大头，装配面板占小头
             self._middle_splitter.setStretchFactor(0, 3)
@@ -891,32 +891,6 @@ class MainWindow(QMainWindow):
             self._content_empty_hint.setText("")
         # Stage 5 Task 2：记录目录导航历史
         self._record_nav_history(dir_path)
-
-    def _refresh_staging_content_list(self, staging_path: str) -> None:
-        """刷新暂存区文件列表（递归遍历暂存区下所有文件与子目录）。
-
-        阶段 3 Task 2：整理模式下中栏显示暂存区递归文件列表。
-        若路径不存在或为空，显示友好提示。
-
-        Stage 4 Task 3：整理模式不应用标签筛选（筛选栏已隐藏）。
-        """
-        try:
-            entries = self._content_service.list_staging_entries(staging_path)
-        except Exception:  # noqa: BLE001 - UI 边界需捕获所有异常
-            logger.exception("加载暂存区文件列表失败：staging_path=%s", staging_path)
-            entries = []
-
-        self._content_list_model.refresh(entries)
-        if not entries:
-            # 路径不存在或为空：显示具体提示
-            if not Path(staging_path).is_dir():
-                self._content_empty_hint.setText(
-                    ui.STAGING_LIST_PATH_INVALID.format(path=staging_path)
-                )
-            else:
-                self._content_empty_hint.setText(ui.CONTENT_LIST_EMPTY_HINT)
-        else:
-            self._content_empty_hint.setText("")
 
     # --- 标签筛选（Stage 4 Task 3） ---
 
@@ -1627,15 +1601,15 @@ class MainWindow(QMainWindow):
         # actions 元素：(label, handler, enabled)
         actions: list[tuple[str, Callable[[], None], bool]] = []
 
-        # 创建 Mod 组：单选 + 文件（非目录）+ 注入了 ContentUnitCreationService
-        # UX 重构 Phase 1 Task 1：移除整理模式限制。多选支持将在 Commit 3 添加。
+        # 创建 Mod 组：单选或多选 + 全部为文件（非目录）+ 注入了 ContentUnitCreationService
+        # UX 重构 Phase 1 Task 1 Commit 3：支持多选（E1：仅全文件时显示）
         if (
             self._content_unit_creation_service is not None
-            and len(entries) == 1
-            and not entries[0].is_dir
+            and len(entries) >= 1
+            and all(not e.is_dir for e in entries)
         ):
             actions.append(
-                (ui.MENU_CREATE_MOD_GROUP, lambda: self._on_create_mod_group(entries[0]), True)
+                (ui.MENU_CREATE_MOD_GROUP, lambda: self._on_create_mod_group(entries), True)
             )
 
         # 加入装配：单选 + 文件（非目录）+ 装配面板已绑定 Mod 组
@@ -1790,46 +1764,69 @@ class MainWindow(QMainWindow):
                 # 无图片
                 self.statusBar().showMessage(ui.MENU_QUICK_SET_COVER_NO_IMAGE, 3000)
 
-    def _on_create_mod_group(self, entry: FileEntry) -> None:
+    def _on_create_mod_group(self, entries: list[FileEntry]) -> None:
         """创建 Mod 组：弹出对话框选择/编辑名称，调用 ContentUnitCreationService。
 
-        UX 重构 Phase 1 Task 1：移除整理模式后，staging_path 改为选中文件所在父目录。
-        多选支持将在 Commit 3 添加。
+        UX 重构 Phase 1 Task 1 Commit 3：支持多选。
+        - E1：仅全部为文件（非目录）时显示菜单项（由 _build_content_menu_actions 保证）
+        - F1：按文件列表显示顺序的第一项提取 Mod 名
+        - D1 调整：原 D1 逐个调用因文件夹已存在冲突不可行，改用批量接口
+          create_content_unit_from_files（一次建文件夹 + 逐个移入 + 容错汇总）
         """
-        if self._content_unit_creation_service is None:
+        if self._content_unit_creation_service is None or not entries:
             return
 
-        # 选中文件所在父目录作为 staging_path（原整理模式使用 _organize_workarea_path）
-        staging_path = Path(entry.path).parent
+        # F1：按显示顺序第一项提取名（entries 由调用方按显示顺序传入）
+        first_entry = entries[0]
+        # 选中文件所在父目录作为 staging_path
+        staging_path = Path(first_entry.path).parent
 
         # 提取两种命名选项
         from application.content_unit_creation_service import extract_mod_name
 
-        pure_name = extract_mod_name(entry.name)
+        pure_name = extract_mod_name(first_entry.name)
         # 完整原名：去扩展名
-        full_name = Path(entry.name).stem
+        full_name = Path(first_entry.name).stem
 
         # 弹出对话框
         chosen_name = self._show_create_mod_group_dialog(pure_name, full_name)
         if chosen_name is None:
             return  # 用户取消
 
+        source_files = [Path(e.path) for e in entries]
         try:
-            unit = self._content_unit_creation_service.create_content_unit_from_file(
-                Path(entry.path),
+            result = self._content_unit_creation_service.create_content_unit_from_files(
+                source_files,
                 staging_path,
                 name=chosen_name,
             )
             # D3：ContentUnitCreationService 已注入 UoW，事务由 Service 内部管理，无需 _commit
             # 刷新目录树（新文件夹已写入 folder_cache）
             self._refresh_tree()
-            # 刷新当前目录文件列表（原整理模式刷新暂存区列表）
+            # 刷新当前目录文件列表
             self._refresh_content_list(str(staging_path))
             # 绑定装配面板到新创建的 Mod 组
-            self._bind_assembly_panel(unit)
-            self.statusBar().showMessage(
-                ui.CREATE_MOD_GROUP_DEFAULT_OK.format(name=chosen_name), 3000
-            )
+            self._bind_assembly_panel(result.unit)
+            # 状态栏汇总
+            if result.failure_count == 0:
+                if result.success_count == 1:
+                    self.statusBar().showMessage(
+                        ui.CREATE_MOD_GROUP_DEFAULT_OK.format(name=chosen_name), 3000
+                    )
+                else:
+                    self.statusBar().showMessage(
+                        ui.CREATE_MOD_GROUP_MULTI_OK.format(
+                            name=chosen_name, count=result.success_count
+                        ),
+                        5000,
+                    )
+            else:
+                self.statusBar().showMessage(
+                    ui.CREATE_MOD_GROUP_MULTI_PARTIAL.format(
+                        ok=result.success_count, fail=result.failure_count
+                    ),
+                    5000,
+                )
         except Exception as e:  # noqa: BLE001
             self._handle_service_error(e, ui.CREATE_MOD_GROUP_FAILED, rollback=False)
 
@@ -2120,14 +2117,13 @@ class MainWindow(QMainWindow):
     def _bind_assembly_panel(self, unit: ContentUnit | None) -> None:
         """绑定/解绑装配面板到指定 Mod 组 ContentUnit。
 
-        UX 重构 Phase 1 Task 1（K1 决策）：移除模式分支。
-        - 绑定 unit 时显示装配面板并刷新文件列表；unit 为 None 时隐藏面板。
-        - staging_path 传 None（L2 决策：移除文件功能已禁用，staging_path 不再需要）。
+        UX 重构 Phase 1 Task 1 Commit 3：
+        - 装配面板始终可见，未绑定时显示空状态占位（bind_mod_group(None)）。
+        - 移除 staging_path 参数（L2：移除文件功能已移除）。
         """
         if self._assembly_panel is None:
             return
-        self._assembly_panel.bind_mod_group(unit, None)
-        self._assembly_panel.setVisible(unit is not None)
+        self._assembly_panel.bind_mod_group(unit)
         # 同步快速插入按钮可用性（C2：永久禁用，此处保留调用不删方法）
         self._update_quick_insert_button_state()
 
@@ -2153,15 +2149,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(ui.ASSEMBLY_ADD_FILE_OK.format(name=src_path.name), 3000)
         except Exception as e:  # noqa: BLE001
             self._handle_service_error(e, ui.ASSEMBLY_ADD_FILE_FAILED)
-
-    def _on_assembly_remove_file(self, filename: str) -> None:
-        """装配面板移除文件（L2 决策：Task 1 已禁用此功能，Task 4 正式移除）。
-
-        UX 重构 Phase 1 Task 1：移除整理模式后，staging_path（移回目标）消失。
-        此功能将在 Commit 3 / Task 4 正式移除 UI，此处保留方法签名但 early return。
-        """
-        # L2 决策：Task 1 移除"移除文件"功能。方法保留待 Commit 3 移除 UI 时一并清理。
-        return
 
     def _on_assembly_rename_cover(self, image_path: Path) -> None:
         """装配面板右键重命名预览图：rename_as_cover + 刷新 + 提交。
