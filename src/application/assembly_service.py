@@ -268,19 +268,37 @@ class AssemblyService:
             FileOperationError: 其他文件操作失败。
         """
         unit = self._get_unit_or_raise(unit_id)
-        folder_path = Path(unit.path)
+        return self.rename_as_cover_by_path(Path(unit.path), image_path)
 
-        # 校验 image_path 在 Mod 组文件夹内
+    def rename_as_cover_by_path(self, folder_path: Path, image_path: Path) -> Path:
+        """按文件夹名重命名图片（不依赖 ContentUnit，UX 重构 Task 2 文件夹透视器）。
+
+        逻辑与 rename_as_cover 一致，但直接接受 folder_path 参数，
+        支持非内容单元文件夹的图片重命名封面。
+
+        Args:
+            folder_path: 待透视的文件夹路径。
+            image_path: 待重命名的图片完整路径（必须在 folder_path 内）。
+
+        Returns:
+            重命名后的新路径。
+
+        Raises:
+            InvalidContentUnitPathError: image_path 不在 folder_path 内或非图片。
+            ConflictError: 目标名称已存在。
+            FileOperationError: 其他文件操作失败。
+        """
+        # 校验 image_path 在文件夹内
         if not _is_in_directory(image_path, folder_path):
             raise InvalidContentUnitPathError(
-                f"图片不在 Mod 组文件夹内：{image_path} 不在 {folder_path} 内"
+                f"图片不在文件夹内：{image_path} 不在 {folder_path} 内"
             )
 
         # 校验为图片
         if not is_image_file(image_path):
             raise InvalidContentUnitPathError(f"文件不是支持的图片格式：{image_path}")
 
-        # Mod 组名 = 文件夹名（与 ContentUnitCreationService 一致）
+        # 文件夹名作为新名（与 ContentUnitCreationService 一致）
         mod_name = folder_path.name
         ext = image_path.suffix  # 保留原扩展名（含点）
 

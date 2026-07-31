@@ -220,6 +220,8 @@ ASSEMBLY_PANEL_FOLDER_HINT = "当前文件夹：{name}"
 ASSEMBLY_PANEL_EMPTY = "无固定内容"
 ASSEMBLY_MENU_RENAME_COVER = "重命名为与 Mod 组同名"
 ASSEMBLY_MENU_COPY_PATH = "复制路径"
+# UX 重构 Phase 1 Task 2 Commit 2：空白处移动整个透视文件夹
+ASSEMBLY_MENU_MOVE_FOLDER = "移动到..."
 # UX 重构 Phase 1 Task 2（B2-2）：移除 ASSEMBLY_ADD_FILE_OK/FAILED，加入装配功能已删
 ASSEMBLY_RENAME_COVER_OK = "已重命名为：{name}"
 ASSEMBLY_RENAME_COVER_FAILED = "重命名失败"

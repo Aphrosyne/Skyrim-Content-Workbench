@@ -77,6 +77,21 @@
 - 装配面板后续可能改名为"文件夹透视器"以匹配新语义（待用户确认时机，登记为技术债）。
 - 装配面板内文件右键菜单继承中栏操作（重命名/复制/剪切/移动到/复制路径 + 图片重命名封面 + 空白处移动到）→ Commit 2 实现。
 
+**Task 2 实施记录（Commit 2）：**
+
+- 装配面板右键菜单完整继承中栏文件操作：重命名/复制/剪切/粘贴/移动到/删除/复制路径（通过 `on_file_op(action, entries)` 回调委托 MainWindow 复用现有逻辑）。
+- 图片右键额外加「重命名为文件夹名」：新增 `AssemblyService.rename_as_cover_by_path(folder_path, image_path)`，支持非内容单元文件夹。
+- 空白处右键「移动到...」：移动整个透视文件夹，移动成功后解绑装配面板（A3-1）。
+- `_on_assembly_rename_cover` 改用 `rename_as_cover_by_path`，按 `current_folder_path()` 重命名，支持任意文件夹。
+- 测试：新增装配面板文件操作（delete/copy_path/copy+paste）+ 非内容单元文件夹图片重命名 + `rename_as_cover_by_path` 单元测试。
+
+**Task 2 实施记录（修复 1-3，基于验收反馈）：**
+
+- **修复 1：装配面板重命名不再误入文件夹**：抽取 `_rename_entry_core(entry, refresh_middle)` 核心方法，装配面板调用时 `refresh_middle=False`，避免中栏被刷新到文件父目录（错误进入文件夹）。中栏调用仍保持 `refresh_middle=True`。
+- **修复 2：重命名弹窗初始选区忽略后缀**：新增自定义 `_show_rename_dialog` 替换原 `QInputDialog.getText`，通过 `Path.suffix` 计算选区长度，初始选中文件名部分（不含扩展名）。`preview.jpg` 只选中 `preview`，避免误改后缀。`.gitignore` 等以点开头的文件 suffix 为整个名称时全选。
+- **修复 3：装配面板空白处支持粘贴**：`_show_empty_area_menu` 新增「粘贴」菜单项，粘贴到当前透视文件夹。
+- 测试适配：`test_main_window_file_ops_task3a.py` / `test_main_window_shortcuts.py` 重命名测试从 mock `QInputDialog.getText` 改为 mock `MainWindow._show_rename_dialog`。
+
 ### Task 3：📌 钉住功能
 
 - 装配面板右上角添加小按钮 📌（Pin/Unpin 切换）

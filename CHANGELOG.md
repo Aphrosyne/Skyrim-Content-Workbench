@@ -10,6 +10,89 @@
 
 ---
 
+## [0.43.0] - 2026-07-31
+
+UX 重构 Phase 1 Task 2：装配面板迁移到右栏 + 文件操作继承
+
+装配面板从中间区分割区域迁移到右栏下方（与元数据面板上下分布，可拖拽调整比例），并扩展为"文件夹透视器"语义：单击任意文件夹内容单元即可绑定装配面板透视其内部文件，不限于已标记内容单元。装配面板右键菜单完整继承中栏文件操作（重命名/复制/剪切/粘贴/移动到/删除/复制路径），图片额外支持「重命名为文件夹名」，空白处支持「移动到...」整体迁移透视文件夹。schema_version 维持 v12，无数据库迁移。
+
+**新增功能**
+
+- **布局重构**：[main_window.py](src/app/main_window.py) 移除中栏 `_middle_splitter`，新建右栏 `_right_splitter`（元数据上 + 装配下，初始比例 3:2），装配面板固定在右栏下方
+- **单击绑定（A1-1）**：单击文件夹内容单元 → 装配面板绑定；单击其他 → 解绑；双击文件夹 → 进入目录（与现有行为一致）
+- **装配面板透视器语义**：扩展为可透视任意文件夹（不限于内容单元），新增 `AssemblyService.list_folder_files(path)` + `AssemblyPanel.bind_folder(path)` + `MainWindow._bind_assembly_folder`
+- **关闭按钮移除（B1-1）**：装配面板固定在右栏，`_close_button` / `_on_close_clicked` / `on_panel_closed` 回调 / `_on_assembly_closed` 一并清理
+- **「加入装配」菜单项移除（B2-2）**：`_on_assembly_add_file` / `MENU_ADD_TO_ASSEMBLY` / `ASSEMBLY_ADD_FILE_OK/FAILED` 清理，Task 4 由「添加到钉住文件夹」替代
+- **装配面板右键菜单继承中栏操作**：重命名/复制/剪切/粘贴/移动到/删除/复制路径（通过 `on_file_op(action, entries)` 回调委托 MainWindow 复用现有逻辑）
+- **图片右键「重命名为文件夹名」**：新增 `AssemblyService.rename_as_cover_by_path(folder_path, image_path)`，支持非内容单元文件夹
+- **空白处右键「移动到...」**：移动整个透视文件夹，移动成功后解绑装配面板（A3-1）
+- **空白处右键「粘贴」**：粘贴到当前透视文件夹（修复 3）
+- [ui_constants.py](src/app/ui_constants.py) 新增文案：ASSEMBLY_MENU_MOVE_FOLDER
+
+**修复（基于验收反馈）**
+
+- **修复 1：装配面板重命名不再误入文件夹**：抽取 `_rename_entry_core(entry, refresh_middle)` 核心方法，装配面板调用时 `refresh_middle=False`，避免中栏被刷新到文件父目录（错误进入文件夹）。中栏调用仍保持 `refresh_middle=True`
+- **修复 2：重命名弹窗初始选区忽略后缀**：新增自定义 `_show_rename_dialog` 替换原 `QInputDialog.getText`，通过 `Path.suffix` 计算选区长度，初始选中文件名部分（不含扩展名）。`preview.jpg` 只选中 `preview`，避免误改后缀。`.gitignore` 等以点开头的文件 suffix 为整个名称时全选
+- **修复 3：装配面板空白处支持粘贴**：`_show_empty_area_menu` 新增「粘贴」菜单项，粘贴到当前透视文件夹
+
+**设计要点**
+
+- **装配面板语义扩展**：从"仅 Mod 组内容单元"扩展为"任意文件夹透视器"，单击非内容单元文件夹也能透视其内部文件，封面重命名功能通过 `rename_as_cover_by_path` 支持任意文件夹
+- **信号循环防护**：`_bind_assembly_panel` → `bind_mod_group` → `_refresh_file_list` 仅刷新装配面板内部 model，不反向修改 content_view 选区
+- **文件操作委托**：装配面板通过 `on_file_op(action, entries)` 回调委托 MainWindow，复用中栏现有文件操作逻辑（重命名/复制/剪切/粘贴/移动到/删除/复制路径），避免逻辑重复
+- **重命名对话框选区**：QInputDialog.getText 不支持设置初始选区，改用自定义 QDialog + QLineEdit.setSelection 实现忽略后缀的选区
+- **重命名刷新策略**：通过 `refresh_middle` 参数控制是否刷新中栏，装配面板重命名只刷新装配面板自身（`refresh_current`），中栏重命名保持原有刷新父目录行为
+
+**测试**
+
+- 新增 `AssemblyService.list_folder_files` 单元测试 5 个用例：列出文件 / 子目录 / 排序 / 非目录返回空 / 不存在路径返回空
+- 新增 `AssemblyService.rename_as_cover_by_path` 单元测试 5 个用例：按文件夹名重命名 / 多图后缀 / 非图片异常 / 路径不在文件夹内 / 已重命名幂等
+- 新增装配面板文件操作集成测试 8 个用例：装配面板在右栏 splitter / 单击文件夹绑定 / 单击非内容单元文件夹透视 / 非内容单元文件夹图片重命名 / 文件操作（delete/copy_path/copy+paste）
+- 适配重命名对话框变更：`test_main_window_file_ops_task3a.py` / `test_main_window_shortcuts.py` 重命名测试从 mock `QInputDialog.getText` 改为 mock `MainWindow._show_rename_dialog`
+- 全量回归：1252 tests passed, 4 skipped（Windows 权限相关），ruff check + format 全通过
+
+---
+
+## [0.42.0] - 2026-07-31
+
+UX 重构 Phase 1 Task 1：移除双模式切换
+
+从双模式工作区（浏览/整理）收敛为单面板 + 可钉住装配面板的统一工作区。删除顶部模式切换按钮、暂存区功能及相关数据库表，"创建 Mod 组"从整理模式独有变为统一面板中栏右键通用功能。schema_version v11 → v12 迁移（删除 staging_area 表）。本次为 Workspace 架构重构的奠基版本，后续 Task 2-7 在此基础上展开。
+
+**移除功能（破坏性变更）**
+
+- **模式切换**：删除 [mode_manager.py](src/app/mode_manager.py) / `AppMode` 枚举 / 顶部 [浏览|整理] 切换按钮 / 整理模式状态变量，删除 `MainWindow._on_mode_changed` / `_apply_mode` / `_refresh_for_mode` 等模式相关方法
+- **暂存区功能**：删除 `StagingArea` 实体 / `StagingService` / `StagingAreaRepository` / `staging_area` 表，删除目录树右键"标记为暂存区"/"取消暂存区标记"功能
+  - [staging_service.py](src/application/staging_service.py) 删除
+  - [staging_area.py](src/infrastructure/repositories/staging_area.py) 删除
+  - [db.py](src/infrastructure/db.py) `CURRENT_SCHEMA_VERSION` 11 → 12
+  - [migrations.py](src/infrastructure/migrations.py) 新增 `migrate_v11_to_v12`：DROP TABLE staging_area
+  - [folder_tree_service.py](src/application/folder_tree_service.py) 移除暂存区标记查询，目录树不再显示 `[S]` 标记
+  - [errors.py](src/application/errors.py) 删除 `StagingAreaNotFoundError` / `StagingAreaAlreadyExistsError`
+- **快速插入按钮**：保持隐藏（C2 决策），Task 4 正式移除 `QuickInsertService`
+- **死代码清理**：`ContentService.list_staging_entries` / `MainWindow._refresh_staging_content_list` 已删除
+
+**新增功能**
+
+- **多选创建 Mod 组**：`ContentUnitCreationService.create_content_unit_from_files` 批量接口（D1 调整：原 D1「逐个调用 + 容错」因文件夹已存在 ConflictError 不可行，改为一次建文件夹 + 逐个移入 + 容错汇总）
+- **装配面板始终可见**：未绑定时显示空状态占位「无固定内容」（原 Task 2 的部分行为提前）
+- 装配面板「移除文件」功能已在 Commit 3 移除（L2 提前，原计划 Task 4），UI/回调/常量一并清理
+
+**设计要点**
+
+- **数据模型原则**：标记 = 数据库有记录，取消标记 = DELETE 记录。不引入 `status` 列或 `is_marked` 字段表达"曾经标记过"语义。schema v11 遗留的 `is_marked` 字段在 Task 6 中一并清理
+- **Mod 组 = 文件夹内容单元**：不引入 `ModGroup` 实体，"创建 Mod 组"是 UI 操作（建文件夹 + 移入文件 + 标记为内容单元）
+- **多选创建 Mod 组容错**：`create_content_unit_from_files` 一次建文件夹 + 逐个移入 + 容错汇总，避免逐个调用 + 容错时因文件夹已存在 ConflictError 不可行的问题
+
+**测试**
+
+- 删除 `test_mode_manager.py` / `test_main_window_mode.py` / `test_main_window_quick_insert.py` / `test_main_window_staging_list.py` / `test_staging_service.py` / `test_staging_area_repository.py` / `test_content_service.py`（暂存区相关测试）
+- 适配 `test_main_window_assembly.py` / `test_main_window_context_menu_task3.py` / `test_main_window_metadata.py` / `test_main_window_tag_filter.py` / `test_main_window_view_switch.py`：移除模式相关测试用例
+- 新增 `test_migrations.py` v11→v12 迁移测试
+- 新增多选创建 Mod 组测试
+
+---
+
 ## [0.41.0] - 2026-07-31
 
 Stage 5 完成后全面 Code Review 修复版本

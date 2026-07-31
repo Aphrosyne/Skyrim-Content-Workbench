@@ -8,7 +8,8 @@
 - _show_empty_area_context_menu：空白区域右键新建文件夹
 - 未注入 FileOperationService 时菜单项不显示
 
-对话框通过 monkeypatch QInputDialog.getText / QMessageBox.question 模拟。
+对话框通过 monkeypatch QInputDialog.getText（新建文件夹）/
+MainWindow._show_rename_dialog（重命名）/ QMessageBox.question 模拟。
 """
 
 from __future__ import annotations
@@ -404,7 +405,7 @@ class TestRename:
         qapp.processEvents()
         entry = _select_entry(qapp, window, "preview.jpg")
 
-        monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("renamed.jpg", True))
+        monkeypatch.setattr(window, "_show_rename_dialog", lambda old_name: ("renamed.jpg", True))
 
         window._on_rename_entry(entry)  # noqa: SLF001
         qapp.processEvents()
@@ -427,7 +428,7 @@ class TestRename:
         qapp.processEvents()
         entry = _select_entry(qapp, window, "preview.jpg")
 
-        monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("", False))
+        monkeypatch.setattr(window, "_show_rename_dialog", lambda old_name: ("", False))
 
         window._on_rename_entry(entry)  # noqa: SLF001
         qapp.processEvents()
@@ -442,7 +443,7 @@ class TestRename:
         qapp.processEvents()
         entry = _select_entry(qapp, window, "preview.jpg")
 
-        monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("preview.jpg", True))
+        monkeypatch.setattr(window, "_show_rename_dialog", lambda old_name: ("preview.jpg", True))
 
         window._on_rename_entry(entry)  # noqa: SLF001
         qapp.processEvents()
@@ -461,7 +462,7 @@ class TestRename:
         # 预创建冲突文件
         (root_dir / "Stash" / "exists.jpg").write_bytes(b"existing")
 
-        monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("exists.jpg", True))
+        monkeypatch.setattr(window, "_show_rename_dialog", lambda old_name: ("exists.jpg", True))
         # Mock QMessageBox.warning 避免阻塞
         warning_calls = []
         monkeypatch.setattr(QMessageBox, "warning", lambda *a, **kw: warning_calls.append(a))
@@ -482,7 +483,7 @@ class TestRename:
         entry = _select_entry(qapp, window, "preview.jpg")
 
         monkeypatch.setattr(
-            QInputDialog, "getText", lambda *args, **kwargs: ("list_refresh.jpg", True)
+            window, "_show_rename_dialog", lambda old_name: ("list_refresh.jpg", True)
         )
 
         window._on_rename_entry(entry)  # noqa: SLF001

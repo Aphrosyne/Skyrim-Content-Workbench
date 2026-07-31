@@ -94,6 +94,10 @@ def main_window_env(qapp, tmp_path: Path):
     from application.quick_insert_service import QuickInsertService
 
     quick_insert_service = QuickInsertService(file_op_service, ContentUnitRepository(conn))
+    # UX 重构 Phase 1 Task 2 Commit 2：注入 clipboard_service 用于装配面板文件操作
+    from application.clipboard_service import ClipboardService
+
+    clipboard_service = ClipboardService()
 
     root_dir = _make_mod_tree(tmp_path)
     root = managed_service.add_root(root_dir)
@@ -110,6 +114,8 @@ def main_window_env(qapp, tmp_path: Path):
         content_unit_creation_service=content_unit_creation_service,
         assembly_service=assembly_service,
         quick_insert_service=quick_insert_service,
+        file_operation_service=file_op_service,
+        clipboard_service=clipboard_service,
     )
     yield window, conn, root_dir, root
 
@@ -443,3 +449,139 @@ def test_single_click_non_content_unit_folder_inspects(qapp, main_window_env) ->
     entry = panel.entry_at(0)
     assert entry is not None
     assert entry.name == "readme.txt"
+
+
+# === UX 重构 Phase 1 Task 2 Commit 2：装配面板文件操作 ===
+
+
+def test_assembly_file_op_delete(qapp, main_window_env, monkeypatch) -> None:
+    """装配面板右键删除文件：文件被移至回收站 + 装配面板刷新。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+    # 在 Mod 组内放置一个额外文件
+    (mod_folder / "extra.txt").write_text("data", encoding="utf-8")
+    window._assembly_panel.refresh_current()  # noqa: SLF001
+    qapp.processEvents()
+    assert window.assembly_panel_entry_count() == 2
+
+    # 找到 extra.txt 条目
+    panel = window._assembly_panel  # noqa: SLF001
+    extra_entry = None
+    for i in range(panel.entry_count()):
+        e = panel.entry_at(i)
+        if e is not None and e.name == "extra.txt":
+            extra_entry = e
+            break
+    assert extra_entry is not None
+
+    # Mock 确认对话框返回 Yes
+    monkeypatch.setattr(
+        "app.main_window.QMessageBox.question",
+        lambda *a, **kw: __import__("PySide6").QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+    # 直接调用 _on_assembly_file_op（绕过 QMenu.exec）
+    window._on_assembly_file_op("delete", [extra_entry])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 文件已删除
+    assert not (mod_folder / "extra.txt").exists()
+    # 装配面板刷新后只剩 1 个文件
+    assert window.assembly_panel_entry_count() == 1
+
+
+def test_assembly_file_op_copy_path(qapp, main_window_env, monkeypatch) -> None:
+    """装配面板右键复制路径：路径写入系统剪贴板。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+    panel = window._assembly_panel  # noqa: SLF001
+    entry = panel.entry_at(0)
+    assert entry is not None
+
+    # Mock 系统剪贴板
+    captured = {"text": None}
+
+    class FakeClip:
+        def setText(self, text):
+            captured["text"] = text
+
+    monkeypatch.setattr("app.main_window.QApplication.clipboard", lambda: FakeClip())
+
+    window._on_assembly_file_op("copy_path", [entry])  # noqa: SLF001
+    qapp.processEvents()
+    assert captured["text"] == entry.path
+
+
+def test_assembly_rename_cover_non_content_unit_folder(qapp, main_window_env) -> None:
+    """非内容单元文件夹内图片右键重命名封面：用文件夹名重命名（rename_as_cover_by_path）。"""
+    window, _, root_dir, _ = main_window_env
+    staging = root_dir / "Stash"
+    # 创建非内容单元文件夹 + 图片
+    plain_folder = staging / "PlainMod"
+    plain_folder.mkdir()
+    (plain_folder / "preview.jpg").write_bytes(b"\x00" * 50)
+
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    _select_entry_by_name(qapp, window, "PlainMod")
+    qapp.processEvents()
+
+    # 装配面板透视 PlainMod（非内容单元）
+    panel = window._assembly_panel  # noqa: SLF001
+    assert panel.current_unit_id() is None
+    assert panel.current_folder_path() == plain_folder
+
+    # 重命名 preview.jpg → PlainMod.jpg
+    window._on_assembly_rename_cover(plain_folder / "preview.jpg")  # noqa: SLF001
+    qapp.processEvents()
+
+    assert (plain_folder / "PlainMod.jpg").is_file()
+    assert not (plain_folder / "preview.jpg").exists()
+
+
+def test_assembly_file_op_copy_and_paste(qapp, main_window_env) -> None:
+    """装配面板右键复制+粘贴：文件复制到当前透视文件夹。"""
+    window, _, root_dir, _ = main_window_env
+    staging = root_dir / "Stash"
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "MyMod")
+
+    # 重新选中暂存区，复制 preview.jpg 到剪贴板
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    src_entry = _find_entry_by_name(window, "preview.jpg")
+    assert src_entry is not None
+
+    # 通过装配面板 file_op 复制 preview.jpg（用装配面板的 copy action）
+    # 先构造一个 FileEntry 表示 preview.jpg
+    from domain.models import FileEntry
+
+    preview_entry = FileEntry(
+        name="preview.jpg",
+        path=str(staging / "preview.jpg"),
+        is_dir=False,
+        modified_at="2026-07-14T00:00:00Z",
+        size=50,
+        content_unit=None,
+    )
+    window._on_assembly_file_op("copy", [preview_entry])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 装配面板仍绑定 MyMod，粘贴到 MyMod 文件夹
+    assert window.assembly_panel_current_unit_id() == unit.id
+    window._on_assembly_file_op("paste", [])  # noqa: SLF001
+    qapp.processEvents()
+
+    # preview.jpg 已复制到 Mod 组文件夹
+    assert (mod_folder / "preview.jpg").is_file()
+    # 源文件仍在（复制非移动）
+    assert (staging / "preview.jpg").is_file()
+    # 装配面板刷新后包含 2 个文件
+    assert window.assembly_panel_entry_count() == 2

@@ -429,6 +429,75 @@ class TestRenameAsCover:
             svc.rename_as_cover("nonexistent-id", img)
 
 
+# === rename_as_cover_by_path（UX 重构 Phase 1 Task 2：文件夹透视器） ===
+
+
+class TestRenameAsCoverByPath:
+    def test_renames_by_folder_name(self, assembly_env, tmp_path: Path) -> None:
+        """按文件夹名重命名图片（无需 ContentUnit 关联）。"""
+        svc, *_ = assembly_env
+        folder = tmp_path / "PlainMod"
+        folder.mkdir()
+        img = folder / "preview.png"
+        img.write_bytes(b"img-data")
+
+        result = svc.rename_as_cover_by_path(folder, img)
+
+        assert result == folder / "PlainMod.png"
+        assert result.is_file()
+        assert not img.exists()
+
+    def test_multiple_images_get_suffix(self, assembly_env, tmp_path: Path) -> None:
+        """多张图片：_2、_3 后缀。"""
+        svc, *_ = assembly_env
+        folder = tmp_path / "PlainMod"
+        folder.mkdir()
+        img1 = folder / "p1.png"
+        img1.write_bytes(b"1")
+        img2 = folder / "p2.png"
+        img2.write_bytes(b"2")
+
+        r1 = svc.rename_as_cover_by_path(folder, img1)
+        r2 = svc.rename_as_cover_by_path(folder, img2)
+
+        assert r1.name == "PlainMod.png"
+        assert r2.name == "PlainMod_2.png"
+
+    def test_non_image_raises(self, assembly_env, tmp_path: Path) -> None:
+        """非图片文件抛 InvalidContentUnitPathError。"""
+        svc, *_ = assembly_env
+        folder = tmp_path / "PlainMod"
+        folder.mkdir()
+        txt = folder / "readme.txt"
+        txt.write_bytes(b"text")
+
+        with pytest.raises(InvalidContentUnitPathError):
+            svc.rename_as_cover_by_path(folder, txt)
+
+    def test_image_outside_folder_raises(self, assembly_env, tmp_path: Path) -> None:
+        """图片不在文件夹内抛 InvalidContentUnitPathError。"""
+        svc, *_ = assembly_env
+        folder = tmp_path / "PlainMod"
+        folder.mkdir()
+        outside = tmp_path / "outside.png"
+        outside.write_bytes(b"img")
+
+        with pytest.raises(InvalidContentUnitPathError):
+            svc.rename_as_cover_by_path(folder, outside)
+
+    def test_idempotent_when_already_renamed(self, assembly_env, tmp_path: Path) -> None:
+        """图片已叫 {文件夹名}.ext 时幂等返回。"""
+        svc, *_ = assembly_env
+        folder = tmp_path / "PlainMod"
+        folder.mkdir()
+        img = folder / "PlainMod.png"
+        img.write_bytes(b"img")
+
+        result = svc.rename_as_cover_by_path(folder, img)
+
+        assert result == img
+
+
 # === is_image_file ===
 
 

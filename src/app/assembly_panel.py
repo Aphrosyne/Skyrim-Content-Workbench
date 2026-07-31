@@ -136,11 +136,15 @@ class AssemblyPanel(QWidget):
         self,
         assembly_service: AssemblyService,
         on_cover_renamed: Callable[[Path], None] | None = None,
+        on_file_op: Callable[[str, list[FileEntry]], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._service = assembly_service
         self._on_cover_renamed = on_cover_renamed
+        # UX 重构 Phase 1 Task 2 Commit 2：文件操作委托回调
+        # action ∈ {"rename", "copy", "cut", "paste", "move_to", "delete", "copy_path"}
+        self._on_file_op = on_file_op
         self._current_unit: ContentUnit | None = None
         # 当前透视的文件夹路径（bind_folder 设置，bind_mod_group 同步设置）
         self._current_folder_path: Path | None = None
@@ -273,31 +277,104 @@ class AssemblyPanel(QWidget):
         self._list_model.refresh(entries)
 
     def _on_context_menu(self, pos) -> None:  # noqa: ANN001 (Qt 信号)
-        """右键菜单：图片重命名 / 复制路径。
+        """右键菜单：文件操作 + 图片重命名封面 + 空白处移动文件夹。
 
-        UX 重构 Phase 1 Task 1 Commit 3：移除「移除文件」菜单项（L2 决策）。
+        UX 重构 Phase 1 Task 2 Commit 2：
+        - 选中文件时：重命名/复制/剪切/粘贴/移动到/删除/复制路径 + 图片重命名封面。
+        - 空白处右键：移动到...（移动整个透视的文件夹）。
+        文件操作通过 on_file_op 回调委托 MainWindow，复用中栏现有逻辑。
         """
         idx = self._list_view.indexAt(pos)
         if not idx.isValid():
+            # 空白处右键：移动整个透视的文件夹
+            self._show_empty_area_menu(pos)
             return
         entry = self._list_model.entry_at(idx.row())
         if entry is None:
             return
 
-        menu = QMenu(self)
-        actions: list[tuple[str, Callable[[], None]]] = []
+        # 收集所有选中条目（支持多选）
+        selected_entries = self._selected_entries()
+        if not selected_entries:
+            selected_entries = [entry]
 
-        # 图片：重命名为 Mod 组同名
-        if is_image_file(Path(entry.path)):
+        menu = QMenu(self)
+        actions: list[tuple[str, Callable[[], None], bool]] = []
+
+        # 图片重命名封面（单选图片）
+        if len(selected_entries) == 1 and is_image_file(Path(selected_entries[0].path)):
             actions.append(
                 (
                     ui.ASSEMBLY_MENU_RENAME_COVER,
-                    lambda: self._on_rename_cover(entry),
+                    lambda: self._on_rename_cover(selected_entries[0]),
+                    True,
                 )
             )
 
-        # 复制路径
-        actions.append((ui.ASSEMBLY_MENU_COPY_PATH, lambda: self._copy_path(entry.path)))
+        if self._on_file_op is not None:
+            # 重命名（单选）
+            if len(selected_entries) == 1:
+                actions.append(
+                    (
+                        ui.MENU_RENAME,
+                        lambda: self._on_file_op("rename", selected_entries),
+                        True,
+                    )
+                )
+            # 复制 / 剪切 / 粘贴
+            actions.append((ui.MENU_COPY, lambda: self._on_file_op("copy", selected_entries), True))
+            actions.append((ui.MENU_CUT, lambda: self._on_file_op("cut", selected_entries), True))
+            actions.append(
+                (ui.MENU_PASTE, lambda: self._on_file_op("paste", selected_entries), True)
+            )
+            # 移动到 / 删除
+            actions.append(
+                (ui.MENU_MOVE_TO, lambda: self._on_file_op("move_to", selected_entries), True)
+            )
+            actions.append(
+                (ui.MENU_DELETE, lambda: self._on_file_op("delete", selected_entries), True)
+            )
+
+        # 复制路径（单选）
+        if len(selected_entries) == 1:
+            actions.append(
+                (
+                    ui.ASSEMBLY_MENU_COPY_PATH,
+                    lambda: (
+                        self._on_file_op("copy_path", selected_entries)
+                        if self._on_file_op is not None
+                        else self._copy_path(selected_entries[0].path)
+                    ),
+                    True,
+                )
+            )
+
+        for label, _, enabled in actions:
+            act = menu.addAction(label)
+            act.setEnabled(enabled)
+
+        chosen = menu.exec(self._list_view.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        for label, handler, _ in actions:
+            if chosen.text() == label:
+                handler()
+                break
+
+    def _show_empty_area_menu(self, pos) -> None:  # noqa: ANN001 (Qt 信号)
+        """空白处右键：粘贴 + 移动整个透视的文件夹（A3-1 移动后解绑）。
+
+        UX 重构 Phase 1 Task 2 修复3：空白处也支持粘贴。
+        """
+        if self._on_file_op is None or self._current_folder_path is None:
+            return
+        menu = QMenu(self)
+        actions: list[tuple[str, Callable[[], None]]] = []
+
+        # 粘贴（修复3：空白处也支持粘贴到当前透视文件夹）
+        actions.append((ui.MENU_PASTE, lambda: self._on_file_op("paste", [])))
+        # 移动到...（移动整个透视文件夹）
+        actions.append((ui.ASSEMBLY_MENU_MOVE_FOLDER, self._move_current_folder))
 
         for label, _ in actions:
             menu.addAction(label)
@@ -309,13 +386,39 @@ class AssemblyPanel(QWidget):
                 handler()
                 break
 
+    def _move_current_folder(self) -> None:
+        """移动当前透视的整个文件夹（构造文件夹自身的 FileEntry）。"""
+        if self._current_folder_path is None:
+            return
+        folder_entry = FileEntry(
+            name=self._current_folder_path.name,
+            path=str(self._current_folder_path),
+            is_dir=True,
+            modified_at="1970-01-01T00:00:00Z",
+            size=None,
+            content_unit=None,
+        )
+        self._on_file_op("move_to", [folder_entry])
+
+    def _selected_entries(self) -> list[FileEntry]:
+        """返回当前选中的 FileEntry 列表。"""
+        sm = self._list_view.selectionModel()
+        if sm is None:
+            return []
+        result: list[FileEntry] = []
+        for idx in sm.selectedRows():
+            entry = self._list_model.entry_at(idx.row())
+            if entry is not None:
+                result.append(entry)
+        return result
+
     def _on_rename_cover(self, entry: FileEntry) -> None:
         """右键重命名预览图。"""
         if self._on_cover_renamed is not None:
             self._on_cover_renamed(Path(entry.path))
 
     def _copy_path(self, path: str) -> None:
-        """复制路径到剪贴板。"""
+        """复制路径到剪贴板（回退实现，当 on_file_op 未注入时使用）。"""
         from PySide6.QtWidgets import QApplication
 
         clipboard = QApplication.clipboard()

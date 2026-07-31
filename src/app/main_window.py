@@ -743,6 +743,7 @@ class MainWindow(QMainWindow):
             self._assembly_panel = AssemblyPanel(
                 self._assembly_service,
                 on_cover_renamed=self._on_assembly_rename_cover,
+                on_file_op=self._on_assembly_file_op,
             )
             self._right_splitter.addWidget(self._assembly_panel)
             # 初始拉伸比例：元数据 3 : 装配 2（C1 决策）
@@ -2036,35 +2037,90 @@ class MainWindow(QMainWindow):
         except Exception as e:  # noqa: BLE001
             self._handle_service_error(e, ui.MENU_OPERATION_FAILED.format(error=str(e)))
 
-    def _on_rename_entry(self, entry: FileEntry) -> None:
-        """右键条目 → 重命名。"""
+    def _show_rename_dialog(self, old_name: str) -> tuple[str, bool]:
+        """弹出重命名对话框，预填当前名称，选中文件名部分（不含扩展名）。
+
+        UX 重构 Phase 1 Task 2 修复2：避免重命名时误改后缀，
+        初始选区忽略扩展名（如 "readme.txt" 只选中 "readme"）。
+
+        Returns:
+            (new_name, ok)：new_name 为去空白后的名称；ok 为是否确认。
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle(ui.MENU_RENAME_DIALOG_TITLE)
+        layout = QVBoxLayout(dialog)
+
+        label = QLabel(ui.MENU_RENAME_DIALOG_LABEL)
+        layout.addWidget(label)
+
+        edit = QLineEdit(old_name)
+        layout.addWidget(edit)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        # 选中文件名部分（不含扩展名）
+        # .gitignore 等以点开头的文件 suffix 为整个名称，此时全选
+        old_path = Path(old_name)
+        suffix = old_path.suffix
+        if suffix and len(suffix) < len(old_name):
+            select_len = len(old_name) - len(suffix)
+        else:
+            select_len = len(old_name)
+        if 0 < select_len < len(old_name):
+            edit.setSelection(0, select_len)
+        else:
+            edit.selectAll()
+        edit.setFocus()
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            return edit.text().strip(), True
+        return "", False
+
+    def _rename_entry_core(self, entry: FileEntry, refresh_middle: bool = True) -> bool:
+        """重命名核心逻辑。
+
+        UX 重构 Phase 1 Task 2 修复1：抽取核心逻辑，装配面板调用时
+        refresh_middle=False，避免中栏被刷新到文件父目录（错误进入文件夹）。
+
+        Args:
+            entry: 待重命名的条目。
+            refresh_middle: True 刷新中栏到文件父目录；False 不刷新中栏。
+
+        Returns:
+            True 表示执行了重命名；False 表示用户取消或无变化。
+        """
         if self._file_operation_service is None:
-            return
-        # 弹出输入对话框，预填当前名称并全选
+            return False
         old_path = Path(entry.path)
         old_name = old_path.name
         # 保存父目录路径：rename 后 _refresh_tree 会清空列表，需用此路径直接刷新
         dir_path = str(old_path.parent)
-        name, ok = QInputDialog.getText(
-            self,
-            ui.MENU_RENAME_DIALOG_TITLE,
-            ui.MENU_RENAME_DIALOG_LABEL,
-            text=old_name,
-        )
-        if not ok or not name.strip():
-            return
-        name = name.strip()
+        name, ok = self._show_rename_dialog(old_name)
+        if not ok or not name:
+            return False
         # 同名跳过（无变化）
         if name == old_name:
-            return
+            return False
         try:
             self._file_operation_service.rename(old_path, name)
             self._commit()
             self._refresh_tree()
-            self._refresh_content_list_after_file_op(dir_path)
+            if refresh_middle:
+                self._refresh_content_list_after_file_op(dir_path)
             self.statusBar().showMessage(ui.MENU_RENAME_SUCCESS.format(name=name), 3000)
+            return True
         except Exception as e:  # noqa: BLE001
             self._handle_service_error(e, ui.MENU_OPERATION_FAILED.format(error=str(e)))
+            return False
+
+    def _on_rename_entry(self, entry: FileEntry) -> None:
+        """右键条目 → 重命名（中栏，刷新中栏到父目录）。"""
+        self._rename_entry_core(entry, refresh_middle=True)
 
     def _on_delete_entries(self, entries: list[FileEntry]) -> None:
         """右键条目 → 删除（移至回收站）。"""
@@ -2145,18 +2201,18 @@ class MainWindow(QMainWindow):
         self._update_quick_insert_button_state()
 
     def _on_assembly_rename_cover(self, image_path: Path) -> None:
-        """装配面板右键重命名预览图：rename_as_cover + 刷新 + 提交。
+        """装配面板右键重命名预览图：rename_as_cover_by_path + 刷新 + 提交。
 
-        命名规则：单张 {Mod组名}.{扩展名}；多张 {Mod组名}_2、_3……；
-        冲突走 ConflictError 流程（spec §7.4）。
+        UX 重构 Phase 1 Task 2 Commit 2：改用 rename_as_cover_by_path，
+        支持非内容单元文件夹（按文件夹名重命名图片）。
         """
         if self._assembly_service is None or self._assembly_panel is None:
             return
-        unit = self._assembly_panel.current_unit()
-        if unit is None:
+        folder_path = self._assembly_panel.current_folder_path()
+        if folder_path is None:
             return
         try:
-            new_path = self._assembly_service.rename_as_cover(unit.id, image_path)
+            new_path = self._assembly_service.rename_as_cover_by_path(folder_path, image_path)
             self._commit()
             self._assembly_panel.refresh_current()
             self.statusBar().showMessage(
@@ -2164,6 +2220,54 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:  # noqa: BLE001
             self._handle_service_error(e, ui.ASSEMBLY_RENAME_COVER_FAILED)
+
+    def _on_assembly_file_op(self, action: str, entries: list[FileEntry]) -> None:
+        """装配面板文件操作委托（UX 重构 Phase 1 Task 2 Commit 2）。
+
+        复用中栏现有文件操作逻辑，操作后刷新装配面板。
+        空白处移动整个文件夹后解绑装配面板（A3-1）。
+
+        Args:
+            action: 操作类型 rename/copy/cut/paste/move_to/delete/copy_path。
+            entries: 选中的 FileEntry 列表。
+        """
+        if self._assembly_panel is None:
+            return
+        if action == "rename" and len(entries) == 1:
+            # 修复1：装配面板重命名不刷新中栏（避免中栏错误进入文件夹）
+            if self._rename_entry_core(entries[0], refresh_middle=False):
+                self._assembly_panel.refresh_current()
+        elif action == "copy":
+            if self._clipboard_service is not None:
+                paths = [e.path for e in entries]
+                self._clipboard_service.set_copy(paths)
+                self._content_list_model.set_cut_paths(set())
+                self.statusBar().showMessage(ui.SHORTCUT_COPIED.format(n=len(paths)), 3000)
+        elif action == "cut":
+            if self._clipboard_service is not None:
+                paths = [e.path for e in entries]
+                self._clipboard_service.set_cut(paths)
+                self._content_list_model.set_cut_paths(set(paths))
+                self.statusBar().showMessage(ui.SHORTCUT_CUT.format(n=len(paths)), 3000)
+        elif action == "paste":
+            folder_path = self._assembly_panel.current_folder_path()
+            if folder_path is not None:
+                self._perform_paste(folder_path)
+                self._assembly_panel.refresh_current()
+        elif action == "move_to":
+            self._on_move_to(entries)
+            # A3-1：移动整个透视文件夹后解绑（文件夹路径已变）
+            folder_path = self._assembly_panel.current_folder_path()
+            if folder_path is not None and any(Path(e.path) == folder_path for e in entries):
+                if not folder_path.exists():
+                    self._bind_assembly_panel(None)
+            else:
+                self._assembly_panel.refresh_current()
+        elif action == "delete":
+            self._on_delete_entries(entries)
+            self._assembly_panel.refresh_current()
+        elif action == "copy_path" and len(entries) == 1:
+            self._copy_path_to_clipboard(entries[0].path)
 
     # --- 快速插入（阶段 3 Task 5） ---
 
