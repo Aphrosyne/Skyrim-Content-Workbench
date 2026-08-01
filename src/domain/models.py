@@ -23,10 +23,10 @@ class ContentUnit:
     path 原样存储（可为中文），数据库以 path + path_key 列的 UNIQUE 约束去重
     （path_key 为 make_path_key(path)，DB 层强制路径归一化唯一）。
 
-    v11 schema（Stage 5 Code Review D2/D3）：
-    - 移除 status 字段，重构为 is_marked: bool
-    - True = 已标记为内容单元（原 'organized'），False = 已取消标记（原 'unmarked'）
-    - 简化两态语义为布尔值，消除 "organized" 字面歧义
+    v11 schema（Stage 5 Code Review D2/D3）：status 字段重构为 is_marked: bool。
+    v13 schema（UX 重构 Task 6）：移除 is_marked 字段，回归纯 DELETE 模式——
+    记录存在即已标记，取消标记 = DELETE 记录，无需表达"曾标记但已取消"的状态。
+    path_key 为 DB 层列（UNIQUE 约束），Domain 实体不含该字段。
     """
 
     id: str
@@ -37,7 +37,6 @@ class ContentUnit:
     content_type: str = "mod"
     source_url: str | None = None
     cover_path: str | None = None
-    is_marked: bool = True
     notes: str | None = None
 
     # M13：Domain 层取值范围校验（与 OperationHistory.operation_type 校验对齐）
@@ -53,10 +52,6 @@ class ContentUnit:
             raise ValueError("ContentUnit.created_at 不能为空")
         if not self.updated_at:
             raise ValueError("ContentUnit.updated_at 不能为空")
-        if not isinstance(self.is_marked, bool):
-            raise ValueError(
-                f"ContentUnit.is_marked 必须是 bool，得到：{type(self.is_marked).__name__}"
-            )
         if self.content_type not in self.VALID_CONTENT_TYPES:
             raise ValueError(
                 f"ContentUnit.content_type 必须是 {sorted(self.VALID_CONTENT_TYPES)} 之一，"
@@ -265,7 +260,7 @@ class ThumbnailCache:
 class FileEntry:
     """目录条目（文件或文件夹）+ 可选的内容单元关联。
 
-    用于浏览模式中栏列表（roadmap Task 4 2026-07-13 设计修正）：
+    用于中栏文件列表（roadmap Task 4 2026-07-13 设计修正）：
     数据源为文件系统，content_unit 表仅作为标记来源。
     内容单元不是可见性门槛——所有文件系统条目均可见可操作。
 
@@ -305,7 +300,6 @@ class SearchResult:
     - title：内容单元标题（可能为 None，UI 显示时回退到 path）
     - path：内容单元路径
     - content_type：内容单元类型
-    - is_marked：是否已标记为内容单元（v11：Q2=B 仅搜索 is_marked=True）
     - matched_field：命中的字段名（'title' / 'tag' / 'notes'），按优先级取
     - tags：聚合的标签名列表（可能为空列表）
     """
@@ -314,7 +308,6 @@ class SearchResult:
     title: str | None
     path: str
     content_type: str
-    is_marked: bool
     matched_field: str
     tags: list[str]
 
@@ -323,10 +316,6 @@ class SearchResult:
             raise ValueError("SearchResult.unit_id 不能为空")
         if not self.path:
             raise ValueError("SearchResult.path 不能为空")
-        if not isinstance(self.is_marked, bool):
-            raise ValueError(
-                f"SearchResult.is_marked 必须是 bool，得到：{type(self.is_marked).__name__}"
-            )
         if self.matched_field not in ("title", "tag", "notes"):
             raise ValueError(
                 f"SearchResult.matched_field 必须是 'title' / 'tag' / 'notes' 之一，"

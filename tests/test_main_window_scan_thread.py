@@ -44,6 +44,8 @@ def main_window(qapp: QApplication, tmp_path: Path) -> MainWindow:
 
     managed_service = ManagedRootService(
         ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-14T00:00:00Z",
         uuid_provider=fake_uuid,
     )

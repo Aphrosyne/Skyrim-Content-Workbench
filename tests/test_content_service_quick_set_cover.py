@@ -38,10 +38,30 @@ def db_connection(tmp_path: Path) -> sqlite3.Connection:
             content_type TEXT NOT NULL,
             source_url TEXT,
             cover_path TEXT,
-            is_marked INTEGER NOT NULL DEFAULT 1 CHECK(is_marked IN (0, 1)),
             notes TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        )
+    """)
+    # repo.delete 级联清理 content_unit_tag / thumbnail_cache（Task 6 unmark = DELETE）
+    conn.execute("""
+        CREATE TABLE content_unit_tag (
+            content_unit_id TEXT NOT NULL,
+            tag_id TEXT NOT NULL,
+            PRIMARY KEY (content_unit_id, tag_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE thumbnail_cache (
+            content_unit_id TEXT NOT NULL,
+            size INTEGER NOT NULL DEFAULT 64,
+            source_size_bytes INTEGER NOT NULL,
+            source_modified_at TEXT NOT NULL,
+            cache_filename TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error_message TEXT,
+            generated_at TEXT NOT NULL,
+            PRIMARY KEY (content_unit_id, size)
         )
     """)
     return conn
@@ -210,13 +230,14 @@ class TestMarkAsContentUnitAutoCover:
 
         assert unit.cover_path is None
 
-    def test_remark_folder_does_not_overwrite_manual_cover(
+    def test_remark_folder_creates_new_unit_with_auto_cover(
         self, service: ContentService, repo: ContentUnitRepository, tmp_path: Path
     ) -> None:
-        """重新标记（unmark → mark）文件夹时，已有手动封面不被覆盖。
+        """纯 DELETE 模式（Task 6）：unmark 删除记录后重新 mark 创建新记录。
 
-        场景：用户先 mark → 自动录入 a.jpg → 手动改为 b.png → unmark → 再 mark。
-        再 mark 时 cover_path 已有值（b.png），_auto_set_cover_for_folder_unit 应跳过。
+        场景：用户先 mark → 自动录入 a.jpg → unmark（记录删除）→ 再 mark。
+        再 mark 时创建全新记录，自动录入第一张图片（a.jpg）；
+        原手动封面/标题等元数据随记录删除而丢失（roadmap 决策：取消标记 = DELETE）。
         """
         folder = tmp_path / "ModD"
         folder.mkdir()
@@ -235,11 +256,12 @@ class TestMarkAsContentUnitAutoCover:
 
         # unmark
         service.unmark_content_unit(unit.id)
-        # 再 mark（恢复 organized）
-        remarke_unit = service.mark_as_content_unit(Path(folder))
+        # 记录已删除
+        assert repo.get_by_id(unit.id) is None
 
-        # 已有手动封面 b.png 不被覆盖
-        assert remarke_unit.cover_path == "b.png"
-        persisted = repo.get_by_id(unit.id)
+        # 再 mark → 创建新记录，自动录入第一张图片
+        remark_unit = service.mark_as_content_unit(Path(folder))
+        assert remark_unit.cover_path == "a.jpg"
+        persisted = repo.get_by_id(remark_unit.id)
         assert persisted is not None
-        assert persisted.cover_path == "b.png"
+        assert persisted.cover_path == "a.jpg"

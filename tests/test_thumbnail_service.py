@@ -38,7 +38,6 @@ def unit_u1(db_connection, content_unit_repo, tmp_path) -> ContentUnit:
         path=str(tmp_path / "u1"),
         title="U1",
         content_type="mod",
-        is_marked=True,
         created_at="2026-07-01T00:00:00Z",
         updated_at="2026-07-01T00:00:00Z",
     )
@@ -82,7 +81,6 @@ def unit_with_cover(
         content_type=unit_u1.content_type,
         source_url=unit_u1.source_url,
         cover_path="cover.jpg",
-        is_marked=unit_u1.is_marked,
         notes=unit_u1.notes,
         created_at=unit_u1.created_at,
         updated_at=unit_u1.updated_at,

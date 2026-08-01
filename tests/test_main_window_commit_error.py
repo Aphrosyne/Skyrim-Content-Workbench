@@ -34,7 +34,11 @@ def main_window_with_failing_commit(qapp, tmp_path: Path):
     conn = get_connection(db_path)
     conn.row_factory = sqlite3.Row
 
-    managed_service = ManagedRootService(ManagedRootRepository(conn))
+    managed_service = ManagedRootService(
+        ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
+    )
     tree_service = FolderTreeService(
         ManagedRootRepository(conn),
         FolderCacheRepository(conn),
@@ -85,7 +89,11 @@ def test_commit_success_does_not_show_message_box(qapp, tmp_path: Path, monkeypa
     conn = get_connection(db_path)
     conn.row_factory = sqlite3.Row
 
-    managed_service = ManagedRootService(ManagedRootRepository(conn))
+    managed_service = ManagedRootService(
+        ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
+    )
     tree_service = FolderTreeService(
         ManagedRootRepository(conn),
         FolderCacheRepository(conn),
@@ -120,7 +128,11 @@ def test_commit_failure_without_callback_does_not_raise(qapp, tmp_path: Path) ->
     conn = get_connection(db_path)
     conn.row_factory = sqlite3.Row
 
-    managed_service = ManagedRootService(ManagedRootRepository(conn))
+    managed_service = ManagedRootService(
+        ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
+    )
     tree_service = FolderTreeService(
         ManagedRootRepository(conn),
         FolderCacheRepository(conn),

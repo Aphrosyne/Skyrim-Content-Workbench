@@ -32,7 +32,6 @@ class TestContentUnit:
         assert unit.id == "u-1"
         assert unit.path == "/mods/armor"
         assert unit.content_type == "mod"
-        assert unit.is_marked is True
         assert unit.title is None
 
     def test_create_with_all_fields(self) -> None:
@@ -45,11 +44,9 @@ class TestContentUnit:
             content_type="mod",
             source_url="https://example.com",
             cover_path="/mods/weapon/cover.png",
-            is_marked=True,
             notes="测试备注",
         )
         assert unit.title == "龙之剑"
-        assert unit.is_marked is True
 
     def test_empty_id_raises(self) -> None:
         with pytest.raises(ValueError, match="id"):
@@ -76,22 +73,7 @@ class TestContentUnit:
         )
         assert "护甲" in unit.path
 
-    # === M13 / v11：is_marked / content_type 取值范围校验 ===
-
-    def test_default_is_marked_true(self) -> None:
-        unit = ContentUnit(id="u", path="/x", created_at="t", updated_at="t")
-        assert unit.is_marked is True
-
-    def test_is_marked_false(self) -> None:
-        unit = ContentUnit(id="u", path="/x", created_at="t", updated_at="t", is_marked=False)
-        assert unit.is_marked is False
-
-    def test_invalid_is_marked_type_raises(self) -> None:
-        """v11：is_marked 必须是 bool。"""
-        with pytest.raises(ValueError, match="is_marked"):
-            ContentUnit(  # type: ignore[arg-type]
-                id="u", path="/x", created_at="t", updated_at="t", is_marked="true"
-            )
+    # === M13：content_type 取值范围校验 ===
 
     def test_invalid_content_type_raises(self) -> None:
         with pytest.raises(ValueError, match="content_type"):

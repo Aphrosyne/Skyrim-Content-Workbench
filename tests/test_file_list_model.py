@@ -53,7 +53,6 @@ def _make_unit(
     unit_id: str = "u-1",
     path: str = "/mods/armor",
     title: str | None = None,
-    is_marked: bool = True,
 ) -> ContentUnit:
     return ContentUnit(
         id=unit_id,
@@ -61,7 +60,6 @@ def _make_unit(
         created_at="2026-07-13T00:00:00Z",
         updated_at="2026-07-13T00:00:00Z",
         title=title,
-        is_marked=is_marked,
     )
 
 

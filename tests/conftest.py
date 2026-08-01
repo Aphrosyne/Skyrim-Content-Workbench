@@ -40,7 +40,7 @@ def temp_app_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
     root = tmp_path / "appdata"
     root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("SCW_DATA_DIR", str(root))
-    # 同时清理 LOCALAPPDATA 避免触发迁移逻辑
+    # 同时清理 LOCALAPPDATA，保证路径解析只走 SCW_DATA_DIR
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
     yield root
 

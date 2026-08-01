@@ -8,6 +8,41 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.47.0] - 2026-08-01
+
+UX 重构 Phase 2 Task 6：数据库与死代码清理（回归纯 DELETE 模式）。schema_version v12 → v13。
+
+**新增功能**
+
+- **纯 DELETE 模式落地**：content_unit 移除 `is_marked` 字段（schema v13 迁移：
+  清理历史 is_marked=0 记录及级联关联 → 重建表移除列与索引）。标记 = 记录存在，
+  取消标记 = 删除记录（`ContentService.unmark_content_unit` 改为 DELETE，
+  级联清理 content_unit_tag / thumbnail_cache 记录）。Domain / Repository /
+  Search / Scan / FileOperation 全链路移除 `is_marked`
+- **移除受管理根目录同步清理扫描记录**（open-questions §6）：
+  `ManagedRootService.remove_root` 注入 FolderCacheRepository / ContentUnitRepository
+  + UnitOfWork，清理被移除根路径前缀下的 folder_cache（按深度降序）与 content_unit
+  （级联 tag / thumbnail）；重叠守卫：仍属于其他剩余根目录的记录不清理
+- **旧目录检测代码移除**（open-questions §7）：`app_paths` 删除
+  `_log_legacy_appdata_hint_if_exists` 及对应测试；`%LOCALAPPDATA%` 路径回退保留
+- **移除受管理根目录确认文案更新**：说明会清理该目录下的扫描记录（目录树缓存与
+  内容单元元数据），并明确不删除磁盘文件
+
+**修复 / 清理**
+
+- TD-L31：删除 ui_constants 无人引用的缩略图死常量（THUMBNAIL_SIZE / FORMAT / FILENAME_TEMPLATE）
+- TD-L32：删除 AssemblyService.remove_file 死方法及对应测试
+- TD-L33：清理"浏览/整理模式"过时注释（main_window / search_dialog / tag_filter /
+  metadata_panel / folder_tree_model / assembly_service / domain.models）
+
+**测试**
+
+- 新增：migrations v12→v13（清理 + 列移除 + 幂等）、remove_root 清理（深层/重叠守卫）、
+  unmark 删除记录与级联、search 无过滤条件、remark 新语义
+- 移除：is_marked 相关用例（domain 校验 / search 过滤 / 旧目录提示 4 项 /
+  remove_file 3 项等）
+- 全量回归：1279 tests passed, 4 skipped，ruff check + format 全通过
+
 ---
 
 ## [0.46.0] - 2026-08-01

@@ -19,8 +19,9 @@ REMOVE_ROOT_BUTTON = "移除选中目录"
 REMOVE_ROOT_CONFIRM_TITLE = "确认移除"
 REMOVE_ROOT_CONFIRM_TEXT = (
     "将移除受管理根目录配置：\n{path}\n\n"
-    "此操作仅删除应用内的配置记录，不会删除或修改磁盘上的任何文件，"
-    "也不会清理已扫描的目录树记录。"
+    "此操作将删除应用数据库中的根目录配置及该目录下的扫描记录"
+    "（目录树缓存与内容单元元数据），"
+    "不会删除或修改磁盘上的任何文件。"
 )
 SCAN_BUTTON = "扫描选中目录"
 SCAN_BUTTON_FULL = "全量重扫选中目录"
@@ -443,11 +444,6 @@ TAG_FILTER_NO_CATEGORIES_HINT = "（暂无标签分类，请在标签管理中�
 TAG_FILTER_CATEGORY_EMPTY_HINT = "（该分类下无标签）"
 TAG_FILTER_NO_RESULT_HINT = "没有找到匹配内容"
 TAG_FILTER_CATEGORY_BADGE = " ({count})"  # 折叠态下分类按钮显示的已选标签数徽标
-
-# 缩略图（Stage 4 Task 4，spec §9）
-THUMBNAIL_SIZE = 64  # 列表中小图标尺寸（默认值，spec §9「列表模式下小图标」）
-THUMBNAIL_FORMAT = "PNG"  # 缓存文件格式（保留透明通道，与圆角兼容）
-THUMBNAIL_FILENAME_TEMPLATE = "{unit_id}.png"  # 缓存文件命名（spec §9 / architecture.md §9）
 
 # 视图切换（Stage 5 Task 1）
 VIEW_SWITCH_GROUP_LABEL = "视图"

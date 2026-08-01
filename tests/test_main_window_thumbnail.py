@@ -80,6 +80,8 @@ def env_with_coordinator(qapp, tmp_path: Path):
 
     managed_service = ManagedRootService(
         ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-19T00:00:00Z",
         uuid_provider=fake_uuid,
     )
@@ -137,7 +139,11 @@ def test_coordinator_not_injected_degrades_to_standard_icons(qapp, tmp_path):
     init_db(db_path)
     conn = get_connection(db_path)
     conn.row_factory = sqlite3.Row
-    managed_service = ManagedRootService(ManagedRootRepository(conn))
+    managed_service = ManagedRootService(
+        ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
+    )
     tree_service = FolderTreeService(
         ManagedRootRepository(conn),
         FolderCacheRepository(conn),
@@ -203,7 +209,6 @@ def test_metadata_saved_does_not_call_coordinator_invalidate(
             path="/test/path",
             title="Test",
             content_type="mod",
-            is_marked=True,
             created_at="2026-07-01T00:00:00Z",
             updated_at="2026-07-01T00:00:00Z",
         )

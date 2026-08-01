@@ -197,7 +197,8 @@ class ContentUnitCreationService:
             name: Mod 组名称。None 时从 source_file 文件名自动提取。
 
         Returns:
-            新创建的 ContentUnit（path 指向新文件夹，title=文件夹名，is_marked=True）。
+            新创建的 ContentUnit（path 指向新文件夹，title=文件夹名；纯 DELETE 模式
+            下记录存在即已标记）。
 
         Raises:
             SourceNotInStagingError: source_file 不在 staging_path 下。

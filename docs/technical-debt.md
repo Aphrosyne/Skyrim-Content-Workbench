@@ -322,10 +322,10 @@
 > 以下问题来自 Stage 3 正式 Code Review，经评估不阻塞 Stage 4 启动，
 > 但建议在对应阶段择机处理。编号接续既有 TD 序列。
 
-### TD-M21: MainWindow God Object 趋势（4001 行 / 150 方法，2026-08-01 复核）
+### TD-M21: MainWindow God Object 趋势（约 3490 行 / 150 方法，2026-08-01 复核）
 
 - **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
-- **背景**: Stage 3 Code Review 发现 MainWindow 已增长到 4001 行 / 150 方法
+- **背景**: Stage 3 Code Review 发现 MainWindow 已增长到约 3490 行 / 150 方法
   （2026-08-01 复核，原登记 1570 行 / 76 方法已过时），
   承担 UI 搭建、信号槽、扫描线程生命周期、装配面板绑定、快速插入流程、
   元数据展示、Elide 渲染、模式切换、DB 事务边界（`_commit`/`_rollback`）等
@@ -587,7 +587,7 @@
 ### TD-M31: MainWindow 业务逻辑泄漏 ✅ 已登记（UI 重构版本处理）
 
 - **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
-- **背景**: MainWindow 4001 行、150 个方法、60+ 实例变量、6 个并行状态机
+- **背景**: MainWindow 约 3490 行、150 个方法、60+ 实例变量、6 个并行状态机
   （2026-08-01 复核，原登记 3823 行 / 95 方法已过时）。承担 21 处 `_commit()` + 文件操作编排 + 冲突解决编排（2 个重复方法）。Stage 4/5 期间 Q8:C 决策"边开发边小规模拆分"实际未执行，反而新增了快捷键 handler（14 个）、导航历史栈等逻辑。
 - **影响范围**: 任何 UI 改动成本极高，且 UI 层承担了本应在 Application 层的事务边界职责。
 - **推荐修复方案**: UI 重构版本前置任务。至少拆出 `ScanController` / `AssemblyController` / `MetadataView` / `ModeController` / `TransactionScope`（事务边界从 UI 移到 Application 层）。
@@ -703,7 +703,7 @@
 - **推荐修复方案**: 用户确认后统一改名（UI 文案集中在 ui_constants.py）。
 - **建议修复阶段**: **UX 重构 Task 8**（与 TD-L28 术语统一一并处理）。
 
-### TD-L31: ui_constants 缩略图死常量与 WebP 实现不符
+### TD-L31: ui_constants 缩略图死常量与 WebP 实现不符 ✅ 已修复（UX 重构 Task 6）
 
 - **位置**: [ui_constants.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/ui_constants.py) `THUMBNAIL_SIZE` / `THUMBNAIL_FORMAT` / `THUMBNAIL_FILENAME_TEMPLATE`
 - **背景**: Stage 5 Task 1a 缩略图缓存已实现为 WebP 多档
@@ -711,20 +711,20 @@
   （`THUMBNAIL_FORMAT="PNG"`、`THUMBNAIL_FILENAME_TEMPLATE="{unit_id}.png"`、
   `THUMBNAIL_SIZE=64`），全项目无引用。
 - **影响范围**: 死代码，误导阅读者。
-- **推荐修复方案**: 删除三个常量（或更新为 WebP 命名模板），UX 重构 Task 6 清理。
-- **建议修复阶段**: **UX 重构 Task 6**。
+- **修复（UX 重构 Task 6）**: 删除三个常量（THUMBNAIL_SIZE / THUMBNAIL_FORMAT /
+  THUMBNAIL_FILENAME_TEMPLATE），全项目无引用。
 
-### TD-L32: AssemblyService.remove_file 死代码
+### TD-L32: AssemblyService.remove_file 死代码 ✅ 已修复（UX 重构 Task 6）
 
 - **位置**: [assembly_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/assembly_service.py) `remove_file`
 - **背景**: UX 重构 Phase 1 Task 1 Commit 3（L2 提前）移除装配面板「移除文件」功能时，
   UI/回调/常量已清理，但 `AssemblyService.remove_file` 方法及对应测试
   （test_assembly_service.py）保留未删除，UI 层已无调用方。
 - **影响范围**: 死代码，维护成本。
-- **推荐修复方案**: 删除 `remove_file` 方法与相关测试，UX 重构 Task 6 清理。
-- **建议修复阶段**: **UX 重构 Task 6**。
+- **修复（UX 重构 Task 6）**: 删除 `remove_file` 方法及 test_assembly_service.py
+  对应测试。
 
-### TD-L33: 代码注释遗留"浏览/整理模式"描述
+### TD-L33: 代码注释遗留"浏览/整理模式"描述 ✅ 已修复（UX 重构 Task 6）
 
 - **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) /
   [search_dialog.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/search_dialog.py) /
@@ -733,8 +733,9 @@
 - **背景**: UX 重构 Phase 1 移除双模式后，部分代码注释仍描述"浏览模式/整理模式"
   行为（如 search_dialog "Q5=C：整理模式下不跳转"），与当前单面板行为不符。
 - **影响范围**: 认知负担，不影响正确性。
-- **推荐修复方案**: 清理过时注释，UX 重构 Task 6 顺带处理。
-- **建议修复阶段**: **UX 重构 Task 6**（顺带）或 Task 8。
+- **修复（UX 重构 Task 6）**: 清理 main_window / search_dialog / tag_filter /
+  metadata_panel / folder_tree_model / assembly_service / domain.models 中
+  遗留的"浏览/整理模式"注释。
 
 ### TD-M37: 缩略图 Coordinator 生成链路未接入 UI
 

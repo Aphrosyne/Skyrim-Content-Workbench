@@ -7,7 +7,7 @@
 - 不自动重命名图片。自动整理阶段不修改任何文件名，避免破坏用户已有命名。
 - 移除文件时统一移回暂存区根目录（不保留原子目录结构）。
 - 手动重命名预览图：`{Mod组名}.{扩展名}`，多张图片 `_2`、`_3` 后缀。
-- 装配面板绑定"当前选中 Mod 组"，整理模式下切换不同 Mod 组时刷新内容。
+- 装配面板绑定"当前选中文件夹"，切换选中时刷新内容（📌 钉住时保持绑定）。
 
 UX 重构 Phase 1 Task 2（装配面板语义调整）：
 - 装配面板从"Mod 组装配器"扩展为"文件夹透视器"，可透视任意文件夹（不限于内容单元）。
@@ -235,35 +235,6 @@ class AssemblyService:
             size=None,
             content_unit=None,
         )
-
-    def remove_file(self, unit_id: str, filename: str, staging_path: Path) -> Path:
-        """从 Mod 组移除文件，移回暂存区根目录。
-
-        - 不保留原子目录结构（统一移到 staging_path 根目录）。
-        - 目标路径 = staging_path / filename，不能已存在。
-        - Stage 4.5 H4：move 内部自动更新源/目标父目录的 folder_cache mtime。
-
-        Args:
-            unit_id: Mod 组 ContentUnit ID。
-            filename: 待移除的文件名（不含目录路径）。
-            staging_path: 暂存区根目录路径。
-
-        Returns:
-            文件移回后的新路径。
-
-        Raises:
-            ContentUnitNotFoundError: unit_id 不存在。
-            ConflictError: 暂存区根目录已存在同名文件。
-            FileOperationError: 其他文件操作失败。
-        """
-        unit = self._get_unit_or_raise(unit_id)
-        folder_path = Path(unit.path)
-        src_path = folder_path / filename
-        dst_path = staging_path / filename
-
-        # H4：move 内部自动更新 src.parent（= folder_path）和 dst.parent（= staging_path）的 mtime
-        self._file_op.move(src_path, dst_path)
-        return dst_path
 
     # --- 手动重命名预览图 ---
 

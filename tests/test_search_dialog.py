@@ -29,7 +29,6 @@ def _make_result(
     path: str = "D:/mod/test.7z",
     matched_field: str = "title",
     tags: list[str] | None = None,
-    is_marked: bool = True,
 ) -> SearchResult:
     """构造测试用 SearchResult。"""
     return SearchResult(
@@ -37,7 +36,6 @@ def _make_result(
         title=title,
         path=path,
         content_type="mod",
-        is_marked=is_marked,
         matched_field=matched_field,
         tags=tags if tags is not None else [],
     )

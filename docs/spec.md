@@ -490,7 +490,8 @@ operation_log（旧）
 
 ### 11.4 Schema 版本
 
-当前 schema v12（UX 重构 Phase 2 Task 6 计划迁移到 v13：移除 `is_marked` 字段，回归纯 DELETE 模式）。
+当前 schema v13（UX 重构 Phase 2 Task 6 已完成：移除 `is_marked` 字段，回归纯 DELETE 模式——
+记录存在即已标记，取消标记 = DELETE 记录）。
 
 ---
 

@@ -5,7 +5,8 @@
 
 约束：
 - 每个迁移函数只负责 DDL，不写 schema_version。
-- 迁移函数不删除列、不修改既有列定义（避免破坏现有数据）。
+- 迁移函数幂等；破坏性变更（列移除/表重建，如 v11/v13）采用
+  "幂等检查 + 建新表 + 数据回填 + 替换旧表"模式，避免破坏现有数据。
 - schema 变更必须通过迁移（见 AGENTS.md 代码质量）。
 """
 
@@ -690,6 +691,83 @@ def migrate_v11_to_v12(conn: sqlite3.Connection) -> None:
     logger.info("迁移 v11 → v12 完成")
 
 
+def migrate_v12_to_v13(conn: sqlite3.Connection) -> None:
+    """v12 → v13：移除 is_marked 字段，回归纯 DELETE 模式（UX 重构 Task 6）。
+
+    UX 重构 Phase 2 Task 6（数据模型原则 1）：标记 = 数据库有记录，
+    取消标记 = DELETE 记录，不需要 is_marked 表达"曾经标记过但现在不是"的状态。
+
+    变更：
+    1. 清理历史 is_marked=0 记录（用户显式取消标记留下的墓碑）：
+       - 先删 content_unit_tag 关联（schema 无 ON DELETE CASCADE，避免 FK 违约）
+       - 再删 thumbnail_cache 记录（无 FK 声明，但同步清理保持一致性）
+       - 最后 DELETE content_unit WHERE is_marked = 0
+    2. content_unit 表重建，移除 is_marked 列（idx_content_unit_is_marked
+       随旧表 DROP 自动移除）
+    3. 取消标记操作在应用层改为 DELETE（ContentService.unmark_content_unit）
+
+    纯 DELETE 模式的既定后果（roadmap 决策）：取消标记的压缩包在下次扫描时
+    会被重新识别为内容单元候选（不再有墓碑记录阻止重建）。
+
+    幂等性：通过检查 content_unit 是否已有 is_marked 列判断是否已迁移。
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(content_unit)")}
+    if "is_marked" not in cols:
+        logger.info("v13 迁移已应用，跳过")
+        return
+
+    # === 1. 清理 is_marked=0 记录及其关联 ===
+    # content_unit_tag 无 ON DELETE CASCADE，先删关联避免 FK 违约
+    conn.execute(
+        "DELETE FROM content_unit_tag WHERE content_unit_id IN "
+        "(SELECT id FROM content_unit WHERE is_marked = 0)"
+    )
+    # thumbnail_cache（v7 起无 FK 声明），同步清理保持一致性
+    conn.execute(
+        "DELETE FROM thumbnail_cache WHERE content_unit_id IN "
+        "(SELECT id FROM content_unit WHERE is_marked = 0)"
+    )
+    result = conn.execute("DELETE FROM content_unit WHERE is_marked = 0")
+    if result.rowcount > 0:
+        logger.info("v13 迁移：清理 %d 条 is_marked=0 废弃记录", result.rowcount)
+
+    # === 2. content_unit 表重建：移除 is_marked 列 ===
+    conn.executescript(
+        """
+        CREATE TABLE content_unit_new (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL UNIQUE,
+            path_key TEXT NOT NULL UNIQUE,
+            title TEXT,
+            content_type TEXT NOT NULL DEFAULT 'mod',
+            source_url TEXT,
+            cover_path TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO content_unit_new (
+            id, path, path_key, title, content_type, source_url,
+            cover_path, notes, created_at, updated_at
+        )
+        SELECT id, path, path_key, title, content_type, source_url,
+               cover_path, notes, created_at, updated_at
+        FROM content_unit
+        """
+    )
+    conn.executescript(
+        """
+        DROP TABLE content_unit;
+        ALTER TABLE content_unit_new RENAME TO content_unit;
+        """
+    )
+    logger.info("迁移 v12 → v13 完成")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -705,4 +783,5 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (10, migrate_v9_to_v10),
     (11, migrate_v10_to_v11),
     (12, migrate_v11_to_v12),
+    (13, migrate_v12_to_v13),
 ]

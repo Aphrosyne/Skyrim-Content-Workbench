@@ -152,7 +152,6 @@ class ContentService:
         path: Path,
         title: str | None = None,
         content_type: str = "mod",
-        is_marked: bool = True,
     ) -> ContentUnit:
         """创建新 ContentUnit。
 
@@ -160,7 +159,6 @@ class ContentService:
             path: 内容单元对应的真实路径（文件或文件夹）。
             title: 标题，默认 None（显示时回退到路径名）。
             content_type: 类型，默认 "mod"。
-            is_marked: 是否已标记为内容单元，默认 True。
 
         Returns:
             新创建的 ContentUnit。
@@ -174,7 +172,6 @@ class ContentService:
             path=str(path),
             title=title,
             content_type=content_type,
-            is_marked=is_marked,
             created_at=now,
             updated_at=now,
         )
@@ -187,12 +184,10 @@ class ContentService:
         标记自动取消（避免父子同时标记）。
 
         行为：
-        - 若 path 已是 ContentUnit 且 is_marked=True：返回现有 unit（不重复创建）。
-        - 若 path 已是 ContentUnit 且 is_marked=False：恢复为 is_marked=True（重新标记）。
+        - 若 path 已是 ContentUnit：返回现有 unit（纯 DELETE 模式：记录存在即已标记）。
         - 若 path 是文件夹：先 list_by_path_prefix_normalized 查询子项 ContentUnit
-          （不含自身），逐个 delete 已标记子项（ContentUnitRepository.delete
-          已级联清理 content_unit_tag）；is_marked=False 子项保留（用户显式取消标记的偏好
-          不应被覆盖）；然后创建或恢复 ContentUnit。
+          （不含自身），逐个 delete 子项（ContentUnitRepository.delete 已级联清理
+          content_unit_tag + thumbnail_cache）；然后创建 ContentUnit。
         - 若 path 是文件：直接创建（不查子项）。
 
         Stage 4.5 H6 修复：若注入了 uow，多步写操作（删除子项 + 创建/恢复父标记）
@@ -239,19 +234,17 @@ class ContentService:
         # 查询现有记录
         existing = self._repo.get_by_path(str(path))
 
-        # 已标记且 is_marked=True：返回现有（不重复创建）
-        if existing is not None and existing.is_marked:
+        # 纯 DELETE 模式：记录存在即已标记，返回现有（不重复创建）
+        if existing is not None:
             return existing
 
-        # 文件夹：取消子项标记（保留 is_marked=False 子项）
+        # 文件夹：删除子项标记（spec §5.4 父子不可同时标记）
         if is_dir:
             children = self._repo.list_by_path_prefix_normalized(str(path))
             # 排除 path 自身（list_by_path_prefix_normalized 含 prefix 自身）
             failures: list[tuple[str, str]] = []
             for child in children:
                 if make_path_key(child.path) != make_path_key(str(path)):
-                    if not child.is_marked:
-                        continue  # 保留用户显式取消标记的偏好
                     try:
                         self._repo.delete(child.id)
                     except (RepositoryError, sqlite3.Error) as e:  # noqa: BLE001
@@ -266,14 +259,8 @@ class ContentService:
                     failures=failures,
                 )
 
-        # 创建新记录或恢复 is_marked=False 记录
-        if existing is not None:
-            # existing.is_marked == False → 恢复为 is_marked=True
-            updated = replace(existing, is_marked=True, updated_at=self._now())
-            result = self._repo.update(updated)
-        else:
-            # 默认 title=path.name（文件名或文件夹名），避免元数据面板显示"（无标题）"
-            result = self.create_content_unit(path, title=path.name)
+        # 创建新记录（默认 title=path.name，避免元数据面板显示"（无标题）"）
+        result = self.create_content_unit(path, title=path.name)
 
         # Stage 5 Task 1：标记文件夹为内容单元时自动录入封面
         # 仅文件夹内容单元 + cover_path 为空时尝试，无图片不报错
@@ -327,11 +314,12 @@ class ContentService:
     def unmark_content_unit(self, unit_id: str) -> None:
         """取消内容单元标记。
 
-        将 ContentUnit 的 is_marked 设为 False（而非删除记录），使扫描不再
-        重复创建该路径的内容单元（roadmap：扫描候选的纠错能力）。**不删除真实文件**。
+        纯 DELETE 模式（UX 重构 Task 6）：取消标记 = 删除记录。
+        ContentUnitRepository.delete 级联清理 content_unit_tag 与 thumbnail_cache
+        记录（缓存文件由启动 GC 清理）。**不删除真实文件**。
 
-        UI 层将 is_marked=False 状态视为无内容单元（不显示标记、不响应双击）。
-        若用户再次 mark_as_content_unit，is_marked 恢复为 True。
+        注意（roadmap 既定决策）：若路径是压缩包，下次扫描会重新识别为内容单元候选
+        （不再有墓碑记录阻止重建）；文件夹不受影响（文件夹不自动识别）。
 
         Args:
             unit_id: 待取消的 ContentUnit ID。
@@ -342,10 +330,7 @@ class ContentService:
         unit = self._repo.get_by_id(unit_id)
         if unit is None:
             raise ContentUnitNotFoundError(f"内容单元不存在：{unit_id}")
-        if not unit.is_marked:
-            return  # 已取消标记，幂等
-        updated = replace(unit, is_marked=False, updated_at=self._now())
-        self._repo.update(updated)
+        self._repo.delete(unit_id)
 
     def list_directory_entries(self, dir_path: str) -> list[FileEntry]:
         """返回 dir_path 下所有文件和文件夹条目，并关联 content_unit。
@@ -589,9 +574,6 @@ class ContentService:
         content_unit: ContentUnit | None = None
         try:
             content_unit = self._repo.get_by_path(str(child))
-            # is_marked=False 视为无内容单元（用户显式取消标记）
-            if content_unit is not None and not content_unit.is_marked:
-                content_unit = None
         except (RepositoryError, sqlite3.Error):  # 数据库查询失败不应中断遍历
             logger.exception("查询 content_unit 失败：path=%s", child)
 

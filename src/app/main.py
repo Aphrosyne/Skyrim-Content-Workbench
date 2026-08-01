@@ -78,18 +78,27 @@ def main() -> int:
     # 后台扫描 worker 在自身线程内创建独立连接，不与本连接共享。
     conn = get_connection(db_path)
     conn.row_factory = sqlite3.Row
-    managed_root_service = ManagedRootService(ManagedRootRepository(conn))
-    folder_tree_service = FolderTreeService(
-        ManagedRootRepository(conn),
-        FolderCacheRepository(conn),
+    # 共享 Repository / UoW 实例（Repository 为无状态包装，复用同一连接）
+    uow = UnitOfWork(conn)
+    managed_root_repo = ManagedRootRepository(conn)
+    folder_cache_repo = FolderCacheRepository(conn)
+    content_unit_repo = ContentUnitRepository(conn)
+    # UX 重构 Task 6：ManagedRootService 注入 folder_cache/content_unit 仓储，
+    # remove_root 时同步清理扫描记录（重叠守卫 + UoW 事务）。
+    managed_root_service = ManagedRootService(
+        managed_root_repo,
+        folder_cache_repo,
+        content_unit_repo,
+        uow=uow,
     )
+    folder_tree_service = FolderTreeService(managed_root_repo, folder_cache_repo)
 
     # Stage 4 Task 4：缩略图 service 先创建（Stage 4.5 M4：注入到 ContentService）
     # GC（Q8: B）：启动时清理无对应 content_unit 的缓存
     try:
         thumbnail_service = ThumbnailService(
             cache_repo=ThumbnailCacheRepository(conn),
-            content_unit_repo=ContentUnitRepository(conn),
+            content_unit_repo=content_unit_repo,
             thumbnails_dir=get_thumbnails_dir(),
             size=64,
         )
@@ -105,12 +114,11 @@ def main() -> int:
     # 保证原子性，调用方（MainWindow）不负责业务事务控制。
     # uow 绑定到主线程连接 conn，所有共享该连接的 Service 注入同一实例，
     # 支持跨 Service 嵌套事务（如 ContentUnitCreationService 调用 ContentService）。
-    uow = UnitOfWork(conn)
 
     # Stage 4.5 M4：ContentService 注入 thumbnail_service，
     # 使 update_metadata 修改 cover_path 时主动 invalidate 缩略图缓存。
     content_service = ContentService(
-        ContentUnitRepository(conn),
+        content_unit_repo,
         thumbnail_service=thumbnail_service,
         uow=uow,
     )
@@ -118,8 +126,6 @@ def main() -> int:
     # new_folder/move 自动同步 folder_cache + ContentUnit.path，消除调用方手动同步。
     # 各 Service（ContentUnitCreationService/AssemblyService）移除各自的重复同步逻辑后，
     # 统一由 FileOperationService 内部同步。
-    folder_cache_repo = FolderCacheRepository(conn)
-    content_unit_repo = ContentUnitRepository(conn)
     folder_cache_helper = FolderCacheSyncHelper(folder_cache_repo)
     file_operation_service = FileOperationService(
         OperationHistoryRepository(conn),
@@ -136,7 +142,7 @@ def main() -> int:
     # AssemblyService 不再需要 folder_cache_repo。
     assembly_service = AssemblyService(
         file_operation_service,
-        ContentUnitRepository(conn),
+        content_unit_repo,
     )
     # 标签服务（阶段 4 Task 1）：标签分类 / 标签 CRUD + JSON 导入导出 + 预置加载
     tag_service = TagService(

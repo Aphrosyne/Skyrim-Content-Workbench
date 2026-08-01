@@ -97,6 +97,8 @@ def env_with_filter(qapp, tmp_path: Path):
 
     managed_service = ManagedRootService(
         ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-27T00:00:00Z",
         uuid_provider=fake_uuid,
     )
@@ -170,6 +172,8 @@ def test_tag_filter_bar_not_created_without_tag_service(qapp, tmp_path: Path):
 
     managed_service = ManagedRootService(
         ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-27T00:00:00Z",
     )
     tree_service = FolderTreeService(

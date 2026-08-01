@@ -128,15 +128,17 @@
 
 - **现状**：删除受管理目录配置后，旧目录相关的 `folder_cache` 记录未清理。
 - **待做**：移除受管理根目录时，同步清理对应的 `folder_cache` 和内容单元记录。清理取消内容单元标记的条目
-- **状态**：⬜ 未完成。归入 UX 重构 Phase 2 Task 6（移除受管理根目录同步清理 +
-  is_marked 纯 DELETE 模式）。
+- **状态**：✅ 已关闭（UX 重构 Phase 2 Task 6，v0.47.0）。
+  `remove_root` 同步清理根前缀下 folder_cache / content_unit（重叠守卫 + UoW）；
+  is_marked 纯 DELETE 模式（schema v13）一并落地。
 
 ### 7. 旧数据库目录检测代码清理
 
 - **现状**：数据库从 `%LOCALAPPDATA%` 迁移到 `{project_root}/data/` 后，代码中遗留了旧目录检测逻辑。
 - **待做**：确认迁移稳定后，移除旧的 `%LOCALAPPDATA%\SkyrimContentWorkbench\` 检测/迁移代码。
-- **状态**：⬜ 未完成。归入 UX 重构 Phase 2 Task 6；实施时需确认是否保留
-  `%LOCALAPPDATA%` 路径回退（当前为路径解析优先级第 3 项）。
+- **状态**：✅ 已关闭（UX 重构 Phase 2 Task 6，v0.47.0）。检测/迁移提示代码已移除；
+  `%LOCALAPPDATA%` 路径回退保留（路径解析优先级第 3 项不变，生产环境无
+  pyproject.toml 时的回退策略）。
 
 ### 8. UI 重构
 

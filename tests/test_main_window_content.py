@@ -98,6 +98,8 @@ def main_window_env(qapp, tmp_path: Path):
 
     managed_service = ManagedRootService(
         ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-12T00:00:00Z",
         uuid_provider=fake_uuid,
     )
@@ -158,6 +160,8 @@ def test_initial_state_shows_no_selection_hint(qapp, tmp_path: Path) -> None:
 
     managed_service = ManagedRootService(
         ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-12T00:00:00Z",
         uuid_provider=fake_uuid,
     )
@@ -508,6 +512,8 @@ def test_unscanned_root_does_not_crash(qapp, tmp_path: Path) -> None:
 
     managed_service = ManagedRootService(
         ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-12T00:00:00Z",
         uuid_provider=fake_uuid,
     )

@@ -36,6 +36,8 @@ def managed_root_service(db_connection: sqlite3.Connection) -> ManagedRootServic
 
     return ManagedRootService(
         ManagedRootRepository(db_connection),
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
         now_provider=lambda: "2026-07-12T00:00:00Z",
         uuid_provider=fake_uuid,
     )
@@ -458,6 +460,8 @@ def test_persisted_tree_loadable_after_reconnect(db_path: Path, mod_tree: Path) 
     try:
         managed_service = ManagedRootService(
             ManagedRootRepository(conn1),
+            FolderCacheRepository(conn1),
+            ContentUnitRepository(conn1),
             now_provider=lambda: "2026-07-12T00:00:00Z",
             uuid_provider=lambda: "root-uuid",
         )

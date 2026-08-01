@@ -1,7 +1,7 @@
 # Skyrim Content Workbench — 项目交接文档
 
 > **本文档用途**：为接手本项目的下一个 AI Coding Agent 提供完整的工程上下文。
-> 本文档基于截至 2026-08-01 的代码与文档状态撰写，对应版本 **v0.46.0**，schema_version **v12**，分支 **`ux-redesign`**。
+> 本文档基于截至 2026-08-01 的代码与文档状态撰写，对应版本 **v0.47.0**，schema_version **v13**，分支 **`ux-redesign`**。
 >
 > 阅读顺序建议：先读第 1、2、9 章 → 建立宏观认知 → 再读第 3、4 章理解技术细节 → 第 5、6 章了解下一步方向 → 第 7、8 章作为日常开发参考。
 
@@ -16,14 +16,14 @@
 | [architecture.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/architecture.md) §2 架构图 | Application Services 列出 `StagingService` | `StagingService` / `StagingAreaRepository` / `staging_area` 表已全部移除（UX 重构 Phase 1 Task 1 + v11→v12 迁移） | [CHANGELOG.md v0.43.0](file:///c:/AphrosyneData/Skyrim-Content-Workbench/CHANGELOG.md) / [main.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main.py) |
 | [architecture.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/architecture.md) §3.1 主窗口布局 | `TopBar: 标题 + 置顶按钮 + 搜索框 + [浏览\|整理] 模式切换` | 双模式切换按钮已移除，统一为单面板（UX 重构 Phase 1 Task 1） | [ux-redesign-roadmap.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/ux-redesign-roadmap.md) Phase 1 Task 1 |
 | [architecture.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/architecture.md) §3 | `BrowseMode` / `OrganizeMode` 两套中间区布局 | 已无此概念。中栏为统一文件列表（卡片/列表两种视图切换），装配面板已迁移到右栏下方（📌 钉住机制） | [ux-redesign-roadmap.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/ux-redesign-roadmap.md) Phase 1 Task 2/3 |
-| [architecture.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/architecture.md) 全文 | schema 描述停留在早期版本 | 当前 `CURRENT_SCHEMA_VERSION = 12`，content_unit 已移除 `status` 列改为 `is_marked` + 新增 `path_key`，operation_history 新增 `undone_at`，staging_area 表已删除 | [db.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/db.py) / [migrations.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/migrations.py) |
+| [architecture.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/architecture.md) 全文 | schema 描述停留在早期版本 | 当前 `CURRENT_SCHEMA_VERSION = 13`：content_unit 移除 `status`/`is_marked`（纯 DELETE 模式，Task 6）+ `path_key`；operation_history 新增 `undone_at`；staging_area 表已删除 | [db.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/db.py) / [migrations.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/migrations.py) |
 | [architecture.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/architecture.md) §Application | 提及 `ModGroupService` | 已重命名为 `ContentUnitCreationService`（D1 决策 A，UI 文本仍保留"Mod 组"） | [content_unit_creation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/content_unit_creation_service.py) |
 | [architecture.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/architecture.md) §Infrastructure | `FileOperationService` 描述为简化版 | `FileOperationService` 实际位于 `src/infrastructure/`，注入了 `FolderCacheSyncHelper` + `ContentUnitRepository`，分层归属存在 TD-H10 待处理 | [file_operation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/file_operation_service.py) |
 | [architecture.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/architecture.md) §缩略图 | `thumbnail_cache.asset_id → content_unit_id` 关联 | 关联键已改为 `content_unit_id`，缓存格式**已实现为 WebP 多档** `{content_unit_id}_{size}.webp`（Task 1a 完成）；仅 `ui_constants.py` 遗留 PNG 单档死常量（THUMBNAIL_FORMAT/FILENAME_TEMPLATE/SIZE，已登记 TD-L31）待 Task 6 清理 | [thumbnail_cache.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/repositories/thumbnail_cache.py) |
 | [spec.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/spec.md) §5.2、§7.3 | "整理模式"作为独立模式描述 | 已合并入统一面板，"暂存区"概念已移除，"快速插入"按钮已移除（UX 重构 Phase 1 Task 1 + Phase 1 Task 4） | [ux-redesign-roadmap.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/ux-redesign-roadmap.md) Phase 1 Task 1/4 |
 | [spec.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/spec.md) §4.1 ContentUnit | 字段含 `status` | `status` 已重构为 `is_marked: bool`（D2 决策 B，schema v11） | [models.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/domain/models.py) |
 | [roadmap.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/roadmap.md) Stage 5 Task 3c | 丢失路径检测 | 已暂停开发，代码归档到 `stage5-task3c-suspended` 分支，主线不包含 | [git branch -vv](file:///c:/AphrosyneData/Skyrim-Content-Workbench/) 输出 |
-| [AGENTS.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/AGENTS.md) §架构约束 | "Schema 版本：当前 v3，方向 C 下一阶段迁移到 v4" | 当前已到 v12 | [db.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/db.py) |
+| [AGENTS.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/AGENTS.md) §架构约束 | "Schema 版本：当前 v3，方向 C 下一阶段迁移到 v4" | 当前已到 v13 | [db.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/db.py) |
 
 **核心原则**：当 `architecture.md` / `spec.md` / `roadmap.md` 与代码或 `CHANGELOG.md` 冲突时，**以代码为准，以 CHANGELOG 为修订史**。`ux-redesign-roadmap.md` 是当前分支的权威计划文档。
 
@@ -269,7 +269,7 @@
 | 文件 | 职责 | 当前状态 |
 |------|------|----------|
 | [main.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main.py) | 应用入口 + 组合根（依赖注入装配） | 稳定 |
-| [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) | 主窗口（**4001 行 / 150 方法 God Object，TD-M31**） | 风险高，待 Task 7 拆分 |
+| [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) | 主窗口（**约 3490 行 / 150 方法 God Object，TD-M31**） | 风险高，待 Task 7 拆分 |
 | [folder_tree_model.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/folder_tree_model.py) | 目录树 QAbstractItemModel（惰性加载） | 稳定 |
 | [file_list_model.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/file_list_model.py) | 中栏文件列表 QAbstractListModel（详细列表视图） | 稳定 |
 | [card_list_model.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/card_list_model.py) | 中栏卡片视图 QAbstractListModel | 稳定 |
@@ -300,7 +300,7 @@
 | [content_unit_creation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/content_unit_creation_service.py) | 创建 Mod 组（提取名称 → 建文件夹 → 移入文件 → 标记） | `create_content_unit_from_file` / `create_content_unit_from_files` |
 | [assembly_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/assembly_service.py) | 装配面板（文件夹透视 + 图片重命名为封面） | `list_folder_files` / `bind_mod_group` / `rename_as_cover_by_path` |
 | [tag_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/tag_service.py) | 标签系统（分类 CRUD + 标签 CRUD + JSON 导入导出 + 预置加载） | `get_categories` / `search_tags` / `filter_by_tags` / `load_default_tags_if_empty` |
-| [search_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/search_service.py) | 全局搜索（LIKE 查询标题 + 标签 + 备注，仅 is_marked=1） | `search` |
+| [search_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/search_service.py) | 全局搜索（LIKE 查询标题 + 标签 + 备注；v13 纯 DELETE 模式：记录存在即已标记，无过滤条件） | `search` |
 | [scan_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/scan_service.py) | 扫描（增量 + 全量，UnitOfWork 事务边界） | `scan_all` / `scan_root` |
 | [folder_tree_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/folder_tree_service.py) | 目录树数据源（从 FolderCache + ManagedRoot 构建 TreeNode） | `list_root_nodes` / `list_children` / `count_children` |
 | [managed_root_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/managed_root_service.py) | 受管理根目录 CRUD | `add_root` / `remove_root` / `list_roots` |
@@ -322,10 +322,11 @@ ContentUnit
   - content_type: str (VALID_CONTENT_TYPES = frozenset({"mod"}))
   - source_url: str | None
   - cover_path: str | None (相对内容单元路径)
-  - is_marked: bool (D2 决策：原 status 重构)
   - notes: str | None
   - created_at: str (ISO 8601 UTC)
   - updated_at: str (ISO 8601 UTC)
+
+> v13（UX 重构 Task 6）移除 is_marked 字段：标记 = 记录存在，取消标记 = DELETE 记录。
 
 TagCategory
   - id, name, color_hue: int
@@ -373,7 +374,7 @@ ThumbnailCache
 
 ## 3.6 数据库结构
 
-### 当前 Schema（v12）
+### 当前 Schema（v13）
 
 ```sql
 -- schema 版本管理
@@ -401,12 +402,10 @@ CREATE TABLE content_unit (
     content_type TEXT NOT NULL DEFAULT 'mod',
     source_url TEXT,
     cover_path TEXT,
-    is_marked INTEGER NOT NULL DEFAULT 1 CHECK(is_marked IN (0, 1)),  -- v11 重构自 status
     notes TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE INDEX idx_content_unit_is_marked ON content_unit(is_marked);
 
 -- 标签分类
 CREATE TABLE tag_category (
@@ -490,6 +489,7 @@ CREATE TABLE thumbnail_cache (
 | v9→v10 | operation_history 增加 copy 操作 |
 | v10→v11 | **重大变更**：status→is_marked + path_key UNIQUE + 清理 undo 记录 + 冗余索引清理 |
 | v11→v12 | 移除 staging_area 表（UX 重构 Phase 1 Task 1） |
+| v12→v13 | **纯 DELETE 模式**：清理 is_marked=0 记录及关联 → 移除 is_marked 列（UX 重构 Task 6） |
 
 ## 3.7 文件扫描流程
 
@@ -659,7 +659,7 @@ OperationHistoryDialog → 选中可撤销记录 → UndoService.undo(history_id
 ### [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)（**最高风险**）
 
 - **技术债**：TD-M21 + TD-M31
-- **现状**：4001 行 / 150 个方法 / 60+ 实例变量 / 6 个并行状态机（2026-08-01 复核）
+- **现状**：约 3490 行 / 150 个方法 / 60+ 实例变量 / 6 个并行状态机（2026-08-01 复核）
 - **承担职责**：UI 搭建 + 信号槽 + 扫描线程生命周期 + 装配面板绑定 + 文件操作编排 + 冲突解决编排（2 个重复方法）+ 21 处 `_commit()` + 事务边界 + 14 个快捷键 handler + 导航历史栈
 - **影响**：任何 UI 改动成本极高，UI 层承担了本应在 Application 层的事务边界职责
 - **修复方案**：UX 重构 Phase 2 Task 7 拆分（至少拆出 `ScanController` / `AssemblyController` / `MetadataView` / `ModeController` / `TransactionScope`）
@@ -695,7 +695,8 @@ OperationHistoryDialog → 选中可撤销记录 → UndoService.undo(history_id
 
 ### 设计妥协
 
-1. **`is_marked` 字段语义偏离纯 DELETE 模式**：UX 重构 Phase 2 Task 6 计划回归纯 DELETE 模式（取消标记 = DELETE 记录，不保留 is_marked=0），当前仍保留 is_marked 字段
+1. **`is_marked` 字段语义偏离纯 DELETE 模式**：✅ 已解决（UX 重构 Phase 2 Task 6，
+   schema v13 移除 is_marked，取消标记 = DELETE 记录）
 2. **FileListView 未统一**：FileListModel（中栏）和 AssemblyListModel（装配面板）两套模型，维护两份，Task 7 考虑统一
 3. **schema CHECK 约束保留 'undo'**：D4 决策撤销不再写入新记录，但 CHECK 约束含 'undo'（向后兼容，不重建表）
 4. **`content_unit.content_type` 默认 'mod'**：与实体名 ContentUnit 不一致（TD-L23），未来支持多类型时重构
@@ -708,15 +709,17 @@ OperationHistoryDialog → 选中可撤销记录 → UndoService.undo(history_id
 
 ## 5.1 UX redesign 阶段目标
 
-当前处于 **UX 重构 Phase 2**，已完成 Task 5（交互细节优化），下一步重点：
+当前处于 **UX 重构 Phase 2**，已完成 Task 5（交互细节优化）与 Task 6（数据库与死代码清理，
+v0.47.0），下一步重点：
 
 ### Phase 2 剩余任务
 
 #### Task 6：数据库与死代码清理
-- 移除受管理根目录时同步清理 `folder_cache` 和内容单元记录（未完成）
-- 清理所有 `is_marked=0` 的废弃内容单元记录（DELETE），取消标记操作改为 DELETE 替代 UPDATE，随后移除 `is_marked` 字段（schema 迁移），回归纯 DELETE 模式（未完成）
-- 移除 `%LOCALAPPDATA%\SkyrimContentWorkbench\` 旧目录检测/迁移代码（未完成，实施时需确认是否保留路径回退）
+- 移除受管理根目录时同步清理 `folder_cache` 和内容单元记录 — ✅ 已完成（重叠守卫 + UoW）
+- 清理 `is_marked=0` 记录、取消标记改为 DELETE、移除 `is_marked` 字段（schema v13），回归纯 DELETE 模式 — ✅ 已完成
+- 移除 `%LOCALAPPDATA%\SkyrimContentWorkbench\` 旧目录检测/迁移代码 — ✅ 已完成（`%LOCALAPPDATA%` 路径回退保留）
 - 确保 `data/` 目录结构完整并加入 `.gitignore` — ✅ 已完成（目录齐全，`.gitignore` 含 `/data/`）
+- 死代码清理 TD-L31/L32/L33 — ✅ 已完成（ui_constants 死常量 / AssemblyService.remove_file / 模式注释）
 
 #### Task 7：MainWindow 拆分（**重点**）
 - 来源：TD-M21 + TD-M31
@@ -739,17 +742,17 @@ OperationHistoryDialog → 选中可撤销记录 → UndoService.undo(history_id
 
 ## 5.2 当前痛点
 
-1. **MainWindow God Object**：4001 行 / 150 方法（2026-08-01 复核），任何改动成本极高，事务边界泄漏到 UI 层
+1. **MainWindow God Object**：约 3490 行 / 150 方法（2026-08-01 复核），任何改动成本极高，事务边界泄漏到 UI 层
 2. **文件列表加载性能**：大目录 N+1 查询导致 UI 冻结
 3. **撤销安全性不足**：无 size/mtime 比对，可能覆盖用户外部修改
 4. **文件操作与 DB 事务不一致窗口**：文件已移动 + DB 同步失败时无法回滚
-5. **`is_marked` 字段语义偏离**：当前保留 is_marked=0 记录，与"纯 DELETE 模式"设计原则不一致
+5. **`is_marked` 字段语义偏离**：✅ 已解决（UX 重构 Task 6，schema v13 纯 DELETE 模式）
 6. **文档与代码不同步**：architecture.md / spec.md / roadmap.md 部分内容过时（见第 0 节冲突表）
 
 ## 5.3 计划修改方向
 
 - **拆分 MainWindow**：Phase 2 Task 7，将事务边界移到 Application 层
-- **清理 is_marked 字段**：Phase 2 Task 6，回归纯 DELETE 模式
+- **清理 is_marked 字段**：✅ 已完成（Phase 2 Task 6，schema v13 纯 DELETE 模式）
 - **性能优化**：批量查询替代 N+1，后台线程加载文件列表
 - **撤销安全增强**：Stage 6 schema 扩展存储操作前快照
 - **数据一致性补偿**：Stage 6 引入补偿日志机制处理文件操作与 DB 事务不一致
@@ -779,7 +782,7 @@ OperationHistoryDialog → 选中可撤销记录 → UndoService.undo(history_id
 
 ### P0-1：MainWindow God Object 拆分（TD-M21 + TD-M31）
 
-- **问题**：3823 行 / 95 方法 / 60+ 实例变量，事务边界泄漏到 UI 层
+- **问题**：约 3490 行 / 150 方法 / 60+ 实例变量（2026-08-01 复核），事务边界泄漏到 UI 层
 - **原因**：Stage 4/5 期间 Q8:C 决策"边开发边小规模拆分"实际未执行
 - **推荐方案**：UX 重构 Phase 2 Task 7，至少拆出 `ScanController` / `AssemblyController` / `MetadataView` / `TransactionScope`
 - **影响范围**：UI 层全部，但不动业务逻辑，仅结构调整
@@ -791,6 +794,7 @@ OperationHistoryDialog → 选中可撤销记录 → UndoService.undo(history_id
 - **原因**：UX 重构 Phase 1 移除双模式 + 暂存区后未同步更新老文档
 - **推荐方案**：以本交接文档第 0 节冲突表为指引，逐项更新 architecture.md（特别是 §2 架构图、§3.1 主窗口布局、§Application Services 列表、§schema 描述）
 - **影响范围**：文档可维护性，不影响代码正确性
+- **状态**：✅ 已处理（2026-08-01 文档一致性同步提交 ca819e4 + Task 6 文档更新）
 
 ### P0-3：is_marked 字段清理（UX 重构 Task 6）
 
@@ -798,6 +802,7 @@ OperationHistoryDialog → 选中可撤销记录 → UndoService.undo(history_id
 - **原因**：D2 决策重构为 bool 但保留字段，未回归纯 DELETE 模式
 - **推荐方案**：清理 is_marked=0 记录，取消标记操作改为 DELETE，移除 is_marked 字段（schema 迁移）
 - **影响范围**：Domain / Repository / Service / UI 全链路，需 schema 迁移
+- **状态**：✅ 已解决（UX 重构 Phase 2 Task 6，v0.47.0，schema v13）
 - **权威来源**：[ux-redesign-roadmap.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/ux-redesign-roadmap.md) Task 6
 
 ## P1：重要优化
@@ -1014,7 +1019,7 @@ a84bebf Stage 5 Task 7: 全局搜索 + ContentUnit.status 简化 (v0.40.0)
 6. **阅读 [src/app/main.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main.py)**：组合根，理解所有 Service 的依赖注入关系
 7. **阅读 [src/domain/models.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/domain/models.py)**：所有 Domain 实体与领域校验
 8. **阅读 [src/infrastructure/db.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/db.py) + [migrations.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/migrations.py)**：当前 schema v12 结构与迁移历史
-9. **浏览 [src/app/main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) 结构**（不必逐行读）：理解 3823 行的职责分布，识别可拆分边界
+9. **浏览 [src/app/main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) 结构**（不必逐行读）：理解约 3500 行的职责分布，识别可拆分边界
 10. **浏览 [src/application/](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/) 各 Service**：理解 Application 层职责划分
 
 ## 9.3 第三步：建立测试认知（不写代码）
@@ -1031,7 +1036,7 @@ a84bebf Stage 5 Task 7: 全局搜索 + ContentUnit.status 简化 (v0.40.0)
 
 ## 9.5 第五步：与用户对齐方向（不写代码）
 
-17. **向用户确认下一个 Task**：根据 [ux-redesign-roadmap.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/ux-redesign-roadmap.md) Phase 2，下一个是 Task 6（数据库与死代码清理）或 Task 7（MainWindow 拆分），让用户决定优先级
+17. **向用户确认下一个 Task**：根据 [ux-redesign-roadmap.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/ux-redesign-roadmap.md) Phase 2，Task 6（数据库与死代码清理）已完成（v0.47.0），下一个是 Task 7（MainWindow 拆分）
 18. **理解用户工作流**：确认实现计划后再编码；Task 完成后运行自动化检查 + 提供手动验收步骤；用户验收通过后才提交；不自动进入下一个 Task
 19. **理解用户决策风格**：待确认需求按 A/B/C 阻塞级别分类，先解决 A/B
 

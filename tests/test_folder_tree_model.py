@@ -52,6 +52,8 @@ def _make_managed_root_service(
 
     return ManagedRootService(
         ManagedRootRepository(db_connection),
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
         now_provider=lambda: "2026-07-12T00:00:00Z",
         uuid_provider=fake_uuid,
     )

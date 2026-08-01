@@ -58,6 +58,8 @@ def file_list_model_with_entries(qapp, tmp_path: Path) -> tuple[FileListModel, l
 
     managed_service = ManagedRootService(
         ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-12T00:00:00Z",
         uuid_provider=fake_uuid,
     )
@@ -255,6 +257,8 @@ def file_list_model_with_cover_image(qapp, tmp_path: Path) -> tuple[FileListMode
 
     managed_service = ManagedRootService(
         ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-12T00:00:00Z",
         uuid_provider=fake_uuid,
     )

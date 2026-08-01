@@ -306,7 +306,7 @@ class FolderTreeModel(QAbstractItemModel):
     def find_index_by_path(self, view, target_path: str) -> QModelIndex:
         """按 real_path 查找节点的 QModelIndex。
 
-        2026-07-17 修复：浏览模式下双击中栏文件夹进入子目录时，
+        2026-07-17 修复：双击中栏文件夹进入子目录时，
         需要同步目录树选中节点。原实现 _on_entry_activated 只刷新中栏，
         不更新 tree_view.selectionModel()，导致后续依赖该 selection 的
         刷新逻辑（_refresh_content_list_for_current_mode /

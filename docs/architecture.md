@@ -359,7 +359,7 @@ MetadataPanel 已加载内容单元 → 点击「设置封面」按钮
 | 模块 | 文件 | 职责 |
 |------|------|------|
 | 数据库初始化 | `db.py` | SQLite 连接、WAL 模式、外键、版本管理 |
-| Schema 迁移 | `migrations.py` | v0→v12 迁移注册表（建新表、移除旧表、加 UNIQUE 约束、thumbnail_cache 复合主键、operation_history 撤销/复制支持、status→is_marked 重构、staging_area 移除） |
+| Schema 迁移 | `migrations.py` | v0→v13 迁移注册表（建新表、移除旧表、加 UNIQUE 约束、thumbnail_cache 复合主键、operation_history 撤销/复制支持、status→is_marked→纯 DELETE 模式、staging_area 移除） |
 | Repository 层 | `repositories/` | 每个实体对应一个 Repository |
 | 文件扫描器 | `file_scanner.py` | 递归扫描、增量 mtime 判断、内容识别 |
 | 文件操作服务 | `file_operation_service.py` | 文件移动/重命名/删除/撤销（简化版） |
@@ -395,7 +395,7 @@ repositories/
 
 **数据库位置：** 数据目录下 `app.db`（数据目录解析优先级见 §10）
 
-**Schema v12 表清单：**
+**Schema v13 表清单：**
 
 ```text
 schema_version
@@ -411,14 +411,14 @@ content_unit
   - content_type TEXT NOT NULL DEFAULT 'mod'
   - source_url TEXT
   - cover_path TEXT
-  - is_marked INTEGER NOT NULL DEFAULT 1 CHECK(is_marked IN (0, 1))  # v11 由 status 重构
   - notes TEXT
   - created_at TEXT NOT NULL
   - updated_at TEXT NOT NULL
   # v6 移除：rating INTEGER（私人数据库用不上）
   # v10 变更：所有 'unorganized' → 'organized'（语义重命名，旧 organized/"已整理"语义已废弃）
   # v11 变更：status 列移除，重构为 is_marked（D2/D3 决策）
-  #  注：UX 重构 Phase 2 Task 6 计划再次迁移（v13）移除 is_marked，回归纯 DELETE 模式
+  # v13 变更（UX 重构 Task 6）：is_marked 列移除，回归纯 DELETE 模式
+  #  （记录存在即已标记；取消标记 = DELETE 记录）
 
 tag_category
   - id TEXT PRIMARY KEY
@@ -489,6 +489,7 @@ thumbnail_cache
 | v9→v10 | 阶段 5 Task 7 收尾 | content_unit.status 'unorganized' → 'organized'（语义简化为两态） |
 | v10→v11 | Stage 5 Code Review | content_unit.status → is_marked + 新增 path_key（UNIQUE）；清理历史 undo 记录；清理冗余索引（M12） |
 | v11→v12 | UX 重构 Phase 1 Task 1 | 移除 staging_area 表（暂存区功能移除） |
+| v12→v13 | UX 重构 Phase 2 Task 6 | 清理 is_marked=0 记录及关联 → content_unit 表重建移除 is_marked 列，回归纯 DELETE 模式 |
 
 所有迁移函数幂等（CREATE TABLE IF NOT EXISTS / 列存在性检查 / SQL 文本检查）。
 迁移注册表见 `migrations.py` 末尾 `MIGRATIONS` 列表，`init_db` 按 target 升序应用。
@@ -642,9 +643,9 @@ ScanService.scan(managed_root)
 4. `~/.skyrimmodworkbench/`（非 Windows 回退）
 
 **迁移策略（Task 0.5 用户决策）**：程序**不执行任何自动迁移、复制、删除操作**。
-检测到旧 `%LOCALAPPDATA%\SkyrimContentWorkbench\` 有数据时仅输出日志提示用户手动迁移；
-新目录已有 `app.db` 后不再提示。旧目录检测提示代码计划在 UX 重构 Task 6 移除
-（是否保留 `%LOCALAPPDATA%` 路径回退待确认，open-questions §7）。
+旧目录检测提示代码已于 UX 重构 Task 6（v0.47.0）移除；
+`%LOCALAPPDATA%\SkyrimContentWorkbench\` 仍作为 Windows 回退路径保留
+（open-questions §7 决策）。
 
 ```text
 {data_root}/

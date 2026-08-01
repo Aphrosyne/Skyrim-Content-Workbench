@@ -69,6 +69,8 @@ def main_window_env(qapp, tmp_path: Path):
 
     managed_service = ManagedRootService(
         ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-14T00:00:00Z",
         uuid_provider=fake_uuid,
     )
@@ -232,10 +234,9 @@ def test_unmark_content_unit_refreshes_list(qapp, main_window_env) -> None:
     window._on_unmark_content_unit(entry)  # noqa: SLF001
     qapp.processEvents()
 
-    # DB 中该 ContentUnit is_marked 应为 False（不删除记录，防止扫描重建）
+    # 纯 DELETE 模式（Task 6）：取消标记 = 删除记录
     unit = window._content_service.get_by_path(entry.path)  # noqa: SLF001
-    assert unit is not None
-    assert unit.is_marked is False
+    assert unit is None
 
     # 列表刷新后该条目不再显示 [内容单元] 标记
     refreshed_entry = _find_entry_by_name(window, "BDOR Black Knight 1.0.7z")
@@ -276,7 +277,6 @@ def test_create_mod_group_full_flow(qapp, main_window_env) -> None:
     unit = window._content_service.get_by_path(str(target_folder))  # noqa: SLF001
     assert unit is not None
     assert unit.title == "BDOR Black Knight"
-    assert unit.is_marked is True
     # operation_history 写入 2 条
     rows = conn.execute("SELECT * FROM operation_history").fetchall()
     assert len(rows) == 2
@@ -344,7 +344,6 @@ def test_create_mod_group_multi_select(qapp, main_window_env) -> None:
     # ContentUnit 创建
     unit = window._content_service.get_by_path(str(target_folder))  # noqa: SLF001
     assert unit is not None
-    assert unit.is_marked is True
 
 
 def test_create_mod_group_menu_hidden_when_dir_selected(qapp, main_window_env) -> None:
@@ -545,11 +544,10 @@ def test_batch_unmark_content_unit(qapp, main_window_env) -> None:
     window._on_batch_unmark_content_unit(target_entries)  # noqa: SLF001
     qapp.processEvents()
 
-    # 所有条目应取消标记（is_marked 变为 False）
+    # 纯 DELETE 模式（Task 6）：所有条目记录应被删除
     for e in target_entries:
         unit = window._content_service.get_by_path(e.path)  # noqa: SLF001
-        assert unit is not None, "取消标记不删除记录"
-        assert unit.is_marked is False, f"{e.name} is_marked 应为 False"
+        assert unit is None, f"{e.name} 取消标记后记录应被删除"
 
 
 def test_batch_unmark_skips_unmarked_entries(qapp, main_window_env) -> None:

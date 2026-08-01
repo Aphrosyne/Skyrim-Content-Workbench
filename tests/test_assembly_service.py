@@ -363,43 +363,6 @@ class TestAddFileByFolderPath:
         assert (target_folder / "中文名文件.7z").is_file()
 
 
-# === remove_file ===
-
-
-class TestRemoveFile:
-    def test_moves_file_back_to_staging_root(self, assembly_env) -> None:
-        """从 Mod 组移除文件 → 移回暂存区根目录（不保留原子目录结构）。"""
-        svc, _, _, staging, mod_folder, unit = assembly_env
-        # Mod 组内放入文件
-        target = mod_folder / "汉化.zip"
-        target.write_bytes(b"localization")
-
-        result = svc.remove_file(unit.id, "汉化.zip", staging)
-
-        # 文件已从 Mod 组移走
-        assert not target.exists()
-        # 文件移回暂存区根目录
-        assert (staging / "汉化.zip").is_file()
-        assert result == staging / "汉化.zip"
-
-    def test_conflict_when_staging_has_same_name(self, assembly_env) -> None:
-        """暂存区根目录已存在同名文件抛 ConflictError。"""
-        svc, _, _, staging, mod_folder, unit = assembly_env
-        target = mod_folder / "汉化.zip"
-        target.write_bytes(b"mod-copy")
-        # 暂存区已存在同名文件
-        (staging / "汉化.zip").write_bytes(b"staging-copy")
-
-        with pytest.raises(ConflictError):
-            svc.remove_file(unit.id, "汉化.zip", staging)
-
-    def test_unit_not_exist_raises(self, assembly_env) -> None:
-        """ContentUnit 不存在抛 ContentUnitNotFoundError。"""
-        svc, _, _, staging, _, _ = assembly_env
-        with pytest.raises(ContentUnitNotFoundError):
-            svc.remove_file("nonexistent-id", "file.zip", staging)
-
-
 # === rename_as_cover ===
 
 

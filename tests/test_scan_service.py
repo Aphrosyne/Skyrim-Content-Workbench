@@ -56,6 +56,8 @@ def managed_root_service(db_connection) -> ManagedRootService:
 
     return ManagedRootService(
         ManagedRootRepository(db_connection),
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
         now_provider=lambda: "2026-07-12T00:00:00Z",
         uuid_provider=fake_uuid,
     )
@@ -136,7 +138,6 @@ class TestScanRootFull:
 
         repo = ContentUnitRepository(db_connection)
         for unit in repo.list_all():
-            assert unit.is_marked is True
             assert unit.content_type == "mod"
 
     def test_full_scan_content_unit_title_is_filename_with_ext(

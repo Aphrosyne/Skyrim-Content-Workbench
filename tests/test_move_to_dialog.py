@@ -88,6 +88,8 @@ def tree_service(conn: sqlite3.Connection, mod_tree: Path) -> FolderTreeService:
 
     managed_service = ManagedRootService(
         ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-30T00:00:00Z",
         uuid_provider=fake_uuid,
     )

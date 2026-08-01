@@ -9,6 +9,7 @@ UNIQUE 约束（阶段 4 Task 1）。
 v6→v7 thumbnail_cache 新增 size 列 + 复合主键 (content_unit_id, size)（Task 1a）。
 v8→v9 operation_history.operation_type CHECK 约束扩展 'copy'（Stage 5 Task 3b）。
 v11→v12 删除 staging_area 表（UX 重构 Phase 1 Task 1 Commit 2：暂存区功能移除）。
+v12→v13 移除 content_unit.is_marked 字段（UX 重构 Task 6：回归纯 DELETE 模式）。
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from infrastructure.migrations import (
     migrate_v7_to_v8,
     migrate_v8_to_v9,
     migrate_v11_to_v12,
+    migrate_v12_to_v13,
 )
 
 
@@ -48,11 +50,12 @@ def test_migrations_sorted_by_target() -> None:
     assert MIGRATIONS[9][0] == 10
     assert MIGRATIONS[10][0] == 11
     assert MIGRATIONS[11][0] == 12
+    assert MIGRATIONS[12][0] == 13
 
 
-def test_current_schema_version_is_twelve() -> None:
-    """UX 重构 Phase 1 Task 1 Commit 2：当前 schema 版本应为 12（移除 staging_area 表）。"""
-    assert CURRENT_SCHEMA_VERSION == 12
+def test_current_schema_version_is_thirteen() -> None:
+    """UX 重构 Task 6：当前 schema 版本应为 13（移除 is_marked 字段）。"""
+    assert CURRENT_SCHEMA_VERSION == 13
 
 
 def test_migrate_v0_to_v1_idempotent() -> None:
@@ -513,7 +516,7 @@ def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
     db_path = tmp_path / "test.db"
     version = init_db(db_path)
     assert version == CURRENT_SCHEMA_VERSION
-    assert version == 12
+    assert version == 13
 
     # v7 后 managed_root 表仍存在
     conn = sqlite3.connect(str(db_path))
@@ -607,9 +610,9 @@ def test_init_db_migrates_v3_db_to_v6(tmp_path) -> None:
     finally:
         conn.close()
 
-    # init_db 应识别 v3 并依次应用 v3→v4→...→v12
+    # init_db 应识别 v3 并依次应用 v3→v4→...→v13
     version = init_db(db_path)
-    assert version == 12
+    assert version == 13
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -997,5 +1000,113 @@ def test_migrate_v11_to_v12_idempotent() -> None:
         migrate_v11_to_v12(conn)
         # 再次调用也不报错
         migrate_v11_to_v12(conn)
+    finally:
+        conn.close()
+
+
+# --- v12 → v13 迁移测试（UX 重构 Task 6：纯 DELETE 模式） ---
+
+
+def test_migrate_v12_to_v13_deletes_unmarked_and_drops_column() -> None:
+    """v12→v13：清理 is_marked=0 记录及关联，移除 is_marked 列。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        # 手动构建 v12 形态的 content_unit（含 is_marked）+ 关联表
+        conn.executescript(
+            """
+            CREATE TABLE content_unit (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                path_key TEXT NOT NULL UNIQUE,
+                title TEXT,
+                content_type TEXT NOT NULL DEFAULT 'mod',
+                source_url TEXT,
+                cover_path TEXT,
+                is_marked INTEGER NOT NULL DEFAULT 1 CHECK(is_marked IN (0, 1)),
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE tag (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                category_id TEXT NOT NULL
+            );
+            CREATE TABLE content_unit_tag (
+                content_unit_id TEXT NOT NULL REFERENCES content_unit(id),
+                tag_id TEXT NOT NULL REFERENCES tag(id),
+                PRIMARY KEY (content_unit_id, tag_id)
+            );
+            CREATE TABLE thumbnail_cache (
+                content_unit_id TEXT NOT NULL,
+                size INTEGER NOT NULL DEFAULT 64,
+                source_size_bytes INTEGER NOT NULL,
+                source_modified_at TEXT NOT NULL,
+                cache_filename TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error_message TEXT,
+                generated_at TEXT NOT NULL,
+                PRIMARY KEY (content_unit_id, size)
+            );
+            INSERT INTO content_unit (id, path, path_key, is_marked, created_at, updated_at)
+            VALUES ('marked', '/m', '/m', 1, 't', 't'),
+                   ('unmarked', '/u', '/u', 0, 't', 't');
+            INSERT INTO tag (id, name, category_id) VALUES ('t1', '标签', 'c1');
+            INSERT INTO content_unit_tag (content_unit_id, tag_id)
+            VALUES ('marked', 't1'), ('unmarked', 't1');
+            INSERT INTO thumbnail_cache (content_unit_id, size, source_size_bytes,
+                source_modified_at, cache_filename, status, generated_at)
+            VALUES ('marked', 256, 1, 't', 'marked_256.webp', 'ok', 't'),
+                   ('unmarked', 256, 1, 't', 'unmarked_256.webp', 'ok', 't');
+            """
+        )
+
+        migrate_v12_to_v13(conn)
+
+        # is_marked=0 记录及其关联被清理，is_marked=1 记录保留
+        remaining = conn.execute("SELECT id FROM content_unit ORDER BY id").fetchall()
+        assert [r["id"] for r in remaining] == ["marked"]
+        tag_rows = conn.execute("SELECT content_unit_id FROM content_unit_tag").fetchall()
+        assert [r["content_unit_id"] for r in tag_rows] == ["marked"]
+        thumb_rows = conn.execute("SELECT content_unit_id FROM thumbnail_cache").fetchall()
+        assert [r["content_unit_id"] for r in thumb_rows] == ["marked"]
+
+        # is_marked 列与索引已移除
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(content_unit)")}
+        assert "is_marked" not in cols
+        idx_row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name='idx_content_unit_is_marked'"
+        ).fetchone()
+        assert idx_row is None
+    finally:
+        conn.close()
+
+
+def test_migrate_v12_to_v13_idempotent() -> None:
+    """v12→v13 迁移函数本身幂等（列存在性检查）。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        # 已迁移（无 is_marked 列）时再次调用不报错
+        conn.execute(
+            """
+            CREATE TABLE content_unit (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                path_key TEXT NOT NULL UNIQUE,
+                title TEXT,
+                content_type TEXT NOT NULL DEFAULT 'mod',
+                source_url TEXT,
+                cover_path TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        migrate_v12_to_v13(conn)
+        migrate_v12_to_v13(conn)
     finally:
         conn.close()

@@ -7,8 +7,8 @@ r"""应用数据目录管理（Task 0.5 数据目录迁移）。
 4. ~/.skyrimmodworkbench/（非 Windows 回退）
 
 本模块只负责路径决策与目录创建，**不执行任何数据迁移、复制、删除操作**。
-若检测到旧 %LOCALAPPDATA%\SkyrimContentWorkbench\ 有数据，仅输出日志提示
-用户手动迁移，避免程序自动动数据的风险（用户决策）。
+（UX 重构 Task 6：旧 `%LOCALAPPDATA%\SkyrimContentWorkbench\` 检测/迁移提示代码已移除；
+`%LOCALAPPDATA%` 仍作为 Windows 回退路径保留，见 open-questions §7。）
 
 本模块不复制、不修改用户 Mod 文件；仅管理应用自身数据目录。
 """
@@ -111,31 +111,4 @@ def ensure_app_directories() -> Path:
     for d in (root, get_thumbnails_dir(), get_exports_dir(), get_logs_dir()):
         d.mkdir(parents=True, exist_ok=True)
 
-    # 检测旧目录并提示（不执行任何文件操作）
-    _log_legacy_appdata_hint_if_exists(root)
-
     return root
-
-
-def _log_legacy_appdata_hint_if_exists(new_root: Path) -> None:
-    """若检测到旧 %LOCALAPPDATA%\\SkyrimContentWorkbench\\ 有数据，
-    输出日志提示用户手动迁移。
-
-    仅提示，不执行任何复制/移动/删除操作。
-    新目录已有 app.db 时不再提示（已迁移或已在使用）。
-    """
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if not local_app_data:
-        return
-    old_root = Path(local_app_data) / APP_DATA_DIR_NAME
-    if not old_root.exists():
-        return
-    # 新目录已有 app.db → 已在使用，不再提示
-    if (new_root / "app.db").exists():
-        return
-    logger.info(
-        "检测到旧数据目录：%s。如需迁移到当前数据目录 %s，请手动复制 app.db、"
-        "thumbnails/、exports/、logs/。程序不会自动迁移，避免动数据风险。",
-        old_root,
-        new_root,
-    )

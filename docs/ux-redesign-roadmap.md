@@ -12,7 +12,7 @@
 
 以下约束在整个 UX 重构期间不可违反，避免 agent 自行引入多余字段或概念：
 
-1. **标记 = 数据库有记录，取消标记 = DELETE 记录**。ContentUnit 表里有的就是已标记的内容单元，没有的就是未标记。不需要 `status` 列或 `is_marked` 字段表达"曾经标记过但现在不是"的状态。当前 schema v12 中遗留的 `is_marked` 字段在 Task 6 中一并清理，回归纯 DELETE 模式。
+1. **标记 = 数据库有记录，取消标记 = DELETE 记录**。ContentUnit 表里有的就是已标记的内容单元，没有的就是未标记。不需要 `status` 列或 `is_marked` 字段表达"曾经标记过但现在不是"的状态。该原则已随 Task 6（schema v13）落地：`is_marked` 字段移除，取消标记 = DELETE 记录。
 2. **Mod 组 = 文件夹内容单元**，不是独立的数据类型或表。"创建 Mod 组"是 UI 操作（建文件夹 + 移入文件 + 标记为内容单元），不引入 `ModGroup` 实体。
 3. **ContentUnit 不存 status、rating 字段**。元数据仅：`title`、`source_url`、`notes`、`cover_path`。
 4. **路径是唯一标识**。一个路径最多对应一条 ContentUnit 记录。
@@ -186,17 +186,27 @@
 | 多选（中栏） | 批量移动到……、创建 Mod 组、批量打标签 |
 | 中栏/装配面板空白处（有钉住时） | 取消钉住 |
 
-### Task 6：数据库与死代码清理
+### Task 6：数据库与死代码清理 ✅（v0.47.0，2026-08-01）
 
-- 移除受管理根目录时同步清理 `folder_cache` 和内容单元记录 — open-questions §6（未完成）
-- 清理所有 `is_marked=0` 的废弃内容单元记录（DELETE），同时将取消标记操作改为 DELETE 替代 UPDATE `is_marked=0`，随后移除 `is_marked` 字段（schema 迁移），回归纯 DELETE 模式（未完成）
-- 清理 `staging_area` 表及相关代码 — ✅ 已在 Task 1 Commit 2 完成（v11→v12 迁移，源码无残留）
-- 移除 `%LOCALAPPDATA%\SkyrimContentWorkbench\` 旧目录检测/迁移代码 — open-questions §7（未完成，实施时需确认是否保留路径回退）
-- 确保 `data/` 目录结构完整：`data/app.db`、`data/thumbnails/`、`data/exports/`、`data/logs/`，并加入 `.gitignore` — ✅ 已完成（目录齐全，`.gitignore` 含 `/data/`）
+**实施记录：**
+- **schema v12→v13 迁移**：清理历史 `is_marked=0` 记录（级联 content_unit_tag / thumbnail_cache）
+  → 重建 content_unit 表移除 `is_marked` 列与索引，回归纯 DELETE 模式。
+  Domain / Repository / Search / Scan / FileOperation 全链路移除 `is_marked`。
+- **取消标记改为 DELETE**：`ContentService.unmark_content_unit` 删除记录
+  （元数据随之删除；取消标记的压缩包下次扫描会重新识别，为 roadmap 既定后果）。
+- **remove_root 同步清理**：`ManagedRootService.remove_root` 注入 folder_cache /
+  content_unit 仓储 + UoW，清理被移除根前缀下的扫描记录（重叠守卫：仍属于其他
+  剩余根目录的记录不清理）。
+- **旧目录检测代码移除**：`app_paths` 删除 `%LOCALAPPDATA%` 旧目录检测/迁移提示
+  代码与对应测试；`%LOCALAPPDATA%` 路径回退保留（open-questions §7 决策）。
+- **死代码清理**：TD-L31（ui_constants 缩略图死常量）、TD-L32（AssemblyService
+  .remove_file）、TD-L33（"浏览/整理模式"过时注释）一并处理。
+- **确认项**：staging_area 清理（Task 1 已完成）、data/ 目录结构 + `.gitignore`
+  （Task 0.5 已完成）。
 
 ### Task 7：MainWindow 拆分
 
-- 来源：TD-M21 + TD-M31（4001 行 / 150 方法 / 60+ 实例变量，2026-08-01 复核）
+- 来源：TD-M21 + TD-M31（约 3490 行 / 150 方法 / 60+ 实例变量，2026-08-01 复核）
 - 至少拆出：
   - `ScanController`（扫描线程生命周期 + 信号转发）
   - `AssemblyController`（装配面板绑定 / 回调）

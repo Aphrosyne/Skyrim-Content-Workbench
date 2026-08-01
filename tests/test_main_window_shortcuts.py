@@ -74,6 +74,8 @@ def shortcut_env(qapp, tmp_path: Path):
 
     managed_service = ManagedRootService(
         ManagedRootRepository(conn),
+        FolderCacheRepository(conn),
+        ContentUnitRepository(conn),
         now_provider=lambda: "2026-07-30T00:00:00Z",
         uuid_provider=fake_uuid,
     )
@@ -622,6 +624,8 @@ class TestShortcutRegistration:
 
         managed_service = ManagedRootService(
             ManagedRootRepository(conn),
+            FolderCacheRepository(conn),
+            ContentUnitRepository(conn),
             now_provider=lambda: "2026-07-30T00:00:00Z",
             uuid_provider=fake_uuid,
         )
@@ -684,6 +688,8 @@ class TestShortcutRegistration:
 
         managed_service = ManagedRootService(
             ManagedRootRepository(conn),
+            FolderCacheRepository(conn),
+            ContentUnitRepository(conn),
             now_provider=lambda: "2026-07-30T00:00:00Z",
             uuid_provider=fake_uuid,
         )

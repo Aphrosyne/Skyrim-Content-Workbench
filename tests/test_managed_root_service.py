@@ -23,6 +23,8 @@ from application.errors import (
 )
 from application.managed_root_service import ManagedRootService
 from infrastructure.path_utils import make_path_key
+from infrastructure.repositories.content_unit import ContentUnitRepository
+from infrastructure.repositories.folder_cache import FolderCacheRepository
 from infrastructure.repositories.managed_root import ManagedRootRepository
 
 
@@ -42,6 +44,8 @@ def test_add_root_legal_directory(db_connection, tmp_path: Path) -> None:
     repo = ManagedRootRepository(db_connection)
     service = ManagedRootService(
         repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
         now_provider=lambda: "2026-07-07T00:00:00Z",
         uuid_provider=lambda: "uuid-1",
     )
@@ -62,6 +66,8 @@ def test_add_root_chinese_path(db_connection, tmp_path: Path) -> None:
     repo = ManagedRootRepository(db_connection)
     service = ManagedRootService(
         repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
         now_provider=lambda: "2026-07-07T00:00:00Z",
         uuid_provider=lambda: "uuid-cn",
     )
@@ -77,7 +83,11 @@ def test_add_root_chinese_path(db_connection, tmp_path: Path) -> None:
 def test_add_root_rejects_nonexistent_path(db_connection, tmp_path: Path) -> None:
     """路径不存在应拒绝。"""
     repo = ManagedRootRepository(db_connection)
-    service = ManagedRootService(repo)
+    service = ManagedRootService(
+        repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
+    )
     nonexistent = tmp_path / "DoesNotExist"
 
     with pytest.raises(InvalidRootPathError):
@@ -87,7 +97,11 @@ def test_add_root_rejects_nonexistent_path(db_connection, tmp_path: Path) -> Non
 def test_add_root_rejects_non_directory_path(db_connection, tmp_path: Path) -> None:
     """非目录路径应拒绝。"""
     repo = ManagedRootRepository(db_connection)
-    service = ManagedRootService(repo)
+    service = ManagedRootService(
+        repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
+    )
     file_path = tmp_path / "file.txt"
     file_path.write_text("not a directory", encoding="utf-8")
 
@@ -100,6 +114,8 @@ def test_add_root_rejects_duplicate(db_connection, tmp_path: Path) -> None:
     repo = ManagedRootRepository(db_connection)
     service = ManagedRootService(
         repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
         now_provider=lambda: "2026-07-07T00:00:00Z",
         uuid_provider=lambda: "uuid-dup",
     )
@@ -116,7 +132,11 @@ def test_add_root_rejects_duplicate(db_connection, tmp_path: Path) -> None:
 def test_add_root_does_not_modify_target_directory(db_connection, tmp_path: Path) -> None:
     """添加根目录不应修改目标目录或其中文件。"""
     repo = ManagedRootRepository(db_connection)
-    service = ManagedRootService(repo)
+    service = ManagedRootService(
+        repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
+    )
     target = tmp_path / "Mods"
     target.mkdir()
     (target / "marker.txt").write_text("keep-me", encoding="utf-8")
@@ -133,7 +153,11 @@ def test_add_root_does_not_modify_target_directory(db_connection, tmp_path: Path
 def test_list_roots_empty(db_connection) -> None:
     """空库返回空列表。"""
     repo = ManagedRootRepository(db_connection)
-    service = ManagedRootService(repo)
+    service = ManagedRootService(
+        repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
+    )
     assert service.list_roots() == []
 
 
@@ -143,6 +167,8 @@ def test_list_roots_returns_all(db_connection, tmp_path: Path) -> None:
     uuid_provider, _ = _make_counter("u")
     service = ManagedRootService(
         repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
         now_provider=lambda: "2026-07-07T00:00:00Z",
         uuid_provider=uuid_provider,
     )
@@ -164,6 +190,8 @@ def test_get_root_existing(db_connection, tmp_path: Path) -> None:
     repo = ManagedRootRepository(db_connection)
     service = ManagedRootService(
         repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
         now_provider=lambda: "2026-07-07T00:00:00Z",
         uuid_provider=lambda: "uuid-get",
     )
@@ -179,7 +207,11 @@ def test_get_root_existing(db_connection, tmp_path: Path) -> None:
 def test_get_root_missing_raises(db_connection) -> None:
     """get_root 不存在时抛 ManagedRootNotFoundError。"""
     repo = ManagedRootRepository(db_connection)
-    service = ManagedRootService(repo)
+    service = ManagedRootService(
+        repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
+    )
     with pytest.raises(ManagedRootNotFoundError):
         service.get_root("missing-id")
 
@@ -201,6 +233,8 @@ def test_add_root_requires_explicit_commit(db_path: Path, tmp_path: Path) -> Non
     try:
         service = ManagedRootService(
             ManagedRootRepository(conn1),
+            FolderCacheRepository(conn1),
+            ContentUnitRepository(conn1),
             now_provider=lambda: "2026-07-07T00:00:00Z",
             uuid_provider=lambda: "persist-uuid",
         )
@@ -212,7 +246,11 @@ def test_add_root_requires_explicit_commit(db_path: Path, tmp_path: Path) -> Non
     # 第二次连接：应能读到
     conn2 = get_connection(db_path)
     try:
-        service2 = ManagedRootService(ManagedRootRepository(conn2))
+        service2 = ManagedRootService(
+            ManagedRootRepository(conn2),
+            FolderCacheRepository(conn2),
+            ContentUnitRepository(conn2),
+        )
         roots = service2.list_roots()
         assert len(roots) == 1
         assert roots[0].real_path == str(path)
@@ -229,6 +267,8 @@ def test_remove_root_deletes_configuration(db_connection, tmp_path: Path) -> Non
     repo = ManagedRootRepository(db_connection)
     service = ManagedRootService(
         repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
         now_provider=lambda: "2026-07-07T00:00:00Z",
         uuid_provider=lambda: "uuid-remove-1",
     )
@@ -244,7 +284,11 @@ def test_remove_root_deletes_configuration(db_connection, tmp_path: Path) -> Non
 def test_remove_root_missing_raises(db_connection) -> None:
     """remove_root 不存在时抛 ManagedRootNotFoundError。"""
     repo = ManagedRootRepository(db_connection)
-    service = ManagedRootService(repo)
+    service = ManagedRootService(
+        repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
+    )
 
     with pytest.raises(ManagedRootNotFoundError):
         service.remove_root("nonexistent-id")
@@ -259,6 +303,8 @@ def test_remove_root_preserves_real_directory_and_files(db_connection, tmp_path:
     repo = ManagedRootRepository(db_connection)
     service = ManagedRootService(
         repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
         now_provider=lambda: "2026-07-07T00:00:00Z",
         uuid_provider=lambda: "uuid-remove-2",
     )
@@ -289,15 +335,16 @@ def test_remove_root_preserves_real_directory_and_files(db_connection, tmp_path:
     assert (target / "marker.txt").exists()
 
 
-def test_remove_root_does_not_clean_scan_records(db_connection, tmp_path: Path) -> None:
-    """移除根目录配置不清理 content_unit / folder_cache 扫描记录。
+def test_remove_root_cleans_scan_records(db_connection, tmp_path: Path) -> None:
+    """UX 重构 Task 6：移除根目录配置同步清理 content_unit / folder_cache 扫描记录。
 
-    方向 C 重建后（v4），扫描记录存储于 content_unit 与 folder_cache 表。
-    ManagedRootService.remove_root 仅删除 managed_root 记录，不触碰其他表。
+    真实文件不删除；重叠守卫场景见 test_remove_root_overlap_guard。
     """
     repo = ManagedRootRepository(db_connection)
     service = ManagedRootService(
         repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
         now_provider=lambda: "2026-07-07T00:00:00Z",
         uuid_provider=lambda: "uuid-remove-3",
     )
@@ -307,9 +354,9 @@ def test_remove_root_does_not_clean_scan_records(db_connection, tmp_path: Path) 
 
     # 模拟扫描结果（直接插入 content_unit 与 folder_cache）
     db_connection.execute(
-        "INSERT INTO content_unit (id, path, path_key, title, content_type, is_marked, "
+        "INSERT INTO content_unit (id, path, path_key, title, content_type, "
         "created_at, updated_at) VALUES "
-        "('cu-1', ?, ?, 'Mods', 'mod', 1, '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
+        "('cu-1', ?, ?, 'Mods', 'mod', '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
         (str(target), make_path_key(str(target))),
     )
     db_connection.execute(
@@ -323,13 +370,109 @@ def test_remove_root_does_not_clean_scan_records(db_connection, tmp_path: Path) 
 
     # managed_root 已删除
     assert repo.get_by_id(created.id) is None
-    # content_unit 仍存在
+    # content_unit 已被清理
     cu_count = db_connection.execute(
         "SELECT COUNT(*) FROM content_unit WHERE id = 'cu-1'"
     ).fetchone()
-    assert cu_count[0] == 1
-    # folder_cache 仍存在
+    assert cu_count[0] == 0
+    # folder_cache 已被清理
     fc_count = db_connection.execute(
         "SELECT COUNT(*) FROM folder_cache WHERE id = 'fc-1'"
     ).fetchone()
-    assert fc_count[0] == 1
+    assert fc_count[0] == 0
+
+
+def test_remove_root_cleans_nested_scan_records(db_connection, tmp_path: Path) -> None:
+    """移除根目录时，根路径前缀下的深层 folder_cache / content_unit 一并清理。"""
+    repo = ManagedRootRepository(db_connection)
+    service = ManagedRootService(
+        repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=lambda: "uuid-remove-nested",
+    )
+    target = tmp_path / "Mods"
+    nested_dir = target / "Armor" / "Heavy"
+    nested_dir.mkdir(parents=True)
+    (nested_dir / "BDOR.7z").write_bytes(b"archive-data")
+    created = service.add_root(target)
+
+    # 模拟扫描结果：根节点 + 深层子目录 + 深层压缩包内容单元
+    db_connection.execute(
+        "INSERT INTO folder_cache (id, path, created_at) VALUES ('fc-root', ?, 't')",
+        (str(target),),
+    )
+    db_connection.execute(
+        "INSERT INTO folder_cache (id, path, created_at) VALUES ('fc-nested', ?, 't')",
+        (str(nested_dir),),
+    )
+    db_connection.execute(
+        "INSERT INTO content_unit (id, path, path_key, title, content_type, "
+        "created_at, updated_at) VALUES "
+        "('cu-nested', ?, ?, 'BDOR.7z', 'mod', 't', 't')",
+        (str(nested_dir / "BDOR.7z"), make_path_key(str(nested_dir / "BDOR.7z"))),
+    )
+    db_connection.commit()
+
+    service.remove_root(created.id)
+
+    assert db_connection.execute("SELECT COUNT(*) FROM folder_cache").fetchone()[0] == 0
+    assert db_connection.execute("SELECT COUNT(*) FROM content_unit").fetchone()[0] == 0
+    # 真实目录与文件不被删除
+    assert nested_dir.is_dir()
+    assert (nested_dir / "BDOR.7z").exists()
+
+
+def test_remove_root_overlap_guard(db_connection, tmp_path: Path) -> None:
+    """重叠守卫：移除外层根时不清理仍属于内层剩余根目录前缀的记录。"""
+    repo = ManagedRootRepository(db_connection)
+    service = ManagedRootService(
+        repo,
+        FolderCacheRepository(db_connection),
+        ContentUnitRepository(db_connection),
+        now_provider=lambda: "2026-07-07T00:00:00Z",
+        uuid_provider=_make_counter("uuid-overlap")[0],
+    )
+    outer = tmp_path / "Outer"
+    inner = outer / "Inner"
+    inner.mkdir(parents=True)
+    outer_root = service.add_root(outer)
+    inner_root = service.add_root(inner)
+
+    # 模拟扫描记录：内层根前缀下一条 + 外层根（非内层）一条
+    db_connection.execute(
+        "INSERT INTO folder_cache (id, path, created_at) VALUES ('fc-inner', ?, 't')",
+        (str(inner),),
+    )
+    db_connection.execute(
+        "INSERT INTO folder_cache (id, path, created_at) VALUES ('fc-outer-other', ?, 't')",
+        (str(outer / "Other"),),
+    )
+    db_connection.execute(
+        "INSERT INTO content_unit (id, path, path_key, title, content_type, "
+        "created_at, updated_at) VALUES "
+        "('cu-inner', ?, ?, 'Inner.7z', 'mod', 't', 't')",
+        (str(inner / "Inner.7z"), make_path_key(str(inner / "Inner.7z"))),
+    )
+    db_connection.execute(
+        "INSERT INTO content_unit (id, path, path_key, title, content_type, "
+        "created_at, updated_at) VALUES "
+        "('cu-outer-other', ?, ?, 'Other.7z', 'mod', 't', 't')",
+        (str(outer / "Other.7z"), make_path_key(str(outer / "Other.7z"))),
+    )
+    db_connection.commit()
+
+    # 移除外层根：内层根前缀下的记录保留，其余外层记录清理
+    service.remove_root(outer_root.id)
+
+    remaining_fc = {
+        r["id"] for r in db_connection.execute("SELECT id FROM folder_cache").fetchall()
+    }
+    assert remaining_fc == {"fc-inner"}
+    remaining_cu = {
+        r["id"] for r in db_connection.execute("SELECT id FROM content_unit").fetchall()
+    }
+    assert remaining_cu == {"cu-inner"}
+    # 内层根配置保留
+    assert repo.get_by_id(inner_root.id) is not None

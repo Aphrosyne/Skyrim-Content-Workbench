@@ -3,9 +3,9 @@
 负责 ContentUnit dataclass 与 content_unit 表之间的转换。
 不访问文件系统；path 仅作为字符串存储。
 
-v11 schema（Stage 5 Code Review）：
-- status 列移除，新增 is_marked INTEGER NOT NULL DEFAULT 1
-- 新增 path_key TEXT NOT NULL UNIQUE 列（DB 层强制路径归一化唯一）
+v11 schema（Stage 5 Code Review）：status → is_marked + 新增 path_key。
+v13 schema（UX 重构 Task 6）：移除 is_marked 列，回归纯 DELETE 模式
+（记录存在即已标记；取消标记 = 删除记录，级联清理 content_unit_tag / thumbnail_cache）。
 - create 时自动回填 path_key = make_path_key(path)
 """
 
@@ -40,8 +40,8 @@ class ContentUnitRepository:
                 """
                 INSERT INTO content_unit (
                     id, path, path_key, title, content_type, source_url,
-                    cover_path, is_marked, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cover_path, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     unit.id,
@@ -51,7 +51,6 @@ class ContentUnitRepository:
                     unit.content_type,
                     unit.source_url,
                     unit.cover_path,
-                    int(unit.is_marked),
                     unit.notes,
                     unit.created_at,
                     unit.updated_at,
@@ -147,7 +146,6 @@ class ContentUnitRepository:
                     content_type = ?,
                     source_url = ?,
                     cover_path = ?,
-                    is_marked = ?,
                     notes = ?,
                     updated_at = ?
                 WHERE id = ?
@@ -159,7 +157,6 @@ class ContentUnitRepository:
                     unit.content_type,
                     unit.source_url,
                     unit.cover_path,
-                    int(unit.is_marked),
                     unit.notes,
                     unit.updated_at,
                     unit.id,
@@ -214,7 +211,6 @@ class ContentUnitRepository:
             content_type=row["content_type"],
             source_url=row["source_url"],
             cover_path=row["cover_path"],
-            is_marked=bool(row["is_marked"]),
             notes=row["notes"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],

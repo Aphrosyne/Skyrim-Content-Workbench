@@ -23,6 +23,7 @@ from app.scan_worker import ScanWorker  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
 from infrastructure.db import get_connection, init_db  # noqa: E402
 from infrastructure.repositories.content_unit import ContentUnitRepository  # noqa: E402
+from infrastructure.repositories.folder_cache import FolderCacheRepository  # noqa: E402
 from infrastructure.repositories.managed_root import ManagedRootRepository  # noqa: E402
 
 
@@ -120,7 +121,11 @@ def managed_root(app_db: Path, tmp_path: Path) -> tuple[str, Path]:
     conn = get_connection(app_db)
     conn.row_factory = sqlite3.Row
     try:
-        service = ManagedRootService(ManagedRootRepository(conn))
+        service = ManagedRootService(
+            ManagedRootRepository(conn),
+            FolderCacheRepository(conn),
+            ContentUnitRepository(conn),
+        )
         root = service.add_root(root_dir)
         conn.commit()
         return root.id, root_dir

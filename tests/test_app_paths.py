@@ -4,7 +4,7 @@ r"""Task 0.5 app_paths 路径决策与目录创建测试。
 - 路径优先级（环境变量 > 项目根 data/ > AppData 回退）
 - _find_project_root 定位
 - 目录创建（ensure_app_directories）
-- 旧目录检测仅提示、不执行任何文件操作
+- 旧目录检测提示代码已移除（UX 重构 Task 6），AppData 回退保留
 - 中文路径 / 空格路径
 """
 
@@ -106,7 +106,7 @@ def test_ensure_app_directories_creates_dirs(
     """首次运行（无旧数据）创建所有子目录。"""
     new_root = tmp_path / "data"
     monkeypatch.setenv("SCW_DATA_DIR", str(new_root))
-    # 清空 LOCALAPPDATA 避免触发旧目录提示
+    # 清空 LOCALAPPDATA，保证路径解析只走 SCW_DATA_DIR
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
 
     app_paths.ensure_app_directories()
@@ -128,96 +128,6 @@ def test_ensure_app_directories_idempotent(tmp_path: Path, monkeypatch: pytest.M
     app_paths.ensure_app_directories()
 
     assert new_root.exists()
-
-
-# === 旧目录提示测试（仅提示，不动数据）===
-
-
-def test_log_legacy_appdata_hint_does_not_copy_anything(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """检测到旧目录时仅输出日志提示，不复制、不移动、不删除任何文件。"""
-    # 构造旧目录（仅含一个 app.db 标记文件）
-    appdata_root = tmp_path / "appdata"
-    old_root = appdata_root / app_paths.APP_DATA_DIR_NAME
-    old_root.mkdir(parents=True)
-    (old_root / "app.db").write_bytes(b"OLD_DB_CONTENT")
-
-    new_root = tmp_path / "data"
-    monkeypatch.setenv("SCW_DATA_DIR", str(new_root))
-    monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
-
-    with caplog.at_level("INFO", logger="app.app_paths"):
-        app_paths.ensure_app_directories()
-
-    # 新目录已创建，但 app.db 不应被复制（程序不动数据）
-    assert new_root.exists()
-    assert not (new_root / "app.db").exists(), "程序不应自动复制旧数据"
-    # 旧目录应原样保留
-    assert (old_root / "app.db").read_bytes() == b"OLD_DB_CONTENT"
-    # 日志应包含提示
-    assert any("检测到旧数据目录" in r.message for r in caplog.records)
-
-
-def test_log_legacy_appdata_hint_skipped_when_new_db_exists(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """新目录已有 app.db 时不再提示迁移。"""
-    appdata_root = tmp_path / "appdata"
-    old_root = appdata_root / app_paths.APP_DATA_DIR_NAME
-    old_root.mkdir(parents=True)
-    (old_root / "app.db").write_bytes(b"OLD")
-
-    new_root = tmp_path / "data"
-    new_root.mkdir(parents=True)
-    (new_root / "app.db").write_bytes(b"NEW")
-    monkeypatch.setenv("SCW_DATA_DIR", str(new_root))
-    monkeypatch.setenv("LOCALAPPDATA", str(appdata_root))
-
-    with caplog.at_level("INFO", logger="app.app_paths"):
-        app_paths.ensure_app_directories()
-
-    # 不应有迁移提示
-    assert not any("检测到旧数据目录" in r.message for r in caplog.records)
-    # 新旧 app.db 都不应被改动
-    assert (new_root / "app.db").read_bytes() == b"NEW"
-    assert (old_root / "app.db").read_bytes() == b"OLD"
-
-
-def test_log_legacy_appdata_hint_skipped_when_no_old_dir(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """无旧目录时不提示迁移。"""
-    new_root = tmp_path / "data"
-    monkeypatch.setenv("SCW_DATA_DIR", str(new_root))
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
-
-    with caplog.at_level("INFO", logger="app.app_paths"):
-        app_paths.ensure_app_directories()
-
-    assert not any("检测到旧数据目录" in r.message for r in caplog.records)
-
-
-def test_log_legacy_appdata_hint_skipped_when_no_localappdata(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """无 LOCALAPPDATA 环境变量时不提示迁移。"""
-    new_root = tmp_path / "data"
-    monkeypatch.setenv("SCW_DATA_DIR", str(new_root))
-    monkeypatch.delenv("LOCALAPPDATA", raising=False)
-
-    with caplog.at_level("INFO", logger="app.app_paths"):
-        app_paths.ensure_app_directories()
-
-    assert not any("检测到旧数据目录" in r.message for r in caplog.records)
 
 
 # === 环境变量隔离测试 ===

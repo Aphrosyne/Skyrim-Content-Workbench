@@ -8,8 +8,9 @@
 - tag.name（标签名，通过 content_unit_tag 关联）
 
 设计决策：
-- Q2=B：仅搜索 is_marked=True 的内容单元（v11 重构后，原 status='organized' → is_marked=1）。
-  理由：is_marked=False 是用户显式取消标记（不再是内容单元），搜索这些记录对用户无意义。
+- Q2=B（原决策）：仅搜索已标记的内容单元。v13（UX 重构 Task 6）移除 is_marked
+  字段后该条件自然消失——content_unit 表中有记录即已标记，取消标记 = DELETE 记录，
+  无需 WHERE 过滤。
 - Q6=A：单关键词子串匹配（LIKE '%query%'）。
 - Q7=B：匹配字段优先级排序（title > tag > notes）。
 - Q8=C：不限制结果数量。
@@ -79,7 +80,6 @@ class SearchRepository:
             cu.title AS title,
             cu.path AS path,
             cu.content_type AS content_type,
-            cu.is_marked AS is_marked,
             CASE
                 WHEN LOWER(cu.title) LIKE LOWER(:pattern) ESCAPE '\\' THEN 'title'
                 WHEN EXISTS (
@@ -100,8 +100,7 @@ class SearchRepository:
                 ''
             ) AS tags_str
         FROM content_unit cu
-        WHERE cu.is_marked = 1
-          AND (
+        WHERE (
               LOWER(cu.title) LIKE LOWER(:pattern) ESCAPE '\\'
              OR LOWER(cu.notes) LIKE LOWER(:pattern) ESCAPE '\\'
              OR EXISTS (
@@ -138,7 +137,6 @@ class SearchRepository:
                     title=row["title"],
                     path=row["path"],
                     content_type=row["content_type"],
-                    is_marked=bool(row["is_marked"]),
                     matched_field=row["matched_field"],
                     tags=tags,
                 )

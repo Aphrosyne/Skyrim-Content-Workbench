@@ -9,7 +9,7 @@
 - 空查询返回空列表
 - 无匹配返回空列表
 - 标签聚合（GROUP_CONCAT）
-- 仅搜索 is_marked=True 的内容单元（v11 Q2=B）
+- 搜索结果覆盖全部记录（v13 纯 DELETE 模式：记录存在即已标记，原 Q2=B 过滤条件已移除）
 - 结果按 matched_field 优先级 + title 排序
 """
 
@@ -35,20 +35,18 @@ def _create_unit(
     path: str,
     title: str | None = None,
     notes: str | None = None,
-    is_marked: bool = True,
     content_type: str = "mod",
 ) -> None:
-    """插入内容单元记录（v11 schema：is_marked + path_key）。"""
+    """插入内容单元记录（v13 schema：纯 DELETE 模式，记录存在即已标记）。"""
     conn.execute(
-        "INSERT INTO content_unit (id, path, path_key, title, notes, is_marked, "
-        "content_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO content_unit (id, path, path_key, title, notes, "
+        "content_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             unit_id,
             path,
             make_path_key(path),
             title,
             notes,
-            1 if is_marked else 0,
             content_type,
             "2026-07-30T00:00:00Z",
             "2026-07-30T00:00:00Z",
@@ -283,25 +281,8 @@ class TestTagAggregation:
         assert results[0].tags == []
 
 
-class TestIsMarkedFilter:
-    """v11 Q2=B：仅搜索 is_marked=True 的内容单元，排除 is_marked=False。"""
-
-    def test_searches_marked(self, search_repo, db_connection) -> None:
-        """is_marked=True 的内容单元被搜索到。"""
-        _create_unit(db_connection, "u1", "D:/mod.7z", title="测试", is_marked=True)
-
-        results = search_repo.search("测试")
-
-        assert len(results) == 1
-        assert results[0].is_marked is True
-
-    def test_excludes_unmarked(self, search_repo, db_connection) -> None:
-        """is_marked=False 的内容单元不被搜索（取消标记，不再是内容单元）。"""
-        _create_unit(db_connection, "u1", "D:/mod.7z", title="测试", is_marked=False)
-
-        results = search_repo.search("测试")
-
-        assert len(results) == 0
+# v13（UX 重构 Task 6）：is_marked 字段已移除，纯 DELETE 模式下记录存在即已标记，
+# 原 Q2=B 的"排除 is_marked=False"过滤条件自然消失，不再需要 TestIsMarkedFilter。
 
 
 class TestSorting:
@@ -371,7 +352,6 @@ class TestResultModel:
                 title="测试",
                 path="D:/mod.7z",
                 content_type="mod",
-                is_marked=True,
                 matched_field="invalid",
                 tags=[],
             )
@@ -384,7 +364,6 @@ class TestResultModel:
                 title="测试",
                 path="D:/mod.7z",
                 content_type="mod",
-                is_marked=True,
                 matched_field="title",
                 tags=[],
             )
@@ -397,7 +376,6 @@ class TestResultModel:
                 title="测试",
                 path="",
                 content_type="mod",
-                is_marked=True,
                 matched_field="title",
                 tags=[],
             )

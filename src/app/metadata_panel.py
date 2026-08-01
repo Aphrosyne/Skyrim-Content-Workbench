@@ -17,7 +17,7 @@ spec §7.2 / §10.3：右栏元数据面板，显示与编辑内容单元元数�
 - 标签前缀匹配自动补全：QCompleter + TagService.search_tags。
 - 标签预选区域：标签输入框下方显示所有已有标签（排除已在 chip 列表的），
   单击预选标签即可快速添加到 chip 列表。
-- 2026-07-19 决策修正：整理模式下 MetadataPanel 保留显示（原决策 4/8 被推翻）。
+- 2026-07-19 决策修正：统一面板下 MetadataPanel 常驻右栏（原"整理模式隐藏"决策被推翻）。
 
 事务边界（与现有 Service 一致）：
 - MetadataPanel 调用 ContentService.update_metadata + TagService.attach/detach。

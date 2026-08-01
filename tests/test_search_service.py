@@ -27,7 +27,6 @@ def _make_result(unit_id: str = "u1", title: str = "测试") -> SearchResult:
         title=title,
         path=f"D:/mod/{unit_id}.7z",
         content_type="mod",
-        is_marked=True,
         matched_field="title",
         tags=["标签"],
     )

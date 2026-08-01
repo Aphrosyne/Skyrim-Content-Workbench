@@ -1,15 +1,13 @@
-"""主窗口。阶段 2 Task 5：双模式切换 + 扫描联动（2026-07-13）。
+"""主窗口。UX 重构 Phase 1 起为单面板统一工作区（无浏览/整理模式切换）。
 
-布局（顶部模式切换 + 三栏，与 spec §7.1 一致）：
-- 顶部：[浏览 | 整理] 模式切换按钮（默认浏览）。
-- 左栏：受管理根目录列表 + 添加/移除按钮 + 扫描按钮 + 扫描状态 + 目录树 + 选中目录详情。
-- 中栏：文件列表（浏览模式跟随目录树节点；整理模式只加载 [S] 节点递归列表）。
-- 右栏：元数据面板（单击内容单元时加载；双击兼容保留；2026-07-25 调整：单击为主要入口）。
+布局（统一面板，与 spec §7.1 一致）：
+- 顶部工具栏：搜索框 + 标签管理按钮 + 操作历史按钮。
+- 左栏：受管理根目录列表 + 添加/移除按钮 + 增量/全量扫描按钮 + 目录树 + 选中目录详情。
+- 中栏：标签筛选栏 + 文件列表（列表/卡片视图切换 + 排序 + 缩放 + 前进/后退 + 刷新）。
+- 右栏：元数据面板（上）+ 装配面板（下，文件夹透视器 + 📌 钉住）。
 
-模式行为（spec §5.1/§5.2，roadmap 阶段 2 Task 5）：
-- 浏览模式：目录树点击节点 → 中栏刷新该目录文件列表 + 详情区更新。
-- 整理模式：中栏只加载 [S] 节点递归列表，目录树点击非 [S] 节点只高亮目标
-  并在中栏顶部显示"目标：xxx"，不切换中栏内容。
+目录树行为（spec §5.1）：
+- 目录树点击节点 → 中栏刷新该目录文件列表 + 详情区更新。
 
 扫描联动（roadmap 阶段 2 Task 5 验收项 5）：
 - 扫描完成 → 刷新目录树 + 刷新当前中栏文件列表
@@ -29,10 +27,10 @@
 
 交互行为（2026-07-16 调整）：
 - 单击选中内容单元 → 右侧立即显示元数据（详情面板交互方式）。
-- 浏览模式双击文件夹 → 进入该目录（无论是否内容单元，优先于元数据显示）。
+- 双击文件夹 → 进入该目录（无论是否内容单元，优先于元数据显示）。
   文件夹的元数据通过单击查看。
 - 双击文件类型内容单元（压缩包）→ 显示元数据面板。
-- 整理模式双击文件夹 / 双击普通文件 → 不响应。
+- 双击普通文件 → 不响应（右键「打开」可用系统默认程序打开）。
 """
 
 from __future__ import annotations
@@ -369,7 +367,7 @@ class MainWindow(QMainWindow):
         self._current_view_index: int = VIEW_INDEX_LIST  # 默认列表视图
         self._card_icon_size: int = ui.ZOOM_SLIDER_DEFAULT
 
-        # Stage 5 Task 2：目录导航历史栈（仅浏览模式记录）
+        # Stage 5 Task 2：目录导航历史栈（UX 重构 Phase 1 移除模式后始终记录）
         self._nav_back_stack: list[str] = []
         self._nav_forward_stack: list[str] = []
         self._current_nav_path: str | None = None
@@ -718,7 +716,7 @@ class MainWindow(QMainWindow):
 
         content_layout.addWidget(self._view_switch_bar)
 
-        # 标签筛选栏（Stage 4 Task 3）：仅浏览模式 + 注入 TagService 时可见
+        # 标签筛选栏（Stage 4 Task 3）：注入 TagService 时可见（常驻中栏顶部）
         if self._tag_service is not None:
             self._tag_filter_bar = TagFilterBar(self._tag_service)
             self._tag_filter_bar.on_filter_changed.connect(self._on_tag_filter_changed)
@@ -1066,7 +1064,7 @@ class MainWindow(QMainWindow):
         Stage 4 Task 3（Q6: A 修正）：筛选激活时保留 MetadataPanel 可见性，
         用户可继续查看选中条目的元数据。若当前选中行被筛选过滤掉，
         MetadataPanel 保持上一次加载的内容（不主动清空），避免干扰用户。
-        - 仅浏览模式响应（整理模式无 TagFilterBar）。
+        - 仅中栏可见时响应（TagFilterBar 常驻中栏顶部）。
         """
         self._refresh_content_list_for_current_mode()
 
@@ -1081,12 +1079,10 @@ class MainWindow(QMainWindow):
         """双击文件条目。
 
         交互行为（2026-07-17 调整）：
-        - 浏览模式下双击文件夹 → 进入该目录（无论是否内容单元，优先于元数据显示）。
+        - 双击文件夹 → 进入该目录（无论是否内容单元，优先于元数据显示）。
           文件夹的元数据通过单击选中查看（_on_content_selection_changed）。
         - 双击文件类型内容单元（压缩包）→ 显示元数据面板。
-        - 整理模式下双击 Mod 组文件夹（ContentUnit + is_dir）→ 绑定装配面板。
-          （单击仅选中显示元数据，不切换装配面板，避免误触）
-        - 整理模式下双击普通文件 / 普通文件夹 → 不响应。
+        - 双击普通文件 / 普通文件夹 → 不响应（右键「打开」可用系统默认程序打开）。
 
         Stage 5 Task 1：支持列表视图和卡片视图，两个视图共享同一份 FileEntry 数据
         （行号一致），因此用任一 model 取 entry 均可。这里用当前活动视图对应的 model。
@@ -3472,8 +3468,8 @@ class MainWindow(QMainWindow):
         Stage 4 Task 2：若有 MetadataPanel，加载到编辑表单；同时保留
         `_metadata_full_text` 多行文本格式以兼容现有测试（metadata_full_text()）。
 
-        Stage 5 Task 7 收尾：移除"整理状态"显示行（v11 后 is_marked 两态，
-        is_marked=False 不进入此方法，故状态恒为已标记，显示无意义）。
+        Stage 5 Task 7 收尾：移除"整理状态"显示行。v13（UX 重构 Task 6）纯 DELETE
+        模式下记录存在即已标记，能进入此方法的状态恒为已标记，显示无意义。
         """
         title = unit.title or "（无标题）"
         source_url = unit.source_url or ui.METADATA_SOURCE_URL_EMPTY
@@ -3697,8 +3693,9 @@ class MainWindow(QMainWindow):
     def _on_remove_root(self) -> None:
         """移除选中的受管理根目录配置。
 
-        仅删除应用数据库中的 managed_root 记录；不删除、不移动、不修改
-        磁盘上的任何用户文件；不清理扫描记录。
+        UX 重构 Task 6：ManagedRootService.remove_root 同步清理该根路径前缀下的
+        folder_cache / content_unit 扫描记录（重叠守卫 + UoW 事务，Service 内部提交）。
+        仅删除应用数据库记录；不删除、不移动、不修改磁盘上的任何用户文件。
         """
         if self._is_scanning:
             return
@@ -3726,7 +3723,6 @@ class MainWindow(QMainWindow):
 
         try:
             self._service.remove_root(root_id)
-            self._commit()
         except ManagedRootNotFoundError:
             self._refresh_root_list()
             return
@@ -3806,9 +3802,8 @@ class MainWindow(QMainWindow):
         """扫描完成：展示摘要、刷新目录树、刷新当前中栏文件列表。
 
         扫描联动（roadmap 阶段 2 Task 5 验收项 5）：
-        - 浏览模式：若当前选中目录树节点，刷新该目录的文件列表，
+        - 若当前选中目录树节点，刷新该目录的文件列表，
           使新扫描出的压缩包文件立即显示 [内容单元] 标记。
-        - 整理模式：刷新冻结的工作区目录的文件列表。
         """
         text = ui.format_scan_summary(
             scanned_dirs=summary.scanned_dirs,
