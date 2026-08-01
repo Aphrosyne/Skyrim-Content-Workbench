@@ -442,7 +442,7 @@ def test_save_invalid_metadata_warns(qapp, unit_with_tags, monkeypatch):
 
     warning_calls = []
     monkeypatch.setattr(
-        "app.metadata_panel.QMessageBox.warning", lambda *a, **kw: warning_calls.append(a)
+        "app.metadata_panel.QMessageBox.information", lambda *a, **kw: warning_calls.append(a)
     )
 
     received: list[ContentUnit] = []
@@ -465,7 +465,7 @@ def test_save_does_not_emit_on_failure(qapp, unit_with_tags, monkeypatch):
         raise InvalidMetadataError("模拟失败")
 
     monkeypatch.setattr(content_service, "update_metadata", _raise)
-    monkeypatch.setattr("app.metadata_panel.QMessageBox.warning", lambda *a, **kw: None)
+    monkeypatch.setattr("app.metadata_panel.QMessageBox.information", lambda *a, **kw: None)
 
     received: list[ContentUnit] = []
     panel.on_saved.connect(lambda u: received.append(u))
@@ -621,7 +621,7 @@ def test_save_tag_attach_failure_emits_on_save_failed(qapp, unit_with_tags, monk
     # 抑制 QMessageBox 模态对话框
     warning_calls = []
     monkeypatch.setattr(
-        "app.metadata_panel.QMessageBox.warning", lambda *a, **kw: warning_calls.append(a)
+        "app.metadata_panel.QMessageBox.information", lambda *a, **kw: warning_calls.append(a)
     )
 
     saved: list[ContentUnit] = []
@@ -660,7 +660,7 @@ def test_save_tag_attach_failure_does_not_persist(qapp, unit_with_tags, monkeypa
         raise TagNotFoundError("标签不存在（模拟）")
 
     monkeypatch.setattr(tag_service, "attach_tag_to_unit", _raise_tag_not_found)
-    monkeypatch.setattr("app.metadata_panel.QMessageBox.warning", lambda *a, **kw: None)
+    monkeypatch.setattr("app.metadata_panel.QMessageBox.information", lambda *a, **kw: None)
 
     # 模拟 MainWindow 的 on_save_failed 回调：调用 conn.rollback()
     panel.on_save_failed.connect(lambda msg: conn.rollback())

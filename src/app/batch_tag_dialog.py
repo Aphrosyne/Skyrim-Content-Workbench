@@ -271,7 +271,7 @@ class BatchTagDialog(QDialog):
         try:
             candidates = self._service.search_tags(name, limit=20)
         except ApplicationError as e:
-            QMessageBox.warning(self, ui.BATCH_TAG_DIALOG_TITLE, str(e))
+            QMessageBox.information(self, ui.BATCH_TAG_DIALOG_TITLE, str(e))
             return
         exact: Tag | None = None
         for c in candidates:
@@ -400,7 +400,7 @@ class BatchTagDialog(QDialog):
                 failure_count += 1
 
         if failure_count > 0:
-            QMessageBox.warning(
+            QMessageBox.information(
                 self,
                 ui.BATCH_TAG_DIALOG_TITLE,
                 f"{failure_count} 个标签操作失败，请查看日志。",

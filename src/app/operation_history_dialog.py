@@ -1,11 +1,13 @@
-"""操作历史对话框（Stage 5 Task 6）。
+"""操作历史对话框（Stage 5 Task 6 + UX 重构 Phase 2 Task 5）。
 
 spec §7.7：顶部工具栏「操作历史」按钮 → 弹出对话框。
 
-UI：
-- QTableWidget 展示历史记录（时间 / 操作 / 源 → 目标 / 状态）
+UI（UX 重构 Phase 2 Task 5 优化）：
+- QTableWidget 展示历史记录（时间 / 操作 / 状态），不再显示描述列
+- 鼠标悬浮在操作列上显示详细描述（含简化路径）— open-questions §9
+- 已撤销的记录不显示（open-questions §3）
+- 删除操作保留显示但灰色不可撤销（Q4=B：保留可追溯性）
 - can_undo=False 的行整行灰色，撤销按钮禁用
-- 已撤销的行（undone_at 非空）显示「已撤销」标记，撤销按钮禁用
 - 底部按钮：刷新 / 撤销选中 / 关闭
 
 数据流：
@@ -24,6 +26,7 @@ UI：
 - Q7=A：撤销需要二次确认弹窗
 - Q3=A：已撤销操作在列表中显示「已撤销」标记，不可重复撤销
 - Q6=A：默认加载最近 100 条
+- Q9=A：清理 undo 遗留分支（D4 决策已消除 undo 记录）
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import ui_constants as ui
+from app.path_display import make_display_path_from_service
 from application.errors import (
     UndoAlreadyUndoneError,
     UndoError,
@@ -58,23 +62,35 @@ from domain.models import OperationHistory
 logger = logging.getLogger(__name__)
 
 
-def _format_history_description(history: OperationHistory) -> str:
-    """格式化历史记录为用户可读描述。"""
+def _format_history_description(history: OperationHistory, managed_root_service) -> str:
+    """格式化历史记录为用户可读描述（含简化路径）。
+
+    UX 重构 Phase 2 Task 5：路径使用 make_display_path 简化显示（open-questions §9）。
+    Q9=A：移除 "undo" 分支（D4 决策已消除 undo 记录，不会再命中）。
+    """
     op = history.operation_type
+    # 路径简化（managed_root_service 可能为 None，降级显示原路径）
+    svc = managed_root_service
+    target = (
+        make_display_path_from_service(history.target_path, svc)
+        if history.target_path and svc is not None
+        else (history.target_path or "")
+    )
+    source = (
+        make_display_path_from_service(history.source_path, svc)
+        if history.source_path and svc is not None
+        else (history.source_path or "")
+    )
     if op == "new_folder":
-        return ui.HISTORY_DESC_NEW_FOLDER.format(target=history.target_path or "")
+        return ui.HISTORY_DESC_NEW_FOLDER.format(target=target)
     if op == "rename":
-        return ui.HISTORY_DESC_RENAME.format(
-            source=history.source_path, target=history.target_path or ""
-        )
+        return ui.HISTORY_DESC_RENAME.format(source=source, target=target)
     if op == "move":
-        return ui.HISTORY_DESC_MOVE.format(
-            source=history.source_path, target=history.target_path or ""
-        )
+        return ui.HISTORY_DESC_MOVE.format(source=source, target=target)
     if op == "delete":
-        return ui.HISTORY_DESC_DELETE.format(source=history.source_path)
-    if op == "undo":
-        return ui.HISTORY_DESC_UNDO.format(source=history.source_path)
+        return ui.HISTORY_DESC_DELETE.format(source=source)
+    if op == "copy":
+        return ui.HISTORY_DESC_COPY.format(source=source, target=target)
     return ui.HISTORY_DESC_UNKNOWN.format(op=op)
 
 
@@ -92,6 +108,7 @@ class OperationHistoryDialog(QDialog):
 
     使用方式：
         dialog = OperationHistoryDialog(undo_service, parent=window)
+        dialog.set_managed_root_service(managed_root_service)  # 用于路径简化
         dialog.set_on_undone_callback(lambda: window._refresh_after_undo())
         if dialog.exec() == QDialog.Accepted:
             # MainWindow 在此 commit
@@ -108,9 +125,11 @@ class OperationHistoryDialog(QDialog):
         self._undo_service = undo_service
         self._limit = limit
         self._on_undone_callback: Callable[[], None] | None = None
+        # UX 重构 Phase 2 Task 5：受管理根目录服务，用于路径简化显示
+        self._managed_root_service = None
 
         self.setWindowTitle(ui.OPERATION_HISTORY_DIALOG_TITLE)
-        self.resize(800, 500)
+        self.resize(700, 500)
 
         self._setup_ui()
         self._load_history()
@@ -119,14 +138,18 @@ class OperationHistoryDialog(QDialog):
         """设置撤销成功后的回调（用于刷新 MainWindow 的中栏/目录树）。"""
         self._on_undone_callback = callback
 
+    def set_managed_root_service(self, managed_root_service) -> None:
+        """设置受管理根目录服务，用于路径简化显示（open-questions §9）。"""
+        self._managed_root_service = managed_root_service
+
     # === UI 构建 ===
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        # 历史记录表格
-        self._table = QTableWidget(0, 4, self)
-        self._table.setHorizontalHeaderLabels(["时间", "操作", "描述", "状态"])
+        # 历史记录表格（UX 重构 Phase 2 Task 5：3 列，移除描述列，改用 Tooltip）
+        self._table = QTableWidget(0, 3, self)
+        self._table.setHorizontalHeaderLabels(["时间", "操作", "状态"])
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -134,9 +157,8 @@ class OperationHistoryDialog(QDialog):
         # 列宽
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self._table)
 
         # 底部按钮
@@ -161,12 +183,17 @@ class OperationHistoryDialog(QDialog):
     # === 数据加载 ===
 
     def _load_history(self) -> None:
-        """从 UndoService 加载最近的历史记录。"""
+        """从 UndoService 加载最近的历史记录。
+
+        UX 重构 Phase 2 Task 5：
+        - 已撤销的记录不显示（open-questions §3）
+        - 删除操作保留显示但灰色不可撤销（Q4=B：保留可追溯性）
+        """
         try:
             histories = self._undo_service.list_recent(limit=self._limit)
         except Exception as e:  # noqa: BLE001
             logger.exception("加载操作历史失败")
-            QMessageBox.critical(
+            QMessageBox.information(
                 self,
                 ui.OPERATION_HISTORY_DIALOG_TITLE,
                 ui.MENU_OPERATION_FAILED.format(error=str(e)),
@@ -175,6 +202,9 @@ class OperationHistoryDialog(QDialog):
 
         self._table.setRowCount(0)
         for history in histories:
+            # 过滤已撤销的记录（open-questions §3）
+            if history.undone_at is not None:
+                continue
             self._add_history_row(history)
 
     def _add_history_row(self, history: OperationHistory) -> None:
@@ -187,24 +217,26 @@ class OperationHistoryDialog(QDialog):
         time_item.setFlags(time_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self._table.setItem(row, 0, time_item)
 
-        # 操作
-        op_item = QTableWidgetItem(history.operation_type)
+        # 操作（Tooltip 显示详细描述，含简化路径）
+        # 操作列显示中文名，非原始英文
+        op_label = ui.HISTORY_OP_LABELS.get(history.operation_type, history.operation_type)
+        op_item = QTableWidgetItem(op_label)
         op_item.setFlags(op_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        desc = _format_history_description(history, self._managed_root_service)
+        op_item.setToolTip(desc)
+        # 时间项也设置 Tooltip，方便用户在任意列悬浮查看
+        time_item.setToolTip(desc)
         self._table.setItem(row, 1, op_item)
-
-        # 描述
-        desc_item = QTableWidgetItem(_format_history_description(history))
-        desc_item.setFlags(desc_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        self._table.setItem(row, 2, desc_item)
 
         # 状态
         status_item = QTableWidgetItem(_format_status(history))
         status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        self._table.setItem(row, 3, status_item)
+        status_item.setToolTip(desc)
+        self._table.setItem(row, 2, status_item)
 
-        # 不可撤销 / 已撤销的行整行灰色
-        if history.undone_at is not None or not history.can_undo:
-            for col in range(4):
+        # 不可撤销的行整行灰色（Q4=B：删除操作保留显示但灰色）
+        if not history.can_undo:
+            for col in range(3):
                 item = self._table.item(row, col)
                 if item is not None:
                     item.setForeground(Qt.GlobalColor.gray)
@@ -225,7 +257,7 @@ class OperationHistoryDialog(QDialog):
             return
 
         # Q7=A：二次确认弹窗
-        desc = _format_history_description(history)
+        desc = _format_history_description(history, self._managed_root_service)
         reply = QMessageBox.question(
             self,
             ui.OPERATION_HISTORY_UNDO_CONFIRM_TITLE,
@@ -240,7 +272,7 @@ class OperationHistoryDialog(QDialog):
         try:
             self._undo_service.undo(history)
         except UndoNotAllowedError as e:
-            # delete / undo / can_undo=False
+            # delete / can_undo=False
             msg = str(e)
             if history.operation_type == "delete":
                 msg = ui.UNDO_DELETE_NOT_ALLOWED
@@ -254,7 +286,7 @@ class OperationHistoryDialog(QDialog):
             )
             return
         except UndoSafetyError as e:
-            QMessageBox.warning(
+            QMessageBox.information(
                 self,
                 ui.OPERATION_HISTORY_UNDO_CONFIRM_TITLE,
                 ui.UNDO_SAFETY_FAILED.format(reason=e.reason),

@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import ui_constants as ui
+from app.path_display import make_display_path_from_service
 from application.content_service import ContentService
 from application.errors import (
     ApplicationError,
@@ -229,8 +230,14 @@ class MetadataPanel(QWidget):
         self._current_tags: list[Tag] = []
         # 加载时保存的原始标签 ID 集合，用于保存时计算 add / remove diff
         self._original_tag_ids: set[str] = set()
+        # UX 重构 Phase 2 Task 5 修复：受管理根目录服务，用于路径简化显示
+        self._managed_root_service = None
 
         self._setup_ui()
+
+    def set_managed_root_service(self, managed_root_service) -> None:
+        """设置受管理根目录服务，用于路径简化显示（open-questions §9）。"""
+        self._managed_root_service = managed_root_service
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -393,7 +400,13 @@ class MetadataPanel(QWidget):
 
         # 填充字段
         self._title_edit.setText(unit.title or "")
-        self._path_value.setText(unit.path)
+        # 路径简化显示（UX 重构 Phase 2 Task 5 修复：从受管理根目录开始显示）
+        display_path = (
+            make_display_path_from_service(unit.path, self._managed_root_service)
+            if self._managed_root_service is not None
+            else unit.path
+        )
+        self._path_value.setText(display_path)
         self._type_value.setText(unit.content_type)
         self._created_value.setText(unit.created_at)
         self._source_url_edit.setText(unit.source_url or "")
@@ -833,4 +846,4 @@ class MetadataPanel(QWidget):
             self._tag_completer.setModel(QStringListModel(names, self))
 
     def _show_error(self, title: str, message: str) -> None:
-        QMessageBox.warning(self, title, message)
+        QMessageBox.information(self, title, message)

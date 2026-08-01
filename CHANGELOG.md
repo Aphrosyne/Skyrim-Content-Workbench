@@ -10,6 +10,45 @@
 
 ---
 
+## [0.46.0] - 2026-08-01
+
+UX 重构 Phase 2 Task 5：交互细节优化 + 验收修复
+
+统一右键菜单规范、抑制 QMessageBox 系统提示音、修复撤销循环 bug、操作历史显示优化、刷新按钮与 F5、状态栏统一、路径简化显示、空状态提示。基于验收反馈修复 6 项问题：系统提示音抑制、中栏右键粘贴、copy 操作文案、撤销循环、路径简化应用到全场景、相对路径包含根目录名。schema_version 维持 v12，无数据库迁移。
+
+**新增功能**
+
+- **右键菜单统一**：新增「打开」（Q1=B，已标记内容单元也支持打开）、「钉住此文件夹」「取消钉住」（Q2=C，中栏/目录树/装配面板均支持）；中栏右键文件/文件夹新增「粘贴」项（粘贴到当前中栏目录，剪贴板空时灰显）
+- **QMessageBox 系统提示音抑制**：新增 [message_box_helper.py](src/app/message_box_helper.py)，patch QMessageBox 静态方法使用 `setIcon(NoIcon)` + `setIconPixmap` 抑制 Windows 系统提示音，保留视觉图标；MainWindow.__init__ 调用一次（Q3=C + Q7=A）
+- **刷新按钮与 F5**：中栏标题栏新增刷新按钮 + F5 快捷键（Q5=B + Q6=A），仅刷新当前目录和目录树对应节点，不触发全量扫描，同步刷新装配面板
+- **状态栏统一**：使用 Qt 标准 QStatusBar（Q7=A），移除左侧扫描状态 QGroupBox，消除布局抖动
+- **路径简化显示**：新增 [path_display.py](src/app/path_display.py)（Q8=B），左栏目录详情、右栏元数据面板、操作历史 Tooltip 均应用简化路径；相对路径**包含根目录名**（验收修正：`D:\testPath\A\B\C` → `A\B\C`），外部路径加 `[外部]` 前缀
+- **空状态提示**（Q9=A）：搜索无结果 → "没有找到匹配内容"；目录为空 → "该目录为空"
+- [ui_constants.py](src/app/ui_constants.py) 新增文案：MENU_OPEN / MENU_PIN_FOLDER / MENU_UNPIN_FOLDER / REFRESH_BUTTON / HISTORY_DESC_COPY / HISTORY_OP_LABELS 等
+
+**修复**
+
+- **撤销循环 bug 修复**（Q4=B）：FileOperationService.move/rename 新增 `record_history: bool = True` 参数；UndoService._undo_rename/_undo_move 调用时传 `record_history=False`，避免撤销时产生新的可撤销记录导致无限循环
+- **操作历史显示优化**（Q3=C + Q10=B）：移除描述列改用 Tooltip；过滤已撤销记录；删除操作灰色显示但保留可追溯性；操作类型中文化（HISTORY_OP_LABELS 映射）；新增 copy 分支文案（原显示"未知操作：copy"）
+- **中栏右键粘贴**：原仅空白区域右键支持粘贴，现文件/文件夹右键也支持（粘贴到当前中栏目录）
+- **路径简化全场景应用**：原仅操作历史 Tooltip 应用简化路径，现左栏目录详情、右栏元数据面板均应用
+- **相对路径包含根目录名**：原规则不含根目录名（`A\B\C` → `B\C`），验收修正为含根目录名（`A\B\C`）
+
+**设计要点**
+
+- **QMessageBox 提示音抑制**：通过 `setIcon(QMessageBox.Icon.NoIcon)` 避免 Windows MessageBeep 触发，`setIconPixmap` 手动设置图标 pixmap 保留视觉图标；patch 应用在 MainWindow.__init__，幂等
+- **撤销循环修复策略**：采用 `record_history=False` 参数方案而非删除新记录，保持 FileOperationService 的同步逻辑（folder_cache + ContentUnit.path）完整执行，仅跳过 operation_history 写入
+- **路径简化规则**：使用 PurePath 跨平台比较，匹配最长根目录（处理嵌套根目录）；路径就是根目录本身时返回根目录名；外部路径加 `[外部]` 前缀保留可追溯性
+- **MetadataPanel 路径简化注入**：MetadataPanel 新增 `set_managed_root_service` 方法，MainWindow 创建面板后注入
+
+**测试**
+
+- 新增 [test_path_display.py](tests/test_path_display.py)：路径简化 8 个测试用例（含根目录名、外部路径、嵌套根目录、多根目录、中文路径、空路径、根目录本身、service 封装）
+- 新增右键菜单粘贴、钉住/取消钉住相关测试用例
+- 全量回归：1288 tests passed, 4 skipped，ruff check + format 全通过
+
+---
+
 ## [0.45.0] - 2026-08-01
 
 UX 重构 Phase 1 Task 4：「添加到钉住文件夹」+ 基础拖拽（快速插入移除）+ 验收修复

@@ -234,7 +234,7 @@ def test_filter_inactive_shows_all_entries(qapp, env_with_filter):
 
 
 def test_filter_empty_result_shows_hint(qapp, env_with_filter):
-    """筛选无命中 → empty_hint 显示「无符合筛选条件」。"""
+    """筛选无命中 → empty_hint 显示「没有找到匹配内容」（UX 重构 Phase 2 Task 5 Q9=A）。"""
     window, _, _, tag_service, cat, _, _, _ = env_with_filter
     _select_root(qapp, window)
 
@@ -247,7 +247,7 @@ def test_filter_empty_result_shows_hint(qapp, env_with_filter):
 
     assert window.entry_count() == 0
     hint_text = window._content_empty_hint.text()  # noqa: SLF001
-    assert "无符合筛选条件" in hint_text
+    assert "没有找到匹配内容" in hint_text
 
 
 def test_filter_persists_across_directory_switch(qapp, env_with_filter):

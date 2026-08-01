@@ -212,6 +212,7 @@ class FileOperationService:
         dst: Path,
         *,
         overwrite: bool = False,
+        record_history: bool = True,
     ) -> OperationHistory:
         """移动文件或目录到目标路径。
 
@@ -229,14 +230,17 @@ class FileOperationService:
           文件已移动无法回滚，由调用方处理。
         - 成功后写 operation_history（operation_type='move'，
           source_path=src，target_path=dst）。
+        - record_history=False 时：执行文件操作 + 同步，但不写 operation_history。
+          用于 UndoService 撤销操作时避免产生新的可撤销记录（防止撤销循环）。
 
         Args:
             src: 源文件/目录路径。
             dst: 目标完整路径（含文件名）。
             overwrite: 是否覆盖已存在的目标（默认 False）。
+            record_history: 是否写入 operation_history（默认 True）。
 
         Returns:
-            OperationHistory 记录。
+            OperationHistory 记录（record_history=False 时返回未入库的临时对象）。
 
         Raises:
             SourceNotFoundError: 源不存在。
@@ -298,6 +302,9 @@ class FileOperationService:
             created_at=self._now(),
             can_undo=True,
         )
+        if not record_history:
+            # UndoService 撤销时调用：不写历史，避免产生新的可撤销记录（防止撤销循环）
+            return history
         try:
             return self._create_history(history)
         except Exception as e:  # noqa: BLE001
@@ -400,7 +407,9 @@ class FileOperationService:
     # Windows 文件名非法字符（AGENTS 规则 5：不假设文件名格式，但新建/重命名需校验）
     _INVALID_NAME_CHARS = set('<>:"/\\|?*')
 
-    def rename(self, old_path: Path, new_name: str) -> OperationHistory:
+    def rename(
+        self, old_path: Path, new_name: str, *, record_history: bool = True
+    ) -> OperationHistory:
         """重命名文件或目录。
 
         - 源必须存在。
@@ -414,13 +423,16 @@ class FileOperationService:
           文件已重命名无法回滚，由调用方处理。
         - 成功后写 operation_history（operation_type='rename'，
           source_path=old_path，target_path=new_path）。
+        - record_history=False 时：执行文件操作 + 同步，但不写 operation_history。
+          用于 UndoService 撤销操作时避免产生新的可撤销记录（防止撤销循环）。
 
         Args:
             old_path: 源文件/目录路径。
             new_name: 新名称（仅文件名，不含父目录路径）。
+            record_history: 是否写入 operation_history（默认 True）。
 
         Returns:
-            OperationHistory 记录。
+            OperationHistory 记录（record_history=False 时返回未入库的临时对象）。
 
         Raises:
             SourceNotFoundError: 源不存在。
@@ -482,6 +494,9 @@ class FileOperationService:
             created_at=self._now(),
             can_undo=True,
         )
+        if not record_history:
+            # UndoService 撤销时调用：不写历史，避免产生新的可撤销记录（防止撤销循环）
+            return history
         try:
             return self._create_history(history)
         except Exception as e:  # noqa: BLE001

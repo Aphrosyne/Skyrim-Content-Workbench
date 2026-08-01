@@ -285,6 +285,26 @@ class AssemblyPanel(QWidget):
         self._pin_button.setText(ui.ASSEMBLY_PIN_BUTTON_PINNED)
         self._pin_button.setToolTip(ui.ASSEMBLY_PIN_TOOLTIP_PINNED)
 
+    def pin_folder(self, folder_path: Path) -> None:
+        """钉住指定文件夹（UX 重构 Phase 2 Task 5，Q2=C）。
+
+        用于右键菜单「钉住此文件夹」：对任意文件夹右键 → 钉住该文件夹。
+        - 若已有钉住文件夹，替换为新选择（让后来的覆盖前面的）。
+        - 内部先清除钉住标志（避免 bind_folder 被短路），再 bind_folder + pin。
+        - 切换绑定后通过 on_pin_changed(True) 通知 MainWindow。
+
+        Args:
+            folder_path: 要钉住的文件夹路径。
+        """
+        # 先清除钉住标志，使 _apply_bind_folder 能实际切换绑定
+        self._is_pinned = False
+        self._apply_bind_folder(folder_path)
+        self._is_pinned = True
+        self._pin_button.setText(ui.ASSEMBLY_PIN_BUTTON_PINNED)
+        self._pin_button.setToolTip(ui.ASSEMBLY_PIN_TOOLTIP_PINNED)
+        if self._on_pin_changed is not None:
+            self._on_pin_changed(True)
+
     def unpin(self) -> None:
         """取消钉住。
 
@@ -447,16 +467,17 @@ class AssemblyPanel(QWidget):
                 self._on_pin_changed(True)
 
     def _on_context_menu(self, pos) -> None:  # noqa: ANN001 (Qt 信号)
-        """右键菜单：文件操作 + 图片重命名封面 + 空白处移动文件夹。
+        """右键菜单：文件操作 + 图片重命名封面 + 空白处移动文件夹 + 取消钉住。
 
         UX 重构 Phase 1 Task 2 Commit 2：
         - 选中文件时：重命名/复制/剪切/粘贴/移动到/删除/复制路径 + 图片重命名封面。
         - 空白处右键：移动到...（移动整个透视的文件夹）。
         文件操作通过 on_file_op 回调委托 MainWindow，复用中栏现有逻辑。
+        UX 重构 Phase 2 Task 5（Q2=C）：钉住状态下，文件/空白处右键都显示「取消钉住」。
         """
         idx = self._list_view.indexAt(pos)
         if not idx.isValid():
-            # 空白处右键：移动整个透视的文件夹
+            # 空白处右键：移动整个透视的文件夹 + 取消钉住
             self._show_empty_area_menu(pos)
             return
         entry = self._list_model.entry_at(idx.row())
@@ -519,6 +540,10 @@ class AssemblyPanel(QWidget):
                 )
             )
 
+        # UX 重构 Phase 2 Task 5（Q2=C）：钉住状态下显示「取消钉住」
+        if self._is_pinned:
+            actions.append((ui.MENU_UNPIN_FOLDER, self._unpin_via_menu, True))
+
         for label, _, enabled in actions:
             act = menu.addAction(label)
             act.setEnabled(enabled)
@@ -532,11 +557,19 @@ class AssemblyPanel(QWidget):
                 break
 
     def _show_empty_area_menu(self, pos) -> None:  # noqa: ANN001 (Qt 信号)
-        """空白处右键：粘贴 + 移动整个透视的文件夹（A3-1 移动后解绑）。
+        """空白处右键：粘贴 + 移动整个透视的文件夹（A3-1 移动后解绑）+ 取消钉住。
 
         UX 重构 Phase 1 Task 2 修复3：空白处也支持粘贴。
+        UX 重构 Phase 2 Task 5（Q2=C）：钉住状态下显示「取消钉住」。
         """
         if self._on_file_op is None or self._current_folder_path is None:
+            # 即使无文件操作回调，钉住状态下仍可取消钉住
+            if self._is_pinned:
+                menu = QMenu(self)
+                unpin_act = menu.addAction(ui.MENU_UNPIN_FOLDER)
+                chosen = menu.exec(self._list_view.viewport().mapToGlobal(pos))
+                if chosen is unpin_act:
+                    self._unpin_via_menu()
             return
         menu = QMenu(self)
         actions: list[tuple[str, Callable[[], None]]] = []
@@ -545,6 +578,9 @@ class AssemblyPanel(QWidget):
         actions.append((ui.MENU_PASTE, lambda: self._on_file_op("paste", [])))
         # 移动到...（移动整个透视文件夹）
         actions.append((ui.ASSEMBLY_MENU_MOVE_FOLDER, self._move_current_folder))
+        # UX 重构 Phase 2 Task 5（Q2=C）：钉住状态下显示「取消钉住」
+        if self._is_pinned:
+            actions.append((ui.MENU_UNPIN_FOLDER, self._unpin_via_menu))
 
         for label, _ in actions:
             menu.addAction(label)
@@ -555,6 +591,12 @@ class AssemblyPanel(QWidget):
             if chosen.text() == label:
                 handler()
                 break
+
+    def _unpin_via_menu(self) -> None:
+        """右键菜单「取消钉住」：调用 unpin + 通知 MainWindow 跟随中栏（B4）。"""
+        self.unpin()
+        if self._on_pin_changed is not None:
+            self._on_pin_changed(False)
 
     def _move_current_folder(self) -> None:
         """移动当前透视的整个文件夹（构造文件夹自身的 FileEntry）。"""

@@ -51,7 +51,7 @@ DETAIL_NOT_SELECTED = "未选中任何目录。请在目录树中点击选择。
 
 # 内容单元列表区域
 CONTENT_LIST_GROUP_TITLE = "文件列表"
-CONTENT_LIST_EMPTY_HINT = "该目录为空或无可见文件。"
+CONTENT_LIST_EMPTY_HINT = "该目录为空"
 CONTENT_LIST_NO_SELECTION = "请在左侧目录树中选择一个目录。"
 
 # 文件列表列头（阶段 3 Task 2 4 列 TableModel）
@@ -82,6 +82,8 @@ MENU_QUICK_SET_COVER_ALREADY_SET = "已设置封面，未覆盖"
 MENU_QUICK_SET_COVER_OK = "封面已设置"
 MENU_OPEN_IN_EXPLORER = "在资源管理器中打开"
 MENU_OPEN_IN_EXPLORER_FAILED = "无法打开资源管理器"
+# UX 重构 Phase 2 Task 5：右键「打开」项（行为与双击一致）
+MENU_OPEN = "打开"
 MENU_COLLAPSE_ALL = "折叠全部"
 
 # Stage 5 Task 3a：文件操作菜单项
@@ -113,12 +115,21 @@ OPERATION_HISTORY_UNDO_CONFIRM_TEXT = (
     "确定要撤销以下操作？\n\n{desc}\n\n此操作将还原文件到操作前的状态。"
 )
 # 历史记录描述格式
+# UX 重构 Phase 2 Task 5（Q9=A）：移除 HISTORY_DESC_UNDO（D4 决策已消除 undo 记录）
 HISTORY_DESC_NEW_FOLDER = "新建文件夹：{target}"
 HISTORY_DESC_RENAME = "重命名：{source} → {target}"
 HISTORY_DESC_MOVE = "移动：{source} → {target}"
 HISTORY_DESC_DELETE = "删除：{source}（不可撤销）"
-HISTORY_DESC_UNDO = "撤销操作：原记录 {source}"
+HISTORY_DESC_COPY = "复制：{source} → {target}（不可撤销）"
 HISTORY_DESC_UNKNOWN = "未知操作：{op}"
+# 操作类型中文名映射（操作历史对话框操作列显示）
+HISTORY_OP_LABELS = {
+    "new_folder": "新建文件夹",
+    "rename": "重命名",
+    "move": "移动",
+    "delete": "删除",
+    "copy": "复制",
+}
 # 状态显示
 HISTORY_STATUS_CAN_UNDO = "可撤销"
 HISTORY_STATUS_CANNOT_UNDO = "不可撤销"
@@ -237,6 +248,15 @@ ASSEMBLY_PIN_STATUS_UNPINNED_FOLLOW = "已取消钉住，跟随中栏选中"
 
 # 添加到钉住文件夹（UX 重构 Phase 1 Task 4）
 MENU_ADD_TO_PINNED = "添加到钉住文件夹"
+# UX 重构 Phase 2 Task 5（Q2=C）：钉住/取消钉住右键菜单项
+MENU_PIN_FOLDER = "钉住此文件夹"
+MENU_UNPIN_FOLDER = "取消钉住"
+MENU_PIN_REPLACE_HINT = "已有钉住文件夹，将替换为当前选择"
+# UX 重构 Phase 2 Task 5（Q5=B）：刷新按钮 + F5
+REFRESH_BUTTON = "↻"
+REFRESH_BUTTON_TOOLTIP = "刷新当前目录（F5）"
+REFRESH_NO_DIR = "未选择目录"
+REFRESH_DONE = "已刷新当前目录"
 ADD_TO_PINNED_OK = "已添加 {n} 个文件到「{name}」"
 ADD_TO_PINNED_FAILED = "添加到钉住文件夹失败"
 ADD_TO_PINNED_PARTIAL = "部分文件添加失败（成功 {ok}，失败 {fail}）"
@@ -421,7 +441,7 @@ TAG_FILTER_BAR_HINT = "点击分类展开标签，多选筛选。同分类为或
 TAG_FILTER_CLEAR_BUTTON = "清除全部"
 TAG_FILTER_NO_CATEGORIES_HINT = "（暂无标签分类，请在标签管理中创建）"
 TAG_FILTER_CATEGORY_EMPTY_HINT = "（该分类下无标签）"
-TAG_FILTER_NO_RESULT_HINT = "无符合筛选条件的内容单元。"
+TAG_FILTER_NO_RESULT_HINT = "没有找到匹配内容"
 TAG_FILTER_CATEGORY_BADGE = " ({count})"  # 折叠态下分类按钮显示的已选标签数徽标
 
 # 缩略图（Stage 4 Task 4，spec §9）

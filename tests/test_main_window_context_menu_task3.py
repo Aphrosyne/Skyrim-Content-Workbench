@@ -466,8 +466,8 @@ def test_create_mod_group_name_conflict(qapp, main_window_env, monkeypatch) -> N
     )
     window._show_create_mod_group_dialog = lambda pure, full: pure  # noqa: SLF001
 
-    # Mock QMessageBox 避免阻塞
-    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **kw: None)
+    # Mock QMessageBox 避免阻塞（UX 重构 Phase 2 Task 5 Q3=C：warning→information）
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **kw: None)
 
     # 应不抛异常（QMessageBox 被 mock）
     window._on_create_mod_group([entry])  # noqa: SLF001

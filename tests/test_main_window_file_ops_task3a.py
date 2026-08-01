@@ -463,15 +463,15 @@ class TestRename:
         (root_dir / "Stash" / "exists.jpg").write_bytes(b"existing")
 
         monkeypatch.setattr(window, "_show_rename_dialog", lambda old_name: ("exists.jpg", True))
-        # Mock QMessageBox.warning 避免阻塞
-        warning_calls = []
-        monkeypatch.setattr(QMessageBox, "warning", lambda *a, **kw: warning_calls.append(a))
+        # Mock QMessageBox.information 避免阻塞（UX 重构 Phase 2 Task 5 Q3=C：warning→information）
+        info_calls = []
+        monkeypatch.setattr(QMessageBox, "information", lambda *a, **kw: info_calls.append(a))
 
         window._on_rename_entry(entry)  # noqa: SLF001
         qapp.processEvents()
 
-        # 弹了 warning
-        assert len(warning_calls) > 0
+        # 弹了 information
+        assert len(info_calls) > 0
         # 原文件未改名
         assert (root_dir / "Stash" / "preview.jpg").is_file()
 

@@ -325,7 +325,7 @@ def test_on_assembly_rename_cover_not_image(qapp, main_window_env, monkeypatch) 
 
     # 重命名 7z 文件（非图片）→ 应失败
     seven_z = mod_folder / "BDOR Black Knight 1.0.7z"
-    monkeypatch.setattr("app.main_window.QMessageBox.warning", lambda *a, **kw: None)
+    monkeypatch.setattr("app.main_window.QMessageBox.information", lambda *a, **kw: None)
     window._on_assembly_rename_cover(seven_z)  # noqa: SLF001
     qapp.processEvents()
 

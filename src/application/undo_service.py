@@ -355,6 +355,7 @@ class UndoService:
         """撤销重命名：反向重命名 target_path → source_path.name。
 
         通过 FileOperationService.rename 执行（复用其校验 + 同步逻辑）。
+        传 record_history=False 避免产生新的可撤销记录（防止撤销循环）。
         """
         if self._file_op is None:
             raise UndoError("未注入 FileOperationService，无法撤销 rename")
@@ -364,7 +365,7 @@ class UndoService:
             raise UndoError("历史记录缺少 target_path")
         # 反向重命名：target → source.name
         try:
-            self._file_op.rename(target, source.name)
+            self._file_op.rename(target, source.name, record_history=False)
         except (FileOperationError, SourceNotFoundError, ConflictError) as e:
             raise UndoError(f"反向重命名失败：{target} → {source.name}：{e}") from e
 
@@ -372,6 +373,7 @@ class UndoService:
         """撤销移动：反向移动 target_path → source_path。
 
         通过 FileOperationService.move 执行（复用其校验 + 同步逻辑）。
+        传 record_history=False 避免产生新的可撤销记录（防止撤销循环）。
         """
         if self._file_op is None:
             raise UndoError("未注入 FileOperationService，无法撤销 move")
@@ -381,7 +383,7 @@ class UndoService:
             raise UndoError("历史记录缺少 target_path")
         # 反向移动：target → source
         try:
-            self._file_op.move(target, source)
+            self._file_op.move(target, source, record_history=False)
         except (FileOperationError, SourceNotFoundError, ConflictError) as e:
             raise UndoError(f"反向移动失败：{target} → {source}：{e}") from e
 

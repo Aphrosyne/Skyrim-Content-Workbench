@@ -88,6 +88,7 @@ from app.file_list_model import (
 )
 from app.folder_tree_model import FolderTreeModel
 from app.metadata_panel import MetadataPanel
+from app.path_display import make_display_path_from_service
 from app.scan_worker import ScanWorker
 from app.tag_filter import TagFilterBar
 from app.tag_manager_dialog import TagManagerDialog
@@ -333,6 +334,11 @@ class MainWindow(QMainWindow):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        # UX 重构 Phase 2 Task 5 修复：抑制 QMessageBox 系统提示音
+        from app.message_box_helper import suppress_message_box_sound
+
+        suppress_message_box_sound()
+
         self._service = managed_root_service
         self._tree_service = folder_tree_service
         self._content_service = content_service
@@ -460,11 +466,11 @@ class MainWindow(QMainWindow):
         if rollback:
             self._rollback()
         if isinstance(e, ConflictError):
-            QMessageBox.warning(self, title, f"目标已存在：\n{e}")
+            QMessageBox.information(self, title, f"目标已存在：\n{e}")
         elif isinstance(e, FileOperationError):
-            QMessageBox.warning(self, title, f"文件操作失败：\n{e}")
+            QMessageBox.information(self, title, f"文件操作失败：\n{e}")
         elif isinstance(e, ApplicationError):
-            QMessageBox.warning(self, title, str(e))
+            QMessageBox.information(self, title, str(e))
         else:
             logger.exception(title)
             QMessageBox.critical(self, title, "操作失败，请查看日志。")
@@ -554,13 +560,13 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(self._roots_group)
 
-        # 扫描状态
-        status_box = QGroupBox("扫描状态")
-        status_layout = QVBoxLayout(status_box)
+        # UX 重构 Phase 2 Task 5（Q7=A）：移除左侧"扫描状态" QGroupBox，
+        # 扫描状态统一到 QStatusBar 的持久 QLabel（_status_label），避免布局抖动。
+        # _status_label 在 _setup_status_bar 中创建并 addWidget 到 QStatusBar。
+        # 单行显示（不换行），完整摘要通过 Tooltip 查看，避免 QStatusBar 高度抖动。
         self._status_label = QLabel(ui.STATUS_IDLE)
-        self._status_label.setWordWrap(True)
-        status_layout.addWidget(self._status_label)
-        left_layout.addWidget(status_box)
+        self._status_label.setWordWrap(False)
+        self._status_label.setToolTip("扫描状态")
 
         # 目录树
         self._tree_group = QGroupBox(ui.TREE_GROUP_TITLE)
@@ -702,6 +708,14 @@ class MainWindow(QMainWindow):
         self._zoom_combo.currentIndexChanged.connect(self._on_zoom_combo_changed)
         view_switch_layout.addWidget(self._zoom_combo)
 
+        # UX 重构 Phase 2 Task 5（Q5=B）：刷新按钮（中栏标题栏）
+        # 仅刷新当前目录 + 目录树对应节点，不触发全量扫描（Q6=A 同步刷新装配面板）
+        self._refresh_button = QPushButton(ui.REFRESH_BUTTON)
+        self._refresh_button.setToolTip(ui.REFRESH_BUTTON_TOOLTIP)
+        self._refresh_button.setFixedWidth(32)
+        self._refresh_button.clicked.connect(self._on_refresh_current)
+        view_switch_layout.addWidget(self._refresh_button)
+
         content_layout.addWidget(self._view_switch_bar)
 
         # 标签筛选栏（Stage 4 Task 3）：仅浏览模式 + 注入 TagService 时可见
@@ -817,6 +831,8 @@ class MainWindow(QMainWindow):
             self._metadata_panel = MetadataPanel(
                 self._content_service, self._tag_service, parent=self._metadata_group
             )
+            # UX 重构 Phase 2 Task 5 修复：注入 managed_root_service 用于路径简化显示
+            self._metadata_panel.set_managed_root_service(self._service)
             self._metadata_panel.on_saved.connect(self._on_metadata_saved)
             self._metadata_panel.on_save_failed.connect(self._on_metadata_save_failed)
             self._metadata_panel.on_pick_cover_requested.connect(self._on_pick_cover_requested)
@@ -863,6 +879,21 @@ class MainWindow(QMainWindow):
         central_layout.addWidget(top_bar)
         central_layout.addWidget(splitter, stretch=1)
         self.setCentralWidget(central)
+
+        # UX 重构 Phase 2 Task 5（Q7=A）：状态栏统一到 QStatusBar
+        self._setup_status_bar()
+
+    def _setup_status_bar(self) -> None:
+        """统一状态栏（Q7=A）。
+
+        - 持久 QLabel（_status_label）：显示扫描状态（就绪/扫描中/完成/失败），
+          通过 addWidget 挂到 QStatusBar 左侧，不会被 showMessage 临时消息覆盖。
+        - showMessage：用于操作提示（复制路径/重命名成功等），短暂显示后自动消失。
+        - 消除原左侧 QGroupBox + 底部 QLabel 并存导致的布局抖动。
+        """
+        status_bar = self.statusBar()
+        status_bar.setSizeGripEnabled(False)
+        status_bar.addWidget(self._status_label)
 
     # --- 根目录列表 ---
 
@@ -951,9 +982,10 @@ class MainWindow(QMainWindow):
         else:
             type_text = ui.DETAIL_TYPE_FOLDER
 
+        display_path = make_display_path_from_service(node.real_path, self._service)
         lines = [
             f"{ui.DETAIL_NAME_LABEL}：{node.display_name}",
-            f"{ui.DETAIL_PATH_LABEL}：{node.real_path}",
+            f"{ui.DETAIL_PATH_LABEL}：{display_path}",
             f"{ui.DETAIL_IS_ROOT_LABEL}：{'是' if node.is_managed_root else '否'}",
             f"{ui.DETAIL_TYPE_LABEL}：{type_text}",
             f"{ui.DETAIL_CHILD_COUNT_LABEL}：{child_count}",
@@ -1101,6 +1133,52 @@ class MainWindow(QMainWindow):
             return
 
         # 其他情况（普通文件）：不响应
+
+    def _on_entry_activated_for_entry(self, entry: FileEntry) -> None:
+        """右键菜单「打开」项的 handler（UX 重构 Phase 2 Task 5，Q1=B）。
+
+        行为与双击（_on_entry_activated）一致：
+        - 文件夹 → 进入该目录
+        - 文件类型内容单元 → 显示元数据面板
+        - 普通文件 → 尝试用系统默认程序打开
+
+        Args:
+            entry: 要打开的条目。
+        """
+        # 复用双击逻辑：构造一个伪 index 不可行（需要 model），
+        # 直接内联双击的关键逻辑。
+        if entry.is_dir:
+            # 进入文件夹：同步目录树选中
+            target_idx = self._tree_model.find_index_by_path(self._tree_view, entry.path)
+            if target_idx.isValid():
+                self._tree_view.setCurrentIndex(target_idx)
+                self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+            else:
+                logger.warning(
+                    "右键打开：未在目录树中找到匹配节点，回退到手动刷新：path=%s",
+                    entry.path,
+                )
+                self._refresh_content_list(entry.path)
+                self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+            return
+
+        # 文件类型内容单元 → 显示元数据
+        if entry.content_unit is not None:
+            self._update_metadata(entry.content_unit)
+            return
+
+        # 普通文件 → 用系统默认程序打开
+        try:
+            subprocess.run(
+                ["cmd", "/c", "start", "", entry.path],
+                check=False,
+                shell=False,
+            )
+        except (OSError, subprocess.SubprocessError):  # noqa: BLE001
+            logger.exception("系统打开文件失败：path=%s", entry.path)
+            QMessageBox.information(
+                self, ui.MENU_OPEN, ui.MENU_OPERATION_FAILED.format(error="无法打开文件")
+            )
 
     def _on_content_selection_changed(self, *args) -> None:  # noqa: N802, ANN001 (Qt 信号)
         """文件列表选中变化：单击选中条目 → 右栏同步更新元数据与装配面板。
@@ -1314,7 +1392,7 @@ class MainWindow(QMainWindow):
         try:
             results = self._search_service.search(query)
         except SearchError as e:
-            QMessageBox.warning(
+            QMessageBox.information(
                 self,
                 ui.SEARCH_DIALOG_TITLE,
                 ui.SEARCH_DIALOG_ERROR.format(error=str(e)),
@@ -1322,7 +1400,7 @@ class MainWindow(QMainWindow):
             return
         except Exception as e:  # noqa: BLE001 - 兜底，确保 UI 收到友好错误
             logger.exception("搜索发生未预期异常：query=%s", query)
-            QMessageBox.warning(
+            QMessageBox.information(
                 self,
                 ui.SEARCH_DIALOG_TITLE,
                 ui.SEARCH_DIALOG_ERROR.format(error=str(e)),
@@ -1541,7 +1619,7 @@ class MainWindow(QMainWindow):
             )
         except (OSError, subprocess.SubprocessError):  # noqa: BLE001
             logger.exception("打开资源管理器失败：path=%s", path)
-            QMessageBox.warning(self, ui.MENU_OPEN_IN_EXPLORER, ui.MENU_OPEN_IN_EXPLORER_FAILED)
+            QMessageBox.information(self, ui.MENU_OPEN_IN_EXPLORER, ui.MENU_OPEN_IN_EXPLORER_FAILED)
 
     def _on_tree_context_menu(self, pos: QPoint) -> None:  # noqa: N802 (Qt 命名)
         """目录树右键菜单：新建文件夹 + 在资源管理器中打开 + 折叠全部。
@@ -1565,6 +1643,8 @@ class MainWindow(QMainWindow):
         paste_action = None
         move_to_action = None
         explorer_action = None
+        pin_action = None
+        unpin_action = None
         if node is not None:
             # 新建文件夹 / 删除（Stage 5 Task 3a，仅需 FileOperationService）
             if self._file_operation_service is not None:
@@ -1579,6 +1659,14 @@ class MainWindow(QMainWindow):
                 delete_action = menu.addAction(ui.MENU_DELETE)
             # 在资源管理器中打开（Stage 5 Task 1，节点有效时显示）
             explorer_action = menu.addAction(ui.MENU_OPEN_IN_EXPLORER)
+
+            # UX 重构 Phase 2 Task 5（Q2=C）：钉住/取消钉住
+            if self._assembly_panel is not None:
+                if self._assembly_panel.is_pinned():
+                    unpin_action = menu.addAction(ui.MENU_UNPIN_FOLDER)
+                else:
+                    # 未钉住 → 显示「钉住此文件夹」
+                    pin_action = menu.addAction(ui.MENU_PIN_FOLDER)
 
         # 折叠全部（Stage 5 Task 7，无论是否选中节点都显示）
         if node is not None:
@@ -1602,6 +1690,12 @@ class MainWindow(QMainWindow):
             self._on_shortcut_delete_tree()
         elif explorer_action is not None and chosen is explorer_action:
             self._on_open_in_explorer(node.real_path)
+        elif pin_action is not None and chosen is pin_action:
+            from pathlib import Path  # noqa: PLC0415
+
+            self._pin_folder_from_context(Path(node.real_path))
+        elif unpin_action is not None and chosen is unpin_action:
+            self._unpin_from_context()
         elif chosen is collapse_action:
             self._collapse_all_tree()
 
@@ -1678,10 +1772,13 @@ class MainWindow(QMainWindow):
                 break
 
     def _show_empty_area_context_menu(self, active_view, pos: QPoint) -> None:
-        """空白区域右键菜单（Stage 5 Task 3a + Task 3b）。
+        """空白区域右键菜单（Stage 5 Task 3a + Task 3b + UX 重构 Phase 2 Task 5）。
 
-        显示"新建文件夹"和"粘贴"（基于当前显示的目录）。
+        显示"新建文件夹"、"粘贴"（基于当前显示的目录）、"钉住此文件夹"/"取消钉住"。
         需注入 FileOperationService + ClipboardService。
+        UX 重构 Phase 2 Task 5（Q2=C）：
+        - 当前目录未钉住时显示「钉住此文件夹」
+        - 有钉住文件夹时显示「取消钉住」
         """
         if self._file_operation_service is None:
             return
@@ -1696,6 +1793,17 @@ class MainWindow(QMainWindow):
         if self._clipboard_service is not None:
             paste_action = menu.addAction(ui.MENU_PASTE)
             paste_action.setEnabled(self._clipboard_service.get() is not None)
+
+        # UX 重构 Phase 2 Task 5（Q2=C）：钉住/取消钉住
+        pin_action = None
+        unpin_action = None
+        if self._assembly_panel is not None:
+            if self._assembly_panel.is_pinned():
+                unpin_action = menu.addAction(ui.MENU_UNPIN_FOLDER)
+            else:
+                # 当前目录未钉住 → 显示「钉住此文件夹」
+                pin_action = menu.addAction(ui.MENU_PIN_FOLDER)
+
         chosen = menu.exec(active_view.viewport().mapToGlobal(pos))
         if chosen is new_folder_action:
             self._on_new_folder_in_dir(current_dir)
@@ -1703,6 +1811,12 @@ class MainWindow(QMainWindow):
             from pathlib import Path  # noqa: PLC0415
 
             self._perform_paste(Path(current_dir))
+        elif pin_action is not None and chosen is pin_action:
+            from pathlib import Path  # noqa: PLC0415
+
+            self._pin_folder_from_context(Path(current_dir))
+        elif unpin_action is not None and chosen is unpin_action:
+            self._unpin_from_context()
 
     def _build_content_menu_actions(
         self, entries: list[FileEntry]
@@ -1711,9 +1825,18 @@ class MainWindow(QMainWindow):
 
         返回 (label, handler, enabled) 三元组列表。
         enabled=False 时菜单项灰显。
+
+        UX 重构 Phase 2 Task 5（Q1=B）：已标记内容单元也显示「打开」项，
+        内容单元标记不改变文件基本操作语义。
         """
         # actions 元素：(label, handler, enabled)
         actions: list[tuple[str, Callable[[], None], bool]] = []
+
+        # UX 重构 Phase 2 Task 5（Q1=B）：「打开」项（单选时显示，行为与双击一致）
+        # 所有类型（普通文件/文件夹/已标记内容单元）都显示
+        if len(entries) == 1:
+            entry = entries[0]
+            actions.append((ui.MENU_OPEN, lambda: self._on_entry_activated_for_entry(entry), True))
 
         # 创建 Mod 组：单选或多选 + 全部为文件（非目录）+ 注入了 ContentUnitCreationService
         # UX 重构 Phase 1 Task 1 Commit 3：支持多选（E1：仅全文件时显示）
@@ -1799,6 +1922,29 @@ class MainWindow(QMainWindow):
                 (ui.MENU_ADD_TO_PINNED, lambda: self._on_add_to_pinned_folder(entries), True)
             )
 
+        # UX 重构 Phase 2 Task 5（Q2=C）：钉住/取消钉住右键菜单
+        if self._assembly_panel is not None:
+            # 单选文件夹 → 显示「钉住此文件夹」（若该文件夹未钉住）
+            if len(entries) == 1 and entries[0].is_dir:
+                folder_path = Path(entries[0].path)
+                pinned_path = self._assembly_panel.current_folder_path()
+                is_this_pinned = (
+                    pinned_path is not None
+                    and make_path_key(pinned_path) == make_path_key(folder_path)
+                    and self._assembly_panel.is_pinned()
+                )
+                if not is_this_pinned:
+                    actions.append(
+                        (
+                            ui.MENU_PIN_FOLDER,
+                            lambda: self._pin_folder_from_context(folder_path),
+                            True,
+                        )
+                    )
+            # 有钉住文件夹时，任意选中都显示「取消钉住」
+            if self._assembly_panel.is_pinned():
+                actions.append((ui.MENU_UNPIN_FOLDER, self._unpin_from_context, True))
+
         # Stage 5 Task 3a：新建文件夹 / 重命名 / 删除（仅需 FileOperationService）
         # Stage 5 Task 3b：复制 / 剪切（需 FileOperationService + ClipboardService）
         # Stage 5 Task 5：移动到...（仅需 FileOperationService）
@@ -1817,6 +1963,10 @@ class MainWindow(QMainWindow):
             if self._clipboard_service is not None:
                 actions.append((ui.MENU_COPY, lambda: self._on_shortcut_copy(), True))
                 actions.append((ui.MENU_CUT, lambda: self._on_shortcut_cut(), True))
+                # 粘贴：粘贴到当前中栏目录（不是右键的文件夹内部）
+                # 剪贴板空时灰显
+                has_clipboard = self._clipboard_service.get() is not None
+                actions.append((ui.MENU_PASTE, lambda: self._on_shortcut_paste(), has_clipboard))
             # Stage 5 Task 5：移动到...（Q4=A 中栏 + 目录树均添加）
             actions.append((ui.MENU_MOVE_TO, lambda: self._on_move_to(entries), True))
             # 删除：单选或批量
@@ -2028,7 +2178,7 @@ class MainWindow(QMainWindow):
                 ui.BATCH_MARK_CONTENT_UNIT_OK.format(count=success_count), 3000
             )
         if failure_count > 0:
-            QMessageBox.warning(
+            QMessageBox.information(
                 self,
                 ui.BATCH_MARK_CONTENT_UNIT_FAILED,
                 f"{failure_count} 个文件标记失败，请查看日志。",
@@ -2061,7 +2211,7 @@ class MainWindow(QMainWindow):
                 ui.BATCH_UNMARK_CONTENT_UNIT_OK.format(count=success_count), 3000
             )
         if failure_count > 0:
-            QMessageBox.warning(
+            QMessageBox.information(
                 self,
                 ui.BATCH_UNMARK_CONTENT_UNIT_FAILED,
                 f"{failure_count} 个内容单元取消标记失败，请查看日志。",
@@ -2434,6 +2584,36 @@ class MainWindow(QMainWindow):
         if not pinned:
             self._follow_middle_selection_after_unpin()
 
+    def _pin_folder_from_context(self, folder_path: Path) -> None:
+        """右键菜单「钉住此文件夹」（UX 重构 Phase 2 Task 5，Q2=C）。
+
+        对任意文件夹右键 → 钉住该文件夹。
+        - 多选取第一个（Q2 决策）
+        - 若已有钉住文件夹，替换为新选择（让后来的覆盖前面的）
+        - 钉住后状态栏提示
+
+        Args:
+            folder_path: 要钉住的文件夹路径。
+        """
+        if self._assembly_panel is None:
+            return
+        self._assembly_panel.pin_folder(folder_path)
+        name = folder_path.name
+        self.statusBar().showMessage(ui.ASSEMBLY_PIN_STATUS_PINNED.format(name=name), 3000)
+
+    def _unpin_from_context(self) -> None:
+        """右键菜单「取消钉住」（UX 重构 Phase 2 Task 5，Q2=C）。
+
+        中栏/目录树右键取消钉住：调用 AssemblyPanel.unpin + 触发跟随中栏逻辑。
+        """
+        if self._assembly_panel is None:
+            return
+        if not self._assembly_panel.is_pinned():
+            return
+        self._assembly_panel.unpin()
+        self._follow_middle_selection_after_unpin()
+        self.statusBar().showMessage(ui.ASSEMBLY_PIN_STATUS_UNPINNED_FOLLOW, 3000)
+
     def _on_add_to_pinned_folder(self, entries: list[FileEntry]) -> None:
         """添加选中文件到钉住的文件夹（UX 重构 Phase 1 Task 4）。
 
@@ -2617,6 +2797,8 @@ class MainWindow(QMainWindow):
         from app.operation_history_dialog import OperationHistoryDialog  # noqa: PLC0415
 
         dialog = OperationHistoryDialog(self._undo_service, parent=self, limit=100)
+        # UX 重构 Phase 2 Task 5：注入 managed_root_service 用于路径简化显示
+        dialog.set_managed_root_service(self._service)
         dialog.set_on_undone_callback(_on_undone)
         dialog.exec()
 
@@ -2626,6 +2808,26 @@ class MainWindow(QMainWindow):
             self._refresh_tree()
             self._refresh_content_list_for_current_mode()
             self.statusBar().showMessage("已撤销操作", 3000)
+
+    def _on_refresh_current(self) -> None:
+        """刷新当前目录（UX 重构 Phase 2 Task 5，Q5=B + Q6=A）。
+
+        - 仅刷新中栏当前显示的目录 + 目录树对应节点，不触发全量扫描
+        - 若受影响目录与装配面板钉住文件夹相同，同步刷新装配面板（Q6=A）
+        - 外部修改文件后 F5 能看到变化
+
+        实现说明：FolderTreeService 无单节点刷新接口，使用 _refresh_tree（从 DB 重载
+        目录树，不触发扫描）+ _restore_middle_after_tree_refresh 恢复中栏。
+        _restore_middle_after_tree_refresh 已含 _refresh_assembly_if_affected。
+        """
+        current_dir = self._current_displayed_dir()
+        if current_dir is None:
+            self.statusBar().showMessage(ui.REFRESH_NO_DIR, 2000)
+            return
+        # 刷新目录树（从 DB 重载，不触发扫描）+ 恢复中栏选中 + 同步装配面板
+        self._refresh_tree()
+        self._restore_middle_after_tree_refresh(current_dir)
+        self.statusBar().showMessage(ui.REFRESH_DONE, 2000)
 
     # === Stage 5 Task 4：键盘快捷键 ===
 
@@ -2736,6 +2938,11 @@ class MainWindow(QMainWindow):
             self._shortcut_paste_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
             self._shortcut_paste_tree.activated.connect(self._on_shortcut_paste_tree)
 
+        # UX 重构 Phase 2 Task 5（Q5=B）：F5 刷新当前目录（窗口级，任意位置聚焦可触发）
+        self._shortcut_refresh = QShortcut(QKeySequence("F5"), self)
+        self._shortcut_refresh.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._shortcut_refresh.activated.connect(self._on_refresh_current)
+
     def _on_shortcut_rename_content(self) -> None:
         """F2：重命名中栏选中条目（Q1=A：多选取第一个）。"""
         if self._file_operation_service is None:
@@ -2821,7 +3028,7 @@ class MainWindow(QMainWindow):
         # Q2=A：二次确认弹窗
         from app.operation_history_dialog import _format_history_description  # noqa: PLC0415
 
-        desc = _format_history_description(target)
+        desc = _format_history_description(target, self._service)
         reply = QMessageBox.question(
             self,
             ui.SHORTCUT_UNDO_CONFIRM_TITLE,
@@ -2854,7 +3061,7 @@ class MainWindow(QMainWindow):
         except UndoAlreadyUndoneError:
             self.statusBar().showMessage(ui.SHORTCUT_NO_UNDOABLE, 2000)
         except UndoSafetyError as e:
-            QMessageBox.warning(
+            QMessageBox.information(
                 self,
                 ui.SHORTCUT_UNDO_CONFIRM_TITLE,
                 ui.SHORTCUT_UNDO_SAFETY_FAILED.format(reason=e.reason),
@@ -2996,7 +3203,9 @@ class MainWindow(QMainWindow):
         conflict_service = ConflictResolutionService()
         conflicts = conflict_service.scan_conflicts(src_paths, dst_dir, operation)
         if operation == "cut" and has_cross_drive_cut(conflicts):
-            QMessageBox.warning(self, ui.CONFLICT_DIALOG_TITLE, ui.SHORTCUT_PASTE_CROSS_DRIVE_CUT)
+            QMessageBox.information(
+                self, ui.CONFLICT_DIALOG_TITLE, ui.SHORTCUT_PASTE_CROSS_DRIVE_CUT
+            )
             return
 
         # 冲突解决（Q3=C）
@@ -3186,7 +3395,7 @@ class MainWindow(QMainWindow):
 
         # 跨盘剪切检测（Q7=B 拒绝）
         if has_cross_drive_cut(conflicts):
-            QMessageBox.warning(self, fail_title, ui.SHORTCUT_MOVE_TO_CROSS_DRIVE)
+            QMessageBox.information(self, fail_title, ui.SHORTCUT_MOVE_TO_CROSS_DRIVE)
             return
 
         # 冲突解决（Q5=A 复用 ConflictResolutionDialog）
@@ -3272,7 +3481,7 @@ class MainWindow(QMainWindow):
 
         lines = [
             f"{ui.METADATA_TITLE_LABEL}：{title}",
-            f"{ui.METADATA_PATH_LABEL}：{unit.path}",
+            f"{ui.METADATA_PATH_LABEL}：{make_display_path_from_service(unit.path, self._service)}",
             f"{ui.METADATA_TYPE_LABEL}：{unit.content_type}",
             f"{ui.METADATA_SOURCE_URL_LABEL}：{source_url}",
             f"{ui.METADATA_NOTES_LABEL}：{notes}",
@@ -3331,10 +3540,10 @@ class MainWindow(QMainWindow):
             unit = self._content_service.get_by_id(unit_id)
         except Exception:  # noqa: BLE001
             logger.exception("获取内容单元失败：unit_id=%s", unit_id)
-            QMessageBox.warning(self, ui.METADATA_PANEL_SAVE_FAILED, "获取内容单元失败。")
+            QMessageBox.information(self, ui.METADATA_PANEL_SAVE_FAILED, "获取内容单元失败。")
             return
         if unit is None:
-            QMessageBox.warning(self, ui.METADATA_PANEL_SAVE_FAILED, "内容单元不存在。")
+            QMessageBox.information(self, ui.METADATA_PANEL_SAVE_FAILED, "内容单元不存在。")
             return
 
         candidates = self._content_service.list_cover_candidates(unit.path)
@@ -3643,7 +3852,18 @@ class MainWindow(QMainWindow):
     # --- 状态 ---
 
     def _set_status(self, text: str) -> None:
-        self._status_label.setText(text)
+        """设置扫描状态文本（Q7=A 统一状态栏）。
+
+        多行文本（如扫描摘要含错误列表）只显示第一行，完整内容通过 Tooltip 查看，
+        避免 QStatusBar 高度抖动。
+        """
+        if "\n" in text:
+            first_line = text.split("\n", 1)[0]
+            self._status_label.setText(first_line)
+            self._status_label.setToolTip(text)
+        else:
+            self._status_label.setText(text)
+            self._status_label.setToolTip("扫描状态")
 
     def status_text(self) -> str:
         """返回当前状态文本（供测试）。"""
