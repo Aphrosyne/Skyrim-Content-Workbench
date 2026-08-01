@@ -12,7 +12,7 @@
 
 以下约束在整个 UX 重构期间不可违反，避免 agent 自行引入多余字段或概念：
 
-1. **标记 = 数据库有记录，取消标记 = DELETE 记录**。ContentUnit 表里有的就是已标记的内容单元，没有的就是未标记。不需要 `status` 列或 `is_marked` 字段表达"曾经标记过但现在不是"的状态。当前 schema v11 中遗留的 `is_marked` 字段在 Task 6 中一并清理，回归纯 DELETE 模式。
+1. **标记 = 数据库有记录，取消标记 = DELETE 记录**。ContentUnit 表里有的就是已标记的内容单元，没有的就是未标记。不需要 `status` 列或 `is_marked` 字段表达"曾经标记过但现在不是"的状态。当前 schema v12 中遗留的 `is_marked` 字段在 Task 6 中一并清理，回归纯 DELETE 模式。
 2. **Mod 组 = 文件夹内容单元**，不是独立的数据类型或表。"创建 Mod 组"是 UI 操作（建文件夹 + 移入文件 + 标记为内容单元），不引入 `ModGroup` 实体。
 3. **ContentUnit 不存 status、rating 字段**。元数据仅：`title`、`source_url`、`notes`、`cover_path`。
 4. **路径是唯一标识**。一个路径最多对应一条 ContentUnit 记录。
@@ -46,7 +46,7 @@
 
 - Task 2：装配面板从中间区分割区域迁移到右栏下方（当前仍在中间区）。
 - Task 3：📌 钉住功能（Pin 只固定装配区域，元数据永远跟随当前选择）。
-- Task 4：QuickInsertService 正式移除；添加到钉住文件夹；拖拽支持。
+- Task 4：QuickInsertService 正式移除；添加到钉住文件夹；拖拽支持。✅ 已在 Task 4（v0.45.0）完成
 - Task 7：FileListView 统一问题——当前 FileListModel（中栏）和 AssemblyListModel（装配面板）两套模型，未来维护两份，建议统一为单一 FileListView（登记为技术债，Task 7 拆分时处理）。
 
 ### Task 2：装配面板迁移到右栏
@@ -188,15 +188,15 @@
 
 ### Task 6：数据库与死代码清理
 
-- 移除受管理根目录时同步清理 `folder_cache` 和内容单元记录 — open-questions §6
-- 清理所有 `is_marked=0` 的废弃内容单元记录（DELETE），同时将取消标记操作改为 DELETE 替代 UPDATE `is_marked=0`，随后移除 `is_marked` 字段（schema 迁移），回归纯 DELETE 模式
-- 清理 `staging_area` 表及相关代码 — Task 1 后续
-- 移除 `%LOCALAPPDATA%\SkyrimContentWorkbench\` 旧目录检测/迁移代码 — open-questions §7
-- 确保 `data/` 目录结构完整：`data/app.db`、`data/thumbnails/`、`data/exports/`、`data/logs/`，并加入 `.gitignore`
+- 移除受管理根目录时同步清理 `folder_cache` 和内容单元记录 — open-questions §6（未完成）
+- 清理所有 `is_marked=0` 的废弃内容单元记录（DELETE），同时将取消标记操作改为 DELETE 替代 UPDATE `is_marked=0`，随后移除 `is_marked` 字段（schema 迁移），回归纯 DELETE 模式（未完成）
+- 清理 `staging_area` 表及相关代码 — ✅ 已在 Task 1 Commit 2 完成（v11→v12 迁移，源码无残留）
+- 移除 `%LOCALAPPDATA%\SkyrimContentWorkbench\` 旧目录检测/迁移代码 — open-questions §7（未完成，实施时需确认是否保留路径回退）
+- 确保 `data/` 目录结构完整：`data/app.db`、`data/thumbnails/`、`data/exports/`、`data/logs/`，并加入 `.gitignore` — ✅ 已完成（目录齐全，`.gitignore` 含 `/data/`）
 
 ### Task 7：MainWindow 拆分
 
-- 来源：TD-M21 + TD-M31（3823 行 / 95 方法 / 60+ 实例变量）
+- 来源：TD-M21 + TD-M31（4001 行 / 150 方法 / 60+ 实例变量，2026-08-01 复核）
 - 至少拆出：
   - `ScanController`（扫描线程生命周期 + 信号转发）
   - `AssemblyController`（装配面板绑定 / 回调）

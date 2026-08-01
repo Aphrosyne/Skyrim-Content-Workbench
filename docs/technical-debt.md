@@ -322,10 +322,11 @@
 > 以下问题来自 Stage 3 正式 Code Review，经评估不阻塞 Stage 4 启动，
 > 但建议在对应阶段择机处理。编号接续既有 TD 序列。
 
-### TD-M21: MainWindow God Object 趋势（1570 行 / 76 方法）
+### TD-M21: MainWindow God Object 趋势（4001 行 / 150 方法，2026-08-01 复核）
 
 - **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
-- **背景**: Stage 3 Code Review 发现 MainWindow 已增长到 1570 行 / 76 方法，
+- **背景**: Stage 3 Code Review 发现 MainWindow 已增长到 4001 行 / 150 方法
+  （2026-08-01 复核，原登记 1570 行 / 76 方法已过时），
   承担 UI 搭建、信号槽、扫描线程生命周期、装配面板绑定、快速插入流程、
   元数据展示、Elide 渲染、模式切换、DB 事务边界（`_commit`/`_rollback`）等
   多重职责。Stage 4 还要加搜索栏、标签筛选、评分控件、备注编辑器；
@@ -338,8 +339,8 @@
   `MetadataView`（元数据 + Elide 渲染）、`ModeController`（模式切换 + hint）。
   `_commit` / `_rollback` 移到 `UnitOfWork` 或 `TransactionScope`，UI 持有
   其引用而非裸 connection。
-- **建议修复阶段**: **Stage 4 中期**（在加搜索/标签 UI 之前先拆分，
-  避免新功能继续堆进 MainWindow）。
+- **建议修复阶段**: **UX 重构 Task 7**（Q8:C 决策"边开发边小规模拆分"未执行，
+  已由用户决策归入 UI 重构版本统一处理）。
 
 ### TD-M22: folder_cache 同步辅助逻辑在多个 Service 中重复 ✅ 已修复（Stage 4.5）
 
@@ -413,7 +414,7 @@
 - **影响范围**: 不影响当前正确性，但影响回归保障。
 - **推荐修复方案**: 至少加 `MainWindow` 的轻量级集成测试（用 `QTest`
   模拟点击 / 选中），覆盖快速插入按钮状态机和装配面板绑定流程。
-- **建议修复阶段**: **Stage 4 中期**（与 TD-M21 拆分同步进行，
+- **建议修复阶段**: **UX 重构 Task 7**（与 TD-M21 拆分同步进行，
   拆分后更易为各 Controller 写测试）。
 
 ### TD-M27: SQLite 并发写未测试（ScanWorker 独立连接 vs 主线程连接）
@@ -508,7 +509,7 @@
   （rename/delete/undo）会进一步增加耦合。
 - **推荐修复方案**: Stage 5 文件操作功能实现时，将 `FileOperationService`
   移到 application 层，`FolderCacheSyncHelper` 一并迁移。
-- **建议修复阶段**: **Stage 5 文件操作重构时**（D5 决策 B：延后处理）。
+- **建议修复阶段**: **UX 重构 Task 7**（D5 决策 B：延后处理，与 TD-M21 一并处理）。
 
 ### TD-M28: 多处 N+1 查询
 
@@ -586,7 +587,8 @@
 ### TD-M31: MainWindow 业务逻辑泄漏 ✅ 已登记（UI 重构版本处理）
 
 - **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
-- **背景**: MainWindow 3823 行、95 个方法、60+ 实例变量、6 个并行状态机。承担 21 处 `_commit()` + 文件操作编排 + 冲突解决编排（2 个重复方法）。Stage 4/5 期间 Q8:C 决策"边开发边小规模拆分"实际未执行，反而新增了快捷键 handler（14 个）、导航历史栈等逻辑。
+- **背景**: MainWindow 4001 行、150 个方法、60+ 实例变量、6 个并行状态机
+  （2026-08-01 复核，原登记 3823 行 / 95 方法已过时）。承担 21 处 `_commit()` + 文件操作编排 + 冲突解决编排（2 个重复方法）。Stage 4/5 期间 Q8:C 决策"边开发边小规模拆分"实际未执行，反而新增了快捷键 handler（14 个）、导航历史栈等逻辑。
 - **影响范围**: 任何 UI 改动成本极高，且 UI 层承担了本应在 Application 层的事务边界职责。
 - **推荐修复方案**: UI 重构版本前置任务。至少拆出 `ScanController` / `AssemblyController` / `MetadataView` / `ModeController` / `TransactionScope`（事务边界从 UI 移到 Application 层）。
 - **建议修复阶段**: **UI 重构版本（前置）**（用户决策：UI 重构单独开分支处理）。
@@ -678,6 +680,73 @@
 - **现状**：已修复，无需进一步处理。当前 `content_type` 仅 `'mod'`，未来扩展类型时需同步更新此集合。
 - **建议修复阶段**: **未来扩展类型时**（已修复，仅记录约定）。
 
+## UX 重构新增（2026-08-01）
+
+> 以下问题来自 UX 重构 Phase 1/2 实施与文档一致性复核，编号接续既有 TD 序列。
+
+### TD-M36: FileListView 未统一（FileListModel / AssemblyListModel 双模型）
+
+- **位置**: [file_list_model.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/file_list_model.py) `FileListModel`（中栏）/ [assembly_panel.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/assembly_panel.py) `AssemblyListModel`（装配面板）
+- **背景**: UX 重构 Phase 1 Task 1 已登记但未编号。中栏 FileListModel 与装配面板
+  AssemblyListModel 两套模型各自维护，文件操作/右键菜单/拖拽逻辑需在两处同步修改。
+- **影响范围**: 可维护性，不影响正确性。
+- **推荐修复方案**: 统一为单一 FileListView（中栏与装配面板共用），Task 7 拆分时处理。
+- **建议修复阶段**: **UX 重构 Task 7**。
+
+### TD-L30: 装配面板命名"文件夹透视器"待用户确认
+
+- **位置**: [assembly_panel.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/assembly_panel.py) / [ui_constants.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/ui_constants.py)
+- **背景**: UX 重构 Phase 1 Task 2 扩展装配面板语义为"文件夹透视器"（可透视任意
+  文件夹，不限于内容单元），面板名称仍为"装配面板"，是否改名待用户确认
+  （Task 2 遗留项，登记为技术债）。
+- **影响范围**: UI 文案与文档术语。
+- **推荐修复方案**: 用户确认后统一改名（UI 文案集中在 ui_constants.py）。
+- **建议修复阶段**: **UX 重构 Task 8**（与 TD-L28 术语统一一并处理）。
+
+### TD-L31: ui_constants 缩略图死常量与 WebP 实现不符
+
+- **位置**: [ui_constants.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/ui_constants.py) `THUMBNAIL_SIZE` / `THUMBNAIL_FORMAT` / `THUMBNAIL_FILENAME_TEMPLATE`
+- **背景**: Stage 5 Task 1a 缩略图缓存已实现为 WebP 多档
+  （`{content_unit_id}_{size}.webp`，默认 256），但 ui_constants 仍保留 PNG 单档常量
+  （`THUMBNAIL_FORMAT="PNG"`、`THUMBNAIL_FILENAME_TEMPLATE="{unit_id}.png"`、
+  `THUMBNAIL_SIZE=64`），全项目无引用。
+- **影响范围**: 死代码，误导阅读者。
+- **推荐修复方案**: 删除三个常量（或更新为 WebP 命名模板），UX 重构 Task 6 清理。
+- **建议修复阶段**: **UX 重构 Task 6**。
+
+### TD-L32: AssemblyService.remove_file 死代码
+
+- **位置**: [assembly_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/application/assembly_service.py) `remove_file`
+- **背景**: UX 重构 Phase 1 Task 1 Commit 3（L2 提前）移除装配面板「移除文件」功能时，
+  UI/回调/常量已清理，但 `AssemblyService.remove_file` 方法及对应测试
+  （test_assembly_service.py）保留未删除，UI 层已无调用方。
+- **影响范围**: 死代码，维护成本。
+- **推荐修复方案**: 删除 `remove_file` 方法与相关测试，UX 重构 Task 6 清理。
+- **建议修复阶段**: **UX 重构 Task 6**。
+
+### TD-L33: 代码注释遗留"浏览/整理模式"描述
+
+- **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) /
+  [search_dialog.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/search_dialog.py) /
+  [tag_filter.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/tag_filter.py) /
+  [metadata_panel.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/metadata_panel.py) 等 docstring 与注释
+- **背景**: UX 重构 Phase 1 移除双模式后，部分代码注释仍描述"浏览模式/整理模式"
+  行为（如 search_dialog "Q5=C：整理模式下不跳转"），与当前单面板行为不符。
+- **影响范围**: 认知负担，不影响正确性。
+- **推荐修复方案**: 清理过时注释，UX 重构 Task 6 顺带处理。
+- **建议修复阶段**: **UX 重构 Task 6**（顺带）或 Task 8。
+
+### TD-M37: 缩略图 Coordinator 生成链路未接入 UI
+
+- **位置**: [thumbnail_coordinator.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/thumbnail_coordinator.py) `request_thumbnail` / [card_list_model.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/card_list_model.py) / [metadata_panel.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/metadata_panel.py)
+- **背景**: Stage 5 Task 1a 实现了 WebP 多档磁盘缓存基础设施，但当前 UI 未接入：
+  `request_thumbnail` 无生产调用方；卡片视图与元数据面板直接 QPixmap 加载原图并
+  内存缓存；FileListModel 使用 Qt 标准图标。磁盘缩略图缓存仅由测试链路与启动 GC 触及。
+- **影响范围**: 磁盘缓存未发挥作用（原图每次会话重新加载）；不影响正确性。
+- **推荐修复方案**: 接入 Coordinator 链路（卡片视图按 icon_size 请求 256/512 档），
+  或按需简化缓存体系；需产品确认。
+- **建议修复阶段**: **UX 重构 Task 8**（UI 美化时）或单独决策。
+
 ---
 
 ## 处理优先级建议
@@ -738,12 +807,18 @@
    - 文档同步：architecture.md 更新到 schema v11；search_service.py Q2=A→Q2=B 注释修正
 
 6. **UI 重构版本处理**（用户决策：单独开分支）：
+   - **Task 6 先行**（数据库与死代码清理）：
+     - TD-L31（ui_constants 缩略图死常量）
+     - TD-L32（AssemblyService.remove_file 死代码）
+     - TD-L33（代码注释遗留"浏览/整理模式"描述，顺带）
    - TD-M21 + TD-M31（MainWindow God Object 拆分 + 业务逻辑泄漏）
    - TD-H10 + TD-L25（FileOperationService 分层迁移 + helper 私有访问）
    - TD-M26（MainWindow 集成测试，与拆分同步）
+   - TD-M36（FileListView 统一，与拆分同步）
    - TD-M35（rename/move 跨盘异常类型统一）
    - TD-L24（FileEntry 类名与注释不一致）
    - TD-L28（UI 中"目录"和"文件夹"混用）
+   - TD-L30（装配面板命名"文件夹透视器"待用户确认）
    - UI 重构清单 8 项（详见 open-questions.md）
 
 7. **Stage 6 前处理**（数据一致性版本）：

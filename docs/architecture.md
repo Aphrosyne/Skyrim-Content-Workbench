@@ -27,8 +27,12 @@
 │  PySide6 UI (主窗口 / TreeView / ListView / 元数据面板)    │
 │  ┌────────────────────────────────────────────────────┐  │
 │  │  Application Services                              │  │
-│  │  StagingService / ContentService / TagService      │  │
-│  │  FileOperationService / ScanService / SearchService │  │
+│  │  ContentService / ContentUnitCreationService /     │  │
+│  │  AssemblyService / TagService / ScanService /      │  │
+│  │  SearchService / FolderTreeService /               │  │
+│  │  ManagedRootService / UndoService /                │  │
+│  │  ClipboardService / ConflictResolutionService /    │  │
+│  │  ThumbnailService                                  │  │
 │  └────────────────────────────────────────────────────┘  │
 │  ┌────────────────────────────────────────────────────┐  │
 │  │  Domain Logic                                      │  │
@@ -37,11 +41,16 @@
 │  └────────────────────────────────────────────────────┘  │
 │  ┌────────────────────────────────────────────────────┐  │
 │  │  Infrastructure                                   │  │
-│  │  SQLite Repository / FileScanner / FileOperations  │  │
-│  │  ThumbnailGenerator / path_utils                  │  │
+│  │  SQLite Repository / FileScanner / FileOperation   │  │
+│  │  Service / ThumbnailGenerator / path_utils /       │  │
+│  │  FolderCacheSyncHelper / windows_recycle_bin       │  │
 │  └────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────┘
 ```
+
+> **注**：`FileOperationService` 位于 Infrastructure 层但注入了 Application 层依赖
+> （FolderCacheSyncHelper + ContentUnitRepository），分层归属违反已登记为 TD-H10，
+> 计划在 UX 重构 Task 7 迁移到 Application 层。
 
 ### 分层规则
 
@@ -58,57 +67,67 @@
 
 ```text
 MainWindow
-  ├─ TopBar: 标题 + 置顶按钮 + 搜索框 + [浏览|整理] 模式切换
+  ├─ TopBar: 搜索框 + 标签管理按钮 + 操作历史按钮
   │
-  ├─ DirectoryTree (左侧，QTreeView + FolderTreeModel)
-  │   └─ 数据源：FolderCache（SQLite 缓存）
-  │   └─ 惰性加载：canFetchMore / fetchMore
-  │   └─ 支持：展开/折叠、拖拽（DropAction）、右键菜单
+  ├─ 左栏（QWidget）
+  │   ├─ 受管理根目录列表 + 添加/移除 + 增量/全量扫描按钮
+  │   ├─ DirectoryTree (QTreeView + FolderTreeModel)
+  │   │   └─ 数据源：FolderCache（SQLite 缓存）
+  │   │   └─ 惰性加载：canFetchMore / fetchMore
+  │   │   └─ 支持：展开/折叠、右键菜单（新建文件夹/重命名/删除/移动到…/复制剪切粘贴/折叠全部）
+  │   └─ 选中目录详情区（路径简化显示）
   │
-  ├─ ContentArea (中间，QSplitter)
-  │   ├─ BrowseMode:
-  │   │   ├─ ContentUnitList (QListView / QTableView)
-  │   │   │   ├─ 有封面 → 大图卡片 (QListWidgetItem + Icon)
-  │   │   │   ├─ 无封面 → 详细列表 (QTableView)
-  │   │   │   └─ 排序：名称/日期/类型/大小/状态 + 正序/倒序
-  │   │   ├─ TagFilterBar (QWidget + 自定义标签按钮)
-  │   │   │   └─ 先选分类 → 展开标签 → 多选高亮
-  │   │   └─ SearchBar (QLineEdit)
-  │   │
-  │   └─ OrganizeMode:
-  │       ├─ StagingFileList (QListView)
-  │       │   └─ 暂存区零散文件列表（文件名/大小/日期）
-  │       └─ AssemblyPanel (QWidget)
-  │           └─ 正在组装的内容单元文件夹内容
+  ├─ 中栏（QSplitter + QStackedWidget）
+  │   ├─ 标题栏：刷新按钮（F5）+ 前进/后退 + 视图切换（列表/卡片）+ 排序下拉 + 缩放（卡片）
+  │   ├─ TagFilterBar (QWidget + 自定义标签按钮)
+  │   │   └─ 先选分类 → 展开标签 → 多选高亮 → 实时筛选（同分类 OR，跨分类 AND）
+  │   ├─ FileListModel（详细列表，QTableView + rubber band 框选）
+  │   └─ CardListModel（大图卡片，QListView IconMode，缩放 96~256 预选档）
   │
-  └─ MetadataPanel (右侧，QWidget，注入 TagService 时显示；浏览/整理模式均可见)
-        ├─ 标题（QLineEdit，中文别名）
-        ├─ 标签 chip 列表 + 独立输入框（QListWidget LeftToRight + Wrapping + QCompleter 自动补全）
-        ├─ 标签预选区域（输入框下方，单击快速添加到 chip，排除已在 chip 列表的）
-        ├─ 来源 URL（QLineEdit）
-        ├─ 备注（QTextEdit，多行）
-        ├─ 封面预览 + 设置封面按钮 + 清除封面按钮
-        └─ [保存] 按钮（显式保存，不自提交）
+  ├─ 右栏（QSplitter，元数据上 + 装配下，3:2）
+  │   ├─ MetadataPanel (QWidget，注入 TagService 时显示)
+  │   │   ├─ 标题（QLineEdit，中文别名）
+  │   │   ├─ 标签 chip 列表 + 独立输入框（QListWidget LeftToRight + Wrapping + QCompleter 自动补全）
+  │   │   ├─ 标签预选区域（输入框下方，单击快速添加到 chip，排除已在 chip 列表的）
+  │   │   ├─ 来源 URL（QLineEdit）
+  │   │   ├─ 备注（QTextEdit，多行）
+  │   │   ├─ 封面预览 + 设置封面按钮 + 清除封面按钮
+  │   │   └─ [保存] 按钮（显式保存，不自提交）
+  │   └─ AssemblyPanel（文件夹透视器）
+  │       ├─ 📌 钉住按钮（钉住后中栏操作不改变绑定）
+  │       ├─ 透视任意文件夹内部文件（AssemblyListModel）
+  │       ├─ 拖拽接受文件（仅钉住时）
+  │       └─ 右键：文件操作继承中栏 + 图片重命名 + 空白处移动到……
+  │
+  └─ StatusBar（QStatusBar：扫描状态 + 操作提示）
 ```
 
-> 整理模式保留右栏 MetadataPanel（2026-07-25 决策修正：原决策 4/8 推翻，方案 B），
-> 用户可在装配同时编辑元数据，避免创建完内容单元后切回浏览模式才能编辑元数据的多余步骤。
-> 未注入 TagService 时降级为只读 `_metadata_label`（兼容旧测试）。
+> UX 重构 Phase 1 起为单面板统一工作区（无浏览/整理模式切换，无暂存区/快速插入）。
+> 未注入 TagService 时 MetadataPanel 降级为只读 `_metadata_label`（兼容旧测试）。
 
 ### 3.2 组件职责
 
 | 组件 | 文件 | 职责 |
 |------|------|------|
-| `MainWindow` | `main_window.py` | 主窗口、布局、模式切换、服务注入 |
+| `MainWindow` | `main_window.py` | 主窗口、布局、服务注入、信号槽编排（God Object，TD-M21/M31，待 Task 7 拆分） |
 | `FolderTreeModel` | `folder_tree_model.py` | QAbstractItemModel，惰性加载目录树 |
-| `ContentUnitListModel` | `content_model.py`（新建） | 内容单元列表的 Qt Model |
+| `FileListModel` | `file_list_model.py` | 中栏详细列表 QAbstractListModel（文件系统条目 + 内容单元标记 + 排序） |
+| `CardListModel` | `card_list_model.py` | 中栏大图卡片视图 QAbstractListModel（封面 + 名称） |
 | `TagFilterBar` | `tag_filter.py`（新建） | 标签分类展开 + 标签多选筛选 |
-| `AssemblyPanel` | `assembly_panel.py`（新建） | Mod 组装配面板 |
+| `AssemblyPanel` | `assembly_panel.py` | 右栏下方装配面板（文件夹透视器 + 📌 钉住 + 拖拽 drop target + 右键继承中栏操作） |
 | `MetadataPanel` | `metadata_panel.py`（新建） | 元数据编辑表单（标题/标签/来源/备注/封面），显式保存按钮，标签 chip + 自动补全 |
 | `BatchTagDialog` | `batch_tag_dialog.py`（新建） | 批量打标签对话框（添加/移除模式 + chip + 自动补全） |
 | `CoverPickerDialog` | `cover_picker_dialog.py`（新建） | 封面选择对话框（IconMode 缩略图列表，默认选中第一张或当前封面） |
+| `TagManagerDialog` | `tag_manager_dialog.py` | 标签分类/标签 CRUD + JSON 导入导出 |
+| `MoveToDialog` | `move_to_dialog.py` | "移动到……"目标目录选择对话框（内嵌 FolderTreeModel） |
+| `ConflictResolutionDialog` | `conflict_resolution_dialog.py` | 冲突解决对话框（覆盖/跳过/重命名） |
+| `OperationHistoryDialog` | `operation_history_dialog.py` | 操作历史对话框（含撤销，Tooltip 显示详情） |
+| `SearchDialog` | `search_dialog.py` | 全局搜索对话框（LIKE 查询，双击跳转） |
 | `ScanWorker` | `scan_worker.py`（改造） | Qt 后台线程执行扫描 |
 | `ThumbnailWorker` | `thumbnail_worker.py`（改造） | Qt 后台线程生成缩略图 |
+| `ThumbnailCoordinator` | `thumbnail_coordinator.py` | 缩略图任务队列（单 worker + FIFO + 去重） |
+| `path_display` | `path_display.py` | 路径简化显示（相对根目录名，外部路径 `[外部]` 前缀） |
+| `message_box_helper` | `message_box_helper.py` | QMessageBox 系统提示音抑制 |
 | `ui_constants.py` | `ui_constants.py` | UI 文本常量集中定义 |
 
 ### 3.3 UI 线程边界
@@ -127,16 +146,18 @@ MainWindow
 | Service | 职责 | 主要方法 |
 |---------|------|---------|
 | `ManagedRootService` | 受管理根目录 CRUD | `add_root(path)` / `remove_root(id)` / `list_roots()` |
-| `FolderTreeService` | 目录树数据源（folder_cache） | `list_root_nodes()` / `list_children(path)` / `count_children(path)` |
-| `StagingService` | 暂存区标记与管理 | `set_staging(path)` / `list_staging_files()` / `is_staging(path)` |
-| `ContentService` | 内容单元元数据 + 目录条目 | `mark_as_content_unit(path)` / `unmark_content_unit(id)` / `list_directory_entries(path)` / `update_metadata(unit_id, title, source_url, notes, cover_path)`（阶段 4 Task 2）/ `list_cover_candidates(unit_path)`（阶段 4 Task 2） |
-| `ModGroupService` | 创建 Mod 组（Task 3） | `create_mod_group(source_file, staging_path, name)` |
-| `AssemblyService` | 装配面板文件加入/移除（Task 4） | `add_file(src, mod_group)` / `remove_file(file, mod_group)` / `rename_preview(...)` |
-| `QuickInsertService` | 快速插入 Mod 组到目标分类目录（Task 5） | `quick_insert(unit_id, target_dir)` |
-| `FileOperationService` | 文件操作（简化） | `new_folder(path)` / `move(src, dst)` |
+| `FolderTreeService` | 目录树数据源（folder_cache + managed_root） | `list_root_nodes()` / `list_children(path)` / `count_children(path)` |
+| `ContentService` | 内容单元元数据 + 目录条目 + 标记/取消标记 | `mark_as_content_unit(path)` / `unmark_content_unit(id)` / `list_directory_entries(path)` / `update_metadata(unit_id, title, source_url, notes, cover_path)` / `list_cover_candidates(unit_path)` / `quick_set_cover(unit_id)` |
+| `ContentUnitCreationService` | 创建 Mod 组（D1：原 ModGroupService 代码层重命名） | `create_content_unit_from_file(source_file, staging_path, name)` / `create_content_unit_from_files(entries, staging_path)` |
+| `AssemblyService` | 装配面板（文件夹透视 + 封面重命名） | `list_folder_files(folder_path)` / `bind_mod_group(unit_id)` / `rename_as_cover_by_path(folder_path, image_path)` / `add_file(...)` |
 | `ScanService` | 增量/全量扫描 | `scan_root(root_id, incremental)` / `scan_root_by_path(path, incremental)` |
-| `TagService` | 标签系统（阶段 4） | `create_category()` / `create_tag()` / `list_categories_with_tags()` / `import_from_json()` / `export_to_json()` / `search_tags(prefix)` / `list_tags_by_content_unit(unit_id)` / `set_content_unit_tags(unit_id, tag_ids)` / `batch_attach_tags(unit_ids, tag_ids)` / `batch_detach_tags(unit_ids, tag_ids)`（后 5 项为阶段 4 Task 2） |
-| `SearchService` | 全局搜索（阶段 5） | `search(query)` |
+| `TagService` | 标签系统 | `create_category()` / `create_tag()` / `list_categories_with_tags()` / `import_from_json()` / `export_to_json()` / `search_tags(query)` / `list_tags_of_content_unit(unit_id)` / `attach_tag_to_unit(...)` / `batch_attach_tags(...)` / `batch_detach_tags(...)` / `filter_unit_ids_by_category_and(tag_ids)` / `load_default_tags_if_empty(...)` |
+| `SearchService` | 全局搜索（LIKE，标题+标签+备注） | `search(query)` |
+| `UndoService` | 操作历史撤销（安全校验 + 反向操作 + 标记 undone_at） | `undo(history)` / `list_recent(limit)` |
+| `ClipboardService` | 应用内剪贴板（Q3=A 不与系统剪贴板混用） | `set_copy(paths)` / `set_cut(paths)` / `get()` / `is_cut(path)` / `cut_paths()` |
+| `ConflictResolutionService` | 冲突解决策略（覆盖/跳过/重命名 + 跨盘检测） | `scan_conflicts(...)` / `resolve(...)` |
+| `ThumbnailService` | 缩略图缓存管理（生成/查询/失效/GC） | `get_cache(unit_id, source_path, size)` / `generate(...)` / `invalidate(unit_id)` / `cleanup_orphans()` |
+| `FileOperationService` | 文件操作（**位于 Infrastructure，分层违反登记 TD-H10**） | `new_folder(path)` / `move(src, dst, overwrite=False, record_history=True)` / `copy(...)` / `rename(...)` / `delete(path)` / `undo(op_id)` |
 
 ### 4.2 Service 依赖关系
 
@@ -145,30 +166,34 @@ MainWindow
   ↓
 ManagedRootService ──→ ManagedRootRepository
       │
-FolderTreeService ──→ FolderCacheRepository + ManagedRootRepository + StagingService
+FolderTreeService ──→ FolderCacheRepository + ManagedRootRepository
       │
-StagingService ──→ StagingAreaRepository
+ContentService ──→ ContentUnitRepository + ThumbnailService（可选）+ UnitOfWork
       │
-ContentService ──→ ContentUnitRepository
+ContentUnitCreationService ──→ FileOperationService + ContentService + UnitOfWork
       │
-ModGroupService ──→ FileOperationService + ContentService + FolderCacheRepository
+AssemblyService ──→ FileOperationService + ContentUnitRepository
       │
-AssemblyService ──→ FileOperationService + ContentUnitRepository + FolderCacheRepository
+FileOperationService ──→ OperationHistoryRepository + FolderCacheSyncHelper + ContentUnitRepository
       │
-QuickInsertService ──→ FileOperationService + ContentUnitRepository + FolderCacheRepository
-      │
-FileOperationService ──→ OperationHistoryRepository
+UndoService ──→ OperationHistoryRepository + FileOperationService + FolderCacheSyncHelper + ContentUnitRepository
       │
 ScanService ──→ ManagedRootRepository + FolderCacheRepository + ContentUnitRepository + FileScanner
       │
 TagService ──→ TagCategoryRepository + TagRepository + ContentUnitTagRepository
       │
-SearchService ──→ ContentService + TagService（阶段 5）
+SearchService ──→ SearchRepository
+      │
+ThumbnailService ──→ ThumbnailCacheRepository + ContentUnitRepository
 ```
+
+> 已移除：`StagingService` / `StagingAreaRepository` / `QuickInsertService`（UX 重构
+> Phase 1 Task 1/4）。`ScanService` 额外注入 `UnitOfWork`（TD-H2 修复后），
+> `ContentService` 注入 `UnitOfWork`（Stage 4.5 H6 修复后）。
 
 ### 4.3 数据流示例
 
-**浏览模式加载流程：**
+**目录浏览加载流程：**
 ```
 用户点击目录树节点
   → FolderTreeModel.fetchMore() 加载子节点
@@ -179,46 +204,42 @@ SearchService ──→ ContentService + TagService（阶段 5）
   → 同时查询已有缩略图缓存 → 显示封面图标
 ```
 
-**创建 Mod 组流程（阶段 3 Task 3）：**
+**创建 Mod 组流程（UX 重构 Phase 1 Task 1 调整）：**
 ```
-用户选中暂存区文件 → 右键 "创建 Mod 组"
-  → MainWindow._on_create_mod_group()
-  → ModGroupService.create_mod_group(source_file, staging_path, name)
+用户中栏选中文件（单/多选）→ 右键 "创建 Mod 组"
+  → MainWindow._on_create_mod_group(entries)
+  → ContentUnitCreationService.create_content_unit_from_files(entries, 当前目录)
   → 提取文件名 → 生成目标文件夹名
-  → FileOperationService.new_folder(target_folder)
-  → 同步 folder_cache（插入新节点 + parent_id 关联）
-  → FileOperationService.move(source_file, target_file)
+  → FileOperationService.new_folder(target_folder)（自动同步 folder_cache）
+  → FileOperationService.move(...) 逐个移入（自动同步 folder_cache + ContentUnit.path）
   → ContentService.mark_as_content_unit(target_folder)
-  → 刷新暂存区文件列表 + 显示装配面板
+  → 刷新中栏 + 目录树
 ```
 
-**装配面板加入文件流程（阶段 3 Task 4）：**
+**添加到钉住文件夹 / 拖拽流程（UX 重构 Phase 1 Task 3/4）：**
 ```
-整理模式 + 装配面板已绑定 Mod 组 → 选中暂存区文件 → 右键 "加入装配"
-  → MainWindow._on_assembly_add_file()
-  → AssemblyService.add_file(src_file, mod_group_folder)
-  → FileOperationService.move(src_file, target_file)
-  → 同步 folder_cache（更新 Mod 组文件夹 mtime）
-  → 刷新装配面板 + 暂存区列表
+装配面板已钉住 → 中栏右键文件/文件夹 → 「添加到钉住文件夹」（或直接拖拽到装配面板）
+  → MainWindow._perform_move_to(entries, 钉住文件夹路径, refresh_assembly=True)
+  → 冲突解决（ConflictResolutionService + ConflictResolutionDialog：覆盖/跳过/重命名）
+  → FileOperationService.move(src, dst, overwrite=...)
+    （自动同步 folder_cache + ContentUnit.path + 写入 operation_history）
+  → 刷新装配面板 + 中栏
 ```
 
-**快速插入流程（阶段 3 Task 5）：**
+**文件夹整体移动流程（UX 重构 Phase 1 Task 2/3）：**
 ```
-整理模式 + 装配面板已绑定 Mod 组 + 目录树选中目标分类目录 → 点击「快速插入」按钮
-  → MainWindow._on_quick_insert_clicked()
-  → 弹出确认对话框（源路径 → 目标路径）
-  → QuickInsertService.quick_insert(unit_id, target_dir)
-    1. cleanup：清理目标路径下的旧 ContentUnit 记录（list_all + make_path_key 归一化比较）
-    2. move：FileOperationService.move(src_folder, dst_folder)
-    3. update：ContentUnitRepository.update(unit.path = dst_folder)
-    4. sync：同步 folder_cache（删除旧节点 + 插入新节点 + 更新目标父目录 mtime）
-  → MainWindow._commit()
-  → 解绑装配面板 + 刷新目录树 + 刷新暂存区列表 + 状态栏提示
+装配面板绑定文件夹 → 右键空白处 → 「移动到……」
+  → MainWindow._on_move_to(...) → MoveToDialog 选择目标目录
+  → 移动安全规则：确认弹窗 / 冲突解决 / 跨盘拒绝 / 子目录阻止
+  → FileOperationService.move(src_folder, dst_folder)
+    （自动同步 folder_cache + ContentUnit.path + 写入 operation_history）
+  → 移动成功后自动取消钉住/解绑装配面板
+  → 刷新目录树 + 中栏
 ```
 
 **元数据保存流程（阶段 4 Task 2；2026-07-25 调整：单击加载）：**
 ```
-浏览/整理模式 + 单击内容单元 → MetadataPanel.load_unit(unit) 加载字段
+中栏单击内容单元 → MetadataPanel.load_unit(unit) 加载字段
   （双击兼容保留；单击非内容单元 → clear_panel 清空元数据面板）
   → 用户编辑标题 / 来源 URL / 备注 / 添加或移除标签 chip（输入回车 / 单击预选标签） / （可选）设置封面
   → 点击「保存」按钮
@@ -240,7 +261,7 @@ SearchService ──→ ContentService + TagService（阶段 5）
 
 **封面选择流程（阶段 4 Task 2）：**
 ```
-浏览模式 + MetadataPanel 已加载内容单元 → 点击「设置封面」按钮
+MetadataPanel 已加载内容单元 → 点击「设置封面」按钮
   → MetadataPanel 发射 on_pick_cover_requested(unit_id) 信号
   → MainWindow._on_pick_cover_requested(unit_id)
     → ContentService.get_by_id(unit_id) 取 ContentUnit
@@ -258,7 +279,7 @@ SearchService ──→ ContentService + TagService（阶段 5）
 
 **批量打标签流程（阶段 4 Task 2；2026-07-25 调整：预选标签 + 回车不关闭窗口）：**
 ```
-浏览/整理模式 + 文件列表多选（≥2 项且至少一个内容单元）→ 右键 → 「批量打标签」
+文件列表多选（≥2 项且至少一个内容单元）→ 右键 → 「批量打标签」
   → MainWindow._on_batch_tag(entries)
     → 收集所有 entries 中 content_unit is not None 的 id 列表
     → 若无内容单元 → QMessageBox.information 提示，结束
@@ -309,7 +330,6 @@ SearchService ──→ ContentService + TagService（阶段 5）
 用户点击「清除全部」→ 清空所有已选 → 发射空集合信号 → 恢复全量列表
 
 切换目录树节点 → 筛选状态保留，自动应用于新目录（Q3: A）
-切到整理模式 → TagFilterBar 隐藏；切回浏览模式 → 恢复，已选标签保留
 标签管理对话框关闭 → refresh_categories()：剔除已删除的已选标签并重新筛选
 ```
 
@@ -339,7 +359,7 @@ SearchService ──→ ContentService + TagService（阶段 5）
 | 模块 | 文件 | 职责 |
 |------|------|------|
 | 数据库初始化 | `db.py` | SQLite 连接、WAL 模式、外键、版本管理 |
-| Schema 迁移 | `migrations.py` | v0→v10 迁移注册表（建新表、移除旧表、加 UNIQUE 约束、thumbnail_cache 复合主键、operation_history 撤销/复制支持、status 两态简化） |
+| Schema 迁移 | `migrations.py` | v0→v12 迁移注册表（建新表、移除旧表、加 UNIQUE 约束、thumbnail_cache 复合主键、operation_history 撤销/复制支持、status→is_marked 重构、staging_area 移除） |
 | Repository 层 | `repositories/` | 每个实体对应一个 Repository |
 | 文件扫描器 | `file_scanner.py` | 递归扫描、增量 mtime 判断、内容识别 |
 | 文件操作服务 | `file_operation_service.py` | 文件移动/重命名/删除/撤销（简化版） |
@@ -357,11 +377,12 @@ repositories/
   ├── operation_history.py   # OperationHistory 仓储（含 list_recent / count / delete_oldest_exceeding）
   ├── folder_cache.py        # FolderCache 仓储（简化版 folder_node）
   ├── managed_root.py        # ManagedRoot 仓储（保留）
-  ├── staging_area.py        # StagingArea 仓储（阶段 3 Task 1 新增）
   ├── thumbnail_cache.py     # ThumbnailCache 仓储（v7 起复合主键 content_unit_id + size）
   ├── search.py              # SearchRepository（阶段 5 Task 7，跨表 LIKE 全局搜索）
   └── errors.py              # RepositoryError 等
 ```
+
+> `staging_area.py` 已于 UX 重构 Phase 1 Task 1（v0.42.0）随暂存区功能移除。
 
 ### 6.3 移除的 Repository
 
@@ -374,7 +395,7 @@ repositories/
 
 **数据库位置：** 数据目录下 `app.db`（数据目录解析优先级见 §10）
 
-**Schema v10 表清单：**
+**Schema v12 表清单：**
 
 ```text
 schema_version
@@ -385,17 +406,19 @@ schema_version
 content_unit
   - id TEXT PRIMARY KEY
   - path TEXT NOT NULL UNIQUE
+  - path_key TEXT NOT NULL UNIQUE  # v11 新增：DB 层强制路径归一化唯一
   - title TEXT
   - content_type TEXT NOT NULL DEFAULT 'mod'
   - source_url TEXT
   - cover_path TEXT
-  - status TEXT NOT NULL DEFAULT 'organized'  # v10 后两态：organized（已标记）/ unmarked（已取消标记）
+  - is_marked INTEGER NOT NULL DEFAULT 1 CHECK(is_marked IN (0, 1))  # v11 由 status 重构
   - notes TEXT
   - created_at TEXT NOT NULL
   - updated_at TEXT NOT NULL
   # v6 移除：rating INTEGER（私人数据库用不上）
   # v10 变更：所有 'unorganized' → 'organized'（语义重命名，旧 organized/"已整理"语义已废弃）
-  #  注：表 DEFAULT 未改（SQLite 不便修改），由应用层 ContentUnit 默认值接管为 'organized'
+  # v11 变更：status 列移除，重构为 is_marked（D2/D3 决策）
+  #  注：UX 重构 Phase 2 Task 6 计划再次迁移（v13）移除 is_marked，回归纯 DELETE 模式
 
 tag_category
   - id TEXT PRIMARY KEY
@@ -428,15 +451,6 @@ operation_history
 
 managed_root（保留）
   - id, real_path, path_key UNIQUE, display_name, created_at, updated_at
-
-staging_area  # v5 新增：暂存区标记持久化（独立于 folder_cache）
-  - id TEXT PRIMARY KEY
-  - real_path TEXT NOT NULL
-  - path_key TEXT NOT NULL UNIQUE
-  - display_name TEXT
-  - created_at TEXT NOT NULL
-  - updated_at TEXT NOT NULL
-  # 不与 managed_root 建外键：暂存区路径不必在受管理根目录下
 
 folder_cache
   - id TEXT PRIMARY KEY
@@ -473,6 +487,8 @@ thumbnail_cache
 | v7→v8 | 阶段 5 Task 6 | operation_history 新增 undone_at 列；CHECK 扩展 'undo' |
 | v8→v9 | 阶段 5 Task 3b | operation_history CHECK 扩展 'copy' |
 | v9→v10 | 阶段 5 Task 7 收尾 | content_unit.status 'unorganized' → 'organized'（语义简化为两态） |
+| v10→v11 | Stage 5 Code Review | content_unit.status → is_marked + 新增 path_key（UNIQUE）；清理历史 undo 记录；清理冗余索引（M12） |
+| v11→v12 | UX 重构 Phase 1 Task 1 | 移除 staging_area 表（暂存区功能移除） |
 
 所有迁移函数幂等（CREATE TABLE IF NOT EXISTS / 列存在性检查 / SQL 文本检查）。
 迁移注册表见 `migrations.py` 末尾 `MIGRATIONS` 列表，`init_db` 按 target 升序应用。
@@ -491,12 +507,14 @@ thumbnail_cache
 
 ```text
 FileOperationService
-  - new_folder(path: Path) → Path                     # 新建文件夹（含 ContentUnit 标记）
-  - move(src: Path, dst: Path, *, overwrite=False) → OperationResult  # 移动（含冲突检查）
-  - copy(src: Path, dst: Path, *, overwrite=False) → OperationResult  # 复制（Stage 5 Task 3b，can_undo=0）
-  - rename(path: Path, new_name: str) → Path          # 重命名 + 更新 ContentUnit
-  - delete(path: Path) → None                         # 移到回收站
-  - undo(op_id: str) → OperationResult                # 撤销操作（Stage 5 Task 6）
+  - new_folder(folder_path: Path) → OperationHistory   # 新建文件夹（自动同步 folder_cache）
+  - move(src: Path, dst: Path, *, overwrite=False, record_history=True) → OperationHistory  # 移动（冲突/跨盘/自目录检查 + 同步 folder_cache/ContentUnit.path）
+  - rename(old_path: Path, new_name: str, *, record_history=True) → OperationHistory  # 重命名 + 同步 ContentUnit
+  - copy(src: Path, dst: Path, *, overwrite=False) → OperationHistory  # 复制（Stage 5 Task 3b，can_undo=0）
+  - delete_to_recycle_bin(paths: list[Path]) → tuple[list[OperationHistory], list[str]]  # 移至回收站（ctypes SHFileOperation）
+
+UndoService
+  - undo(history: OperationHistory) → None             # 撤销（Stage 5 Task 6：安全校验 + 反向 move/rename + 标记 undone_at，不写新记录）
 ```
 
 ### 7.2 安全规则（实现于服务层）
@@ -506,7 +524,7 @@ FileOperationService
 - 跨盘移动检测（`st_dev` 比较），`move` 检测到时抛 `CrossDriveError`；
   `copy` 允许跨盘（语义上复制本就跨盘）。
 - 自目录移动检测（`path_key` 比较），检测到时抛 `SelfSubdirectoryError`。
-- `undo()` 执行前校验源文件存在性和状态一致性（路径存在 + size/mtime 校验，
+- `UndoService.undo()` 执行前校验源文件存在性和状态一致性（路径存在 + size/mtime 校验，
   Stage 5 Task 6 严格安全检查；非空 new_folder 撤销时弹窗阻止）。
 - 撤销操作不写入新的 `operation_history` 记录（原记录通过 `undone_at` 标记为已撤销）。
 
@@ -565,6 +583,11 @@ ScanService.scan(managed_root)
 > 完整流程：UI 请求 → Coordinator 调度 → Worker 在 QThread 中调用
 > ThumbnailService.generate → Pillow 只读加载源图并写入缓存 WebP。
 > 缓存命中时 UI 同步获得 QPixmap。
+>
+> **当前实际状态（2026-08-01 复核）**：磁盘缓存基础设施（生成/查询/GC）已实现，
+> 但 UI 未接入 Coordinator 请求链路——卡片视图与元数据面板直接以 QPixmap 加载原图
+> 并做内存缓存，`request_thumbnail` 无生产调用方（仅测试覆盖）。该差距登记为
+> TD-M37，待后续 Task 决定接入缓存链路或简化。
 
 ### 分层与职责
 
@@ -587,11 +610,12 @@ ScanService.scan(managed_root)
   连接，调用 `ThumbnailService.generate`，发射 `thumbnail_ready(unit_id, status)`
   或 `thumbnail_failed(unit_id, error)`。
 - `app/thumbnail_coordinator.py`：调度器。管理 FIFO 队列 + 去重 set。
-  - `request_thumbnail(unit_id, source_path)`：缓存命中同步返回 QPixmap，未命中
+  - `request_thumbnail(unit_id, source_path, size=256)`：缓存命中同步返回 QPixmap，未命中
     入队后台生成
   - `thumbnail_ready` 信号 → MainWindow → `FileListModel.notify_thumbnail_ready`
     → 触发对应行 `dataChanged(DecorationRole)` 重绘
   - `shutdown()`：清空队列 + 等待当前 worker 退出（`closeEvent` 调用）
+  - **注**：当前 UI 无 `request_thumbnail` 调用方（TD-M37），信号仅由测试链路验证
 
 ### 关键约束
 
@@ -602,8 +626,9 @@ ScanService.scan(managed_root)
 - 缓存有效性基于 `content_unit_id + size + source_size_bytes + source_modified_at + 文件存在`
 - 后台线程生成（QThread + 独立 SQLite 连接），不冻结 UI
 - 始终只读访问用户原图；不修改、不压缩、不覆盖
-- UI 层（FileListModel）通过注入的 `thumbnail_provider` 回调获取 QPixmap，
-  不直接调用 infrastructure / Pillow
+- UI 层当前不经过缩略图缓存：FileListModel 使用 Qt 标准图标（Task 1a 决策），
+  CardListModel 与 MetadataPanel 直接 QPixmap 加载原图（内存缓存）。TD-M37 未解决前，
+  UI 不依赖磁盘缩略图缓存文件
 
 ---
 
@@ -614,13 +639,16 @@ ScanService.scan(managed_root)
 1. `SCW_DATA_DIR` 环境变量指定路径
 2. 项目根 `data/`（开发环境默认）
 3. `%LOCALAPPDATA%\SkyrimContentWorkbench\`（Windows 回退）
+4. `~/.skyrimmodworkbench/`（非 Windows 回退）
 
-旧版 AppData 目录（`%LOCALAPPDATA%\SkyrimContentWorkbench\`）数据不自动删除，
-首次启动时按需迁移（迁移过程记录日志、校验数据库可用性、确认缓存目录迁移成功）。
+**迁移策略（Task 0.5 用户决策）**：程序**不执行任何自动迁移、复制、删除操作**。
+检测到旧 `%LOCALAPPDATA%\SkyrimContentWorkbench\` 有数据时仅输出日志提示用户手动迁移；
+新目录已有 `app.db` 后不再提示。旧目录检测提示代码计划在 UX 重构 Task 6 移除
+（是否保留 `%LOCALAPPDATA%` 路径回退待确认，open-questions §7）。
 
 ```text
 {data_root}/
-  ├── app.db              # SQLite 数据库（schema v10）
+  ├── app.db              # SQLite 数据库（schema v12）
   ├── thumbnails/         # 缩略图缓存（{content_unit_id}_{size}.webp）
   ├── exports/            # AI JSON 导出
   └── logs/               # 应用日志（app.log，UTF-8，滚动）
@@ -642,8 +670,8 @@ ScanService.scan(managed_root)
 - 标签 CRUD、自动补全、筛选
 - 全局搜索（标题/备注/标签，仅 organized）
 - 缩略图多档缓存（256/512）与孤儿清理
-- UI 模式切换与数据联动
-- 数据库迁移（v0→v10 幂等：rating 列移除、UNIQUE 约束、复合主键、CHECK 扩展、status 两态简化）
+- 单面板 UI 数据联动（视图切换/排序/导航/装配面板钉住）
+- 数据库迁移（v0→v12 幂等：rating 列移除、UNIQUE 约束、复合主键、CHECK 扩展、status→is_marked、staging_area 移除）
 
 ### 11.2 保留的旧测试
 
@@ -654,17 +682,20 @@ ScanService.scan(managed_root)
 - `test_thumbnail_*.py` ✅（需调整关联字段）
 - `test_managed_root_*.py` ✅
 - `test_scan_worker.py` ✅
-- `test_thumbnail_ui.py` ⚠️（需调整关联）
+- `test_thumbnail_ui.py` ⚠️（需调整关联；当前以 test_thumbnail_coordinator.py / test_thumbnail_service.py 等为准）
 - `test_db.py` ✅
-- `test_migrations.py` ⚠️（已扩展至 v10）
+- `test_migrations.py` ⚠️（已扩展至 v12）
 
 ### 11.3 需重写或移除的旧测试
 
 - `test_mod_assembly_service.py` ❌
 - `test_pool_model.py` ❌
 - `test_file_operation_service.py` ⚠️（需适配简化版接口）
-- `test_main_window.py` ❌（需重写）
+- `test_main_window.py` ❌（已按主题拆分为多个 test_main_window_*.py）
 - `test_folder_tree_*.py` ⚠️（需适配新数据源）
+
+> **注**：上述两表为历史记录（阶段 2/3 时期）。UX 重构与 Stage 5 期间测试已按
+> 主题重组（tests/ 下现有 60+ 文件），以当前代码为准。
 
 ---
 
@@ -680,5 +711,7 @@ ScanService.scan(managed_root)
 5. 阶段 5 Task 6：schema v7→v8（operation_history 加 undone_at 列，CHECK 扩展 'undo'）。
 6. 阶段 5 Task 3b：schema v8→v9（operation_history CHECK 扩展 'copy'）。
 7. 阶段 5 Task 7 收尾：schema v9→v10（content_unit.status 简化为 organized/unmarked 两态）。
-8. 旧版代码文件逐步改造或重写，不保留旧版 Service 和 UI。
-9. 旧版文档已归档至 `archive/`。
+8. Stage 5 Code Review：schema v10→v11（status→is_marked + path_key + 清理 undo 记录 + 冗余索引清理）。
+9. UX 重构 Phase 1 Task 1：schema v11→v12（移除 staging_area 表）。
+10. 旧版代码文件逐步改造或重写，不保留旧版 Service 和 UI。
+11. 旧版文档已归档至 `archive/`。

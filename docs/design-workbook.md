@@ -2,6 +2,11 @@
 
 > 本文档记录方向 C 确认后，六项核心产品设计的讨论结论。
 > 每项讨论完成后，结论将作为 spec.md 重写的第一手输入。
+>
+> **阅读提示**：本文档为 2026-07 的设计过程记录。其中涉及"双模式 UI / 暂存区 /
+> 快速插入 / 加入装配"等设计已在此后的 UX 重构中被取代（暂存区与快速插入已移除，
+> 双模式合并为统一面板 + 可钉住装配面板，见 ux-redesign-roadmap.md），
+> 历史决策描述保留不改，当前状态以代码与 ux-redesign-roadmap.md 为准。
 
 ---
 
@@ -478,7 +483,8 @@ FolderCache（简化版 folder_node，目录树性能缓存）
   - id, path, parent_id, last_scanned_mtime, created_at
 
 ThumbnailCache（保留现有）
-  - asset_id, source_size_bytes, source_modified_at, cache_filename, status, ...
+  - content_unit_id（v4 起由旧 asset_id 改名）, size（v7 复合主键）, source_size_bytes,
+    source_modified_at, cache_filename, status, ...
 ```
 
 ### 已移除的实体
