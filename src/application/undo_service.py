@@ -61,7 +61,7 @@ from infrastructure.repositories.content_unit import ContentUnitRepository
 from infrastructure.repositories.operation_history import OperationHistoryRepository
 
 if TYPE_CHECKING:
-    from infrastructure.file_operation_service import FileOperationService
+    from application.file_operation_service import FileOperationService
 
 logger = logging.getLogger(__name__)
 

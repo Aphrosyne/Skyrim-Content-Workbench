@@ -146,6 +146,41 @@ class FolderCacheSyncHelper:
         except (RepositoryError, sqlite3.Error) as e:
             raise FileOperationError(f"删除 folder_cache 失败：{e}") from e
 
+    def delete_folder_subtree(self, path: Path) -> bool:
+        """删除指定路径及其所有子节点的 folder_cache 记录（先子后父）。
+
+        TD-L25：将"按路径前缀批量删除"封装为语义化方法，供
+        FileOperationService._sync_on_delete 等使用，消除外部访问私有 ``_repo``。
+        目标路径无记录时为空操作（返回 False）。
+
+        Args:
+            path: 目标文件夹路径（文件删除场景传入的路径无 folder_cache 记录，
+                将返回 False 且仅更新父目录 mtime 由调用方处理）。
+
+        Returns:
+            True 表示删除了至少一条记录。
+
+        Raises:
+            FileOperationError: folder_cache 删除失败。
+        """
+        try:
+            target_key = make_path_key(str(path))
+            sep = os.sep
+            target_prefix = target_key.rstrip(sep) + sep
+            to_delete = [
+                fc
+                for fc in self._repo.list_all()
+                if make_path_key(fc.path) == target_key
+                or make_path_key(fc.path).startswith(target_prefix)
+            ]
+            # 按路径深度降序删除（先子后父，避免 FK 约束冲突）
+            to_delete.sort(key=lambda fc: len(fc.path), reverse=True)
+            for fc in to_delete:
+                self._repo.delete(fc.id)
+            return bool(to_delete)
+        except (RepositoryError, sqlite3.Error) as e:
+            raise FileOperationError(f"删除 folder_cache 子树失败：{e}") from e
+
     def update_folder_mtime(self, folder_path: Path) -> None:
         """更新文件夹 mtime（单字段，best-effort）。
 

@@ -109,7 +109,7 @@ MainWindow
 
 | 组件 | 文件 | 职责 |
 |------|------|------|
-| `MainWindow` | `main_window.py` | 主窗口、布局、服务注入、信号槽编排（God Object，TD-M21/M31，待 Task 7 拆分） |
+| `MainWindow` | `main_window.py` | 主窗口、布局、服务注入、信号槽编排（Task 7 已拆出 TransactionScope / ScanController / AssemblyController / MetadataView，MainWindow 保留薄委托与文件操作编排，可继续瘦身） |
 | `FolderTreeModel` | `folder_tree_model.py` | QAbstractItemModel，惰性加载目录树 |
 | `FileListModel` | `file_list_model.py` | 中栏详细列表 QAbstractListModel（文件系统条目 + 内容单元标记 + 排序） |
 | `CardListModel` | `card_list_model.py` | 中栏大图卡片视图 QAbstractListModel（封面 + 名称） |

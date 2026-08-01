@@ -30,9 +30,9 @@ from application.errors import (
     InvalidContentUnitNameError,
     SourceNotInStagingError,
 )
+from application.file_operation_service import FileOperationService
 from domain.models import ContentUnit
 from infrastructure.db import get_connection, init_db
-from infrastructure.file_operation_service import FileOperationService
 from infrastructure.repositories.content_unit import ContentUnitRepository
 from infrastructure.repositories.operation_history import OperationHistoryRepository
 

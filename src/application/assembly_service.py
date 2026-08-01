@@ -39,8 +39,8 @@ from application.errors import (
     ContentUnitNotFoundError,
     InvalidContentUnitPathError,
 )
+from application.file_operation_service import FileOperationService
 from domain.models import ContentUnit, FileEntry
-from infrastructure.file_operation_service import FileOperationService
 from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.content_unit import ContentUnitRepository
 

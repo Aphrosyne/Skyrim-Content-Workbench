@@ -22,6 +22,7 @@ from application.assembly_service import AssemblyService
 from application.clipboard_service import ClipboardService
 from application.content_service import ContentService
 from application.content_unit_creation_service import ContentUnitCreationService
+from application.file_operation_service import FileOperationService
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from application.search_service import SearchService
@@ -29,7 +30,6 @@ from application.tag_service import TagService
 from application.thumbnail_service import ThumbnailService
 from application.undo_service import UndoService
 from infrastructure.db import get_connection, init_db
-from infrastructure.file_operation_service import FileOperationService
 from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper
 from infrastructure.repositories.content_unit import ContentUnitRepository
 from infrastructure.repositories.content_unit_tag import ContentUnitTagRepository

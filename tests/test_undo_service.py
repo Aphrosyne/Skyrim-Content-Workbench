@@ -29,10 +29,10 @@ from application.errors import (
     UndoNotAllowedError,
     UndoSafetyError,
 )
+from application.file_operation_service import FileOperationService
 from application.undo_service import UndoService
 from domain.models import ContentUnit, OperationHistory
 from infrastructure.db import get_connection, init_db
-from infrastructure.file_operation_service import FileOperationService
 from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper
 from infrastructure.repositories.content_unit import ContentUnitRepository
 from infrastructure.repositories.folder_cache import FolderCacheRepository

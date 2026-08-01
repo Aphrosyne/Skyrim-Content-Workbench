@@ -322,7 +322,7 @@
 > 以下问题来自 Stage 3 正式 Code Review，经评估不阻塞 Stage 4 启动，
 > 但建议在对应阶段择机处理。编号接续既有 TD 序列。
 
-### TD-M21: MainWindow God Object 趋势（约 3490 行 / 150 方法，2026-08-01 复核）
+### TD-M21: MainWindow God Object 趋势 ✅ 已处理（UX 重构 Task 7，v0.48.0）
 
 - **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
 - **背景**: Stage 3 Code Review 发现 MainWindow 已增长到约 3490 行 / 150 方法
@@ -341,6 +341,9 @@
   其引用而非裸 connection。
 - **建议修复阶段**: **UX 重构 Task 7**（Q8:C 决策"边开发边小规模拆分"未执行，
   已由用户决策归入 UI 重构版本统一处理）。
+- **处理（UX 重构 Task 7，v0.48.0）**: TransactionScope / ScanController /
+  AssemblyController / MetadataView 已拆出；MainWindow 保留薄委托与文件操作编排，
+  行数继续下降，可进一步瘦身。
 
 ### TD-M22: folder_cache 同步辅助逻辑在多个 Service 中重复 ✅ 已修复（Stage 4.5）
 
@@ -498,7 +501,7 @@
   ContentUnitRepository.create / update 自动计算 path_key。DB 层强制路径归一化唯一，
   消除应用层兜底的不完全保障。
 
-### TD-H10: FileOperationService 分层归属
+### TD-H10: FileOperationService 分层归属 ✅ 已修复（UX 重构 Task 7 Commit 2）
 
 - **位置**: [file_operation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/file_operation_service.py)
 - **背景**: `FileOperationService` 位于 infrastructure 层，但 Stage 4.5 H4
@@ -507,9 +510,9 @@
   但长期来看 `FileOperationService` 应移到 application 层。
 - **影响范围**: 架构层次不清，但不影响正确性。Stage 5 文件操作重构时
   （rename/delete/undo）会进一步增加耦合。
-- **推荐修复方案**: Stage 5 文件操作功能实现时，将 `FileOperationService`
-  移到 application 层，`FolderCacheSyncHelper` 一并迁移。
-- **建议修复阶段**: **UX 重构 Task 7**（D5 决策 B：延后处理，与 TD-M21 一并处理）。
+- **修复（UX 重构 Task 7 Commit 2）**: `FileOperationService` 从 `infrastructure/`
+  迁移到 `application/`（消除 infrastructure → application 反向依赖；
+  `FolderCacheSyncHelper` 保持 infrastructure，仅依赖 FolderCacheRepository）。
 
 ### TD-M28: 多处 N+1 查询
 
@@ -584,7 +587,7 @@
 - **推荐修复方案**: 引入"补偿日志"机制（记录文件已成功移动但 DB 未更新），下次启动时尝试补偿；或在错误提示中明确告知用户"文件已移动但元数据更新失败，请手动刷新或重新扫描"。
 - **建议修复阶段**: **Stage 6 或后续迭代**（数据一致性版本）。
 
-### TD-M31: MainWindow 业务逻辑泄漏 ✅ 已登记（UI 重构版本处理）
+### TD-M31: MainWindow 业务逻辑泄漏 ✅ 已处理（UX 重构 Task 7，v0.48.0）
 
 - **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
 - **背景**: MainWindow 约 3490 行、150 个方法、60+ 实例变量、6 个并行状态机
@@ -617,13 +620,13 @@
 - **推荐修复方案**: 下次扫描优化时一并处理。
 - **建议修复阶段**: **下次扫描优化时**（非阻塞）。
 
-### TD-M35: rename 跨盘抛 FileOperationError，move 抛 CrossDriveError，异常类型不一致
+### TD-M35: rename 跨盘抛 FileOperationError，move 抛 CrossDriveError，异常类型不一致 ✅ 已修复（UX 重构 Task 7 Commit 2）
 
 - **位置**: [file_operation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/file_operation_service.py) `rename` / `move`
 - **背景**: 同一语义的跨盘操作，rename 抛 `FileOperationError`，move 抛 `CrossDriveError`，UI 层需分别捕获。
 - **影响范围**: 不影响正确性，但异常处理代码冗余。
-- **推荐修复方案**: 统一异常类型。
-- **建议修复阶段**: **UI 重构版本**（与 TD-M31 一并处理）。
+- **修复（UX 重构 Task 7 Commit 2）**: `rename` 跨盘统一抛 `CrossDriveError`
+  （FileOperationError 子类），与 `move` 一致。
 
 ### TD-L23: content_unit.content_type 默认 'mod' 与实体名不一致
 
@@ -641,13 +644,14 @@
 - **推荐修复方案**: UI 重构时一并考虑。
 - **建议修复阶段**: **UI 重构时**（非阻塞）。
 
-### TD-L25: FileOperationService._sync_on_delete 访问 helper 私有 `_repo`
+### TD-L25: FileOperationService._sync_on_delete 访问 helper 私有 `_repo` ✅ 已修复（UX 重构 Task 7 Commit 2）
 
 - **位置**: [file_operation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/file_operation_service.py) `_sync_on_delete`
 - **背景**: 通过 `self._helper._repo` 访问 FolderCacheSyncHelper 的私有 `_repo`，标注 `# noqa: SLF001`。
 - **影响范围**: 封装泄漏，但不影响正确性。
-- **推荐修复方案**: FolderCacheSyncHelper 增加"按路径前缀批量删除"语义化方法。
-- **建议修复阶段**: **UI 重构版本**（与 TD-H10 一并处理）。
+- **修复（UX 重构 Task 7 Commit 2）**: `FolderCacheSyncHelper` 新增语义化
+  `delete_folder_subtree(path)`（按路径前缀 + 深度降序删除），`_sync_on_delete`
+  改走公共方法，不再访问私有 `_repo`。
 
 ### TD-L26: time 字段后缀不统一（`_mtime` vs `_at`，REAL vs TEXT）
 
@@ -684,14 +688,15 @@
 
 > 以下问题来自 UX 重构 Phase 1/2 实施与文档一致性复核，编号接续既有 TD 序列。
 
-### TD-M36: FileListView 未统一（FileListModel / AssemblyListModel 双模型）
+### TD-M36: FileListView 未统一（FileListModel / AssemblyListModel 双模型）✅ 已修复（UX 重构 Task 7 Commit 2）
 
 - **位置**: [file_list_model.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/file_list_model.py) `FileListModel`（中栏）/ [assembly_panel.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/assembly_panel.py) `AssemblyListModel`（装配面板）
 - **背景**: UX 重构 Phase 1 Task 1 已登记但未编号。中栏 FileListModel 与装配面板
   AssemblyListModel 两套模型各自维护，文件操作/右键菜单/拖拽逻辑需在两处同步修改。
 - **影响范围**: 可维护性，不影响正确性。
-- **推荐修复方案**: 统一为单一 FileListView（中栏与装配面板共用），Task 7 拆分时处理。
-- **建议修复阶段**: **UX 重构 Task 7**。
+- **修复（UX 重构 Task 7 Commit 2）**: 移除 `AssemblyListModel`，装配面板复用
+  `FileListModel(single_column=True)`（单列纯文件名 + 标准图标，视觉行为一致），
+  消除双模型维护。
 
 ### TD-L30: 装配面板命名"文件夹透视器"待用户确认
 
@@ -747,6 +752,21 @@
 - **推荐修复方案**: 接入 Coordinator 链路（卡片视图按 icon_size 请求 256/512 档），
   或按需简化缓存体系；需产品确认。
 - **建议修复阶段**: **UX 重构 Task 8**（UI 美化时）或单独决策。
+
+### TD-M38: MainWindow 薄委托与文件操作编排待进一步拆分
+
+- **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
+- **背景**: UX 重构 Task 7 已拆出 TransactionScope / ScanController / AssemblyController /
+  MetadataView（核心逻辑与状态迁出），但 MainWindow 仍约 3800 行 / 149 方法：
+  1. 保留的薄委托方法（_bind_assembly_* / _follow_middle_selection_after_unpin /
+     _refresh_assembly_if_affected 等）可删除、改为直接调用控制器；
+  2. 文件操作编排（创建 Mod 组 / 重命名 / 删除 / 复制剪切粘贴 / 移动到 / 冲突解决）、
+     右键菜单构建、快捷键 handler、目录导航/视图状态等大块逻辑仍留在 MainWindow。
+- **影响范围**: 可维护性；任何 UI 改动仍需在大文件中找上下文。
+- **推荐修复方案**: 下个阶段单独小任务：先删除薄委托（对测试/回调无影响），
+  再按域拆出 FileOpsController（文件操作编排）与 NavigationView（目录导航/视图状态），
+  MainWindow 收敛为布局 + 组合根。
+- **建议修复阶段**: **Task 8（UI 美化）之后或与其并行**（用户确认，2026-08-02）。
 
 ---
 
@@ -812,11 +832,11 @@
      - TD-L31（ui_constants 缩略图死常量）
      - TD-L32（AssemblyService.remove_file 死代码）
      - TD-L33（代码注释遗留"浏览/整理模式"描述，顺带）
-   - TD-M21 + TD-M31（MainWindow God Object 拆分 + 业务逻辑泄漏）
-   - TD-H10 + TD-L25（FileOperationService 分层迁移 + helper 私有访问）
-   - TD-M26（MainWindow 集成测试，与拆分同步）
-   - TD-M36（FileListView 统一，与拆分同步）
-   - TD-M35（rename/move 跨盘异常类型统一）
+   - ~~TD-M21 + TD-M31（MainWindow God Object 拆分 + 业务逻辑泄漏）~~ ✅ 进行中（Task 7 控制器拆分完成，MainWindow 保留薄委托）
+   - ~~TD-H10 + TD-L25（FileOperationService 分层迁移 + helper 私有访问）~~ ✅ 已修复（Task 7 Commit 2）
+   - TD-M26（MainWindow 集成测试，与拆分同步）— 部分落地（test_scan_controller.py）
+   - ~~TD-M36（FileListView 统一，与拆分同步）~~ ✅ 已修复（Task 7 Commit 2）
+   - ~~TD-M35（rename/move 跨盘异常类型统一）~~ ✅ 已修复（Task 7 Commit 2）
    - TD-L24（FileEntry 类名与注释不一致）
    - TD-L28（UI 中"目录"和"文件夹"混用）
    - TD-L30（装配面板命名"文件夹透视器"待用户确认）

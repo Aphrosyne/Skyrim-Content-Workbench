@@ -19,12 +19,13 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt  # noqa: E402
 
-from app.assembly_panel import AssemblyListModel, AssemblyPanel  # noqa: E402
+from app.assembly_panel import AssemblyPanel  # noqa: E402
+from app.file_list_model import FileListModel  # noqa: E402
 from application.assembly_service import AssemblyService  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
+from application.file_operation_service import FileOperationService  # noqa: E402
 from domain.models import ContentUnit, FileEntry  # noqa: E402
 from infrastructure.db import get_connection, init_db  # noqa: E402
-from infrastructure.file_operation_service import FileOperationService  # noqa: E402
 from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper  # noqa: E402
 from infrastructure.repositories.content_unit import ContentUnitRepository  # noqa: E402
 from infrastructure.repositories.folder_cache import FolderCacheRepository  # noqa: E402
@@ -84,12 +85,12 @@ def mod_group_env(
     yield service, unit, mod_folder, staging, conn
 
 
-# === AssemblyListModel ===
+# === 装配面板列表 model（UX 重构 Task 7 Step 6：复用 FileListModel 单列模式） ===
 
 
 def test_list_model_initial_empty(qapp) -> None:
     """新建 model 应为空。"""
-    model = AssemblyListModel()
+    model = FileListModel(single_column=True)
     assert model.entry_count() == 0
     assert model.entry_at(0) is None
 
@@ -100,7 +101,7 @@ def test_list_model_refresh_sets_entries(qapp, mod_group_env) -> None:
     entries = service.list_mod_group_files(unit.id)
     assert len(entries) == 1
 
-    model = AssemblyListModel()
+    model = FileListModel(single_column=True)
     model.refresh(entries)
     assert model.entry_count() == 1
     entry = model.entry_at(0)
@@ -112,7 +113,7 @@ def test_list_model_data_display_role(qapp, mod_group_env) -> None:
     """DisplayRole 返回文件名。"""
     service, unit, _, _, _ = mod_group_env
     entries = service.list_mod_group_files(unit.id)
-    model = AssemblyListModel()
+    model = FileListModel(single_column=True)
     model.refresh(entries)
 
     idx = model.index(0, 0)
@@ -124,7 +125,7 @@ def test_list_model_data_tooltip_role(qapp, mod_group_env) -> None:
     """ToolTipRole 返回完整路径。"""
     service, unit, mod_folder, _, _ = mod_group_env
     entries = service.list_mod_group_files(unit.id)
-    model = AssemblyListModel()
+    model = FileListModel(single_column=True)
     model.refresh(entries)
 
     idx = model.index(0, 0)
@@ -137,7 +138,7 @@ def test_list_model_data_user_role_returns_entry(qapp, mod_group_env) -> None:
     """UserRole 返回 FileEntry 对象。"""
     service, unit, _, _, _ = mod_group_env
     entries = service.list_mod_group_files(unit.id)
-    model = AssemblyListModel()
+    model = FileListModel(single_column=True)
     model.refresh(entries)
 
     idx = model.index(0, 0)
@@ -150,7 +151,7 @@ def test_list_model_refresh_clears_previous(qapp, mod_group_env) -> None:
     """再次 refresh 应清空旧条目。"""
     service, unit, _, _, _ = mod_group_env
     entries = service.list_mod_group_files(unit.id)
-    model = AssemblyListModel()
+    model = FileListModel(single_column=True)
     model.refresh(entries)
     assert model.entry_count() == 1
 

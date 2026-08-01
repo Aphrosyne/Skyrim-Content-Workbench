@@ -105,6 +105,7 @@ from application.errors import (
     SelfSubdirectoryError,
     SourceNotFoundError,
 )
+from application.file_operation_service import FileOperationService
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from application.scan_service import ScanSummary
@@ -112,7 +113,6 @@ from application.search_service import SearchService
 from application.tag_service import TagService
 from application.undo_service import UndoService
 from domain.models import ContentUnit, FileEntry, ManagedRoot
-from infrastructure.file_operation_service import FileOperationService
 from infrastructure.path_utils import make_path_key
 
 logger = logging.getLogger(__name__)

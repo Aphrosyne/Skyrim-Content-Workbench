@@ -113,7 +113,7 @@ def _sort_value_key(entry: FileEntry, sort_key: str) -> tuple:
 
 
 class FileListModel(QAbstractTableModel):
-    """文件列表 model（4 列 TableModel）。
+    """文件列表 model（4 列 TableModel；`single_column` 模式用于装配面板）。
 
     使用方式：
         model = FileListModel()
@@ -121,10 +121,15 @@ class FileListModel(QAbstractTableModel):
         table_view.setModel(model)
         # 列头点击切换排序
         model.set_sort_key(SORT_NAME, ascending=True)
+
+    UX 重构 Task 7 Step 6（TD-M36）：装配面板复用本模型（`single_column=True`），
+    替代原 AssemblyListModel——单列模式只显示文件名 + 标准图标（不显示内容单元
+    标记 / 封面缩略图 / 剪切态），与装配面板既有视觉行为一致，消除双模型维护。
     """
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, *, single_column: bool = False) -> None:
         super().__init__(parent)
+        self._single_column = single_column
         self._entries: list[FileEntry] = []
         self._sort_key: str = SORT_NAME
         self._sort_ascending: bool = True
@@ -153,7 +158,7 @@ class FileListModel(QAbstractTableModel):
             parent = QModelIndex()
         if parent.isValid():
             return 0
-        return COLUMN_COUNT
+        return 1 if self._single_column else COLUMN_COUNT
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> object:  # noqa: N802 (Qt 命名)
         if not index.isValid():
@@ -162,12 +167,15 @@ class FileListModel(QAbstractTableModel):
         if row < 0 or row >= len(self._entries):
             return None
         col = index.column()
-        if col < 0 or col >= COLUMN_COUNT:
+        if col < 0 or col >= self.columnCount():
             return None
 
         entry = self._entries[row]
 
         if role == Qt.DisplayRole:
+            if self._single_column:
+                # 装配面板：纯文件名（与 AssemblyListModel 行为一致）
+                return entry.name
             if col == COL_NAME:
                 return _display_name(entry)
             if col == COL_TYPE:
@@ -185,7 +193,7 @@ class FileListModel(QAbstractTableModel):
             return self.icon_for(entry)
         if role == Qt.ForegroundRole:
             # Stage 5 Task 3b：剪切状态半透明渲染（Q12=A 50% 透明度）
-            if entry.path in self._cut_paths:
+            if not self._single_column and entry.path in self._cut_paths:
                 return QBrush(QColor(0, 0, 0, 128))
             return None
         return None
@@ -197,7 +205,7 @@ class FileListModel(QAbstractTableModel):
             return None
         if orientation != Qt.Orientation.Horizontal:
             return None
-        if section < 0 or section >= COLUMN_COUNT:
+        if section < 0 or section >= self.columnCount():
             return None
         # Stage 5 Task 2：当前排序列追加 ▲/▼ 方向指示（Q1=A 文本方案）
         header = ui.FILE_LIST_COLUMN_HEADERS[section]

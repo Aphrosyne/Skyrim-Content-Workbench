@@ -8,6 +8,35 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.48.0] - 2026-08-01
+
+UX 重构 Phase 2 Task 7：MainWindow 拆分（Commit 1 控制器拆分 + Commit 2 技术债与 FileListView 统一）。
+
+**Commit 1：控制器拆分**
+
+- 新增 [transaction_scope.py](src/app/transaction_scope.py)：`_commit` / `_rollback` /
+  `_handle_service_error` 事务逻辑封装（TD-M31），MainWindow 委托调用
+- 新增 [scan_controller.py](src/app/scan_controller.py)：扫描线程生命周期 + TD-H4/H5
+  sender 竞态校验迁入；TD-M13 进度信号接线（scan_progress → 状态栏）；新增
+  [test_scan_controller.py](tests/test_scan_controller.py)（TD-M26 起点）
+- 新增 [assembly_controller.py](src/app/assembly_controller.py)：装配面板绑定 / 钉住 /
+  跟随中栏 / 受影响刷新逻辑迁出
+- 新增 [metadata_view.py](src/app/metadata_view.py)：元数据加载 / 保存提交 / 封面选择
+  编排迁出（面板信号改由视图接管）
+- MainWindow 保留薄委托与文件操作编排，行为不变
+
+**Commit 2：技术债 + FileListView 统一**
+
+- TD-H10：`FileOperationService` 从 `infrastructure/` 迁移到 `application/`
+  （消除 infrastructure → application 反向依赖）
+- TD-L25：`FolderCacheSyncHelper` 新增 `delete_folder_subtree(path)` 语义化方法，
+  `_sync_on_delete` 不再访问私有 `_repo`
+- TD-M35：`rename` 跨盘统一抛 `CrossDriveError`（与 `move` 一致）
+- TD-M36：移除 `AssemblyListModel`，装配面板复用 `FileListModel(single_column=True)`
+
+**测试**：1283 passed, 4 skipped（新增 test_scan_controller.py；装配面板 model 测试
+改用 FileListModel 单列模式），ruff check + format 全绿。
+
 ## [0.47.0] - 2026-08-01
 
 UX 重构 Phase 2 Task 6：数据库与死代码清理（回归纯 DELETE 模式）。schema_version v12 → v13。

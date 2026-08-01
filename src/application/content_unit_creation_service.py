@@ -41,8 +41,8 @@ from application.errors import (
     InvalidContentUnitNameError,
     SourceNotInStagingError,
 )
+from application.file_operation_service import FileOperationService
 from domain.models import ContentUnit
-from infrastructure.file_operation_service import FileOperationService
 from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.errors import RepositoryError
 from infrastructure.unit_of_work import UnitOfWork

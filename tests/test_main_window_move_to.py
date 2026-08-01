@@ -27,11 +27,11 @@ from PySide6.QtWidgets import QDialog, QMessageBox  # noqa: E402
 
 from app.main_window import MainWindow  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
+from application.file_operation_service import FileOperationService  # noqa: E402
 from application.folder_tree_service import FolderTreeService  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
 from application.scan_service import ScanService  # noqa: E402
 from infrastructure.db import get_connection, init_db  # noqa: E402
-from infrastructure.file_operation_service import FileOperationService  # noqa: E402
 from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper  # noqa: E402
 from infrastructure.repositories.content_unit import ContentUnitRepository  # noqa: E402
 from infrastructure.repositories.folder_cache import FolderCacheRepository  # noqa: E402

@@ -709,8 +709,8 @@ OperationHistoryDialog → 选中可撤销记录 → UndoService.undo(history_id
 
 ## 5.1 UX redesign 阶段目标
 
-当前处于 **UX 重构 Phase 2**，已完成 Task 5（交互细节优化）与 Task 6（数据库与死代码清理，
-v0.47.0），下一步重点：
+当前处于 **UX 重构 Phase 2**，已完成 Task 5（交互细节优化，v0.46.0）、Task 6
+（数据库与死代码清理，v0.47.0）与 Task 7（MainWindow 拆分，v0.48.0），下一步重点：
 
 ### Phase 2 剩余任务
 
@@ -729,6 +729,7 @@ v0.47.0），下一步重点：
   - `MetadataView`（元数据编辑面板）
   - `TransactionScope`（`_commit` / `_rollback` 从事务编排中解耦）
 - 同步处理：TD-H10（FileOperationService 分层归属）+ TD-L25（helper 私有访问）+ TD-M26（MainWindow 集成测试）+ TD-M35（跨盘异常类型统一）
+- **状态**：✅ 已完成（v0.48.0，两个 commit：控制器拆分 + 技术债/FileListView 统一）
 
 ### Phase 3：UI 美化（Task 8）
 - 用多模态 AI 分析当前界面截图，生成 UI 重构提示词
@@ -742,7 +743,8 @@ v0.47.0），下一步重点：
 
 ## 5.2 当前痛点
 
-1. **MainWindow God Object**：约 3490 行 / 150 方法（2026-08-01 复核），任何改动成本极高，事务边界泄漏到 UI 层
+1. **MainWindow God Object**：✅ 已拆分（Task 7，v0.48.0，TransactionScope / ScanController /
+   AssemblyController / MetadataView 迁出；MainWindow 保留薄委托，行数进一步下降）
 2. **文件列表加载性能**：大目录 N+1 查询导致 UI 冻结
 3. **撤销安全性不足**：无 size/mtime 比对，可能覆盖用户外部修改
 4. **文件操作与 DB 事务不一致窗口**：文件已移动 + DB 同步失败时无法回滚
@@ -751,7 +753,7 @@ v0.47.0），下一步重点：
 
 ## 5.3 计划修改方向
 
-- **拆分 MainWindow**：Phase 2 Task 7，将事务边界移到 Application 层
+- **拆分 MainWindow**：✅ 已完成（Phase 2 Task 7，v0.48.0）
 - **清理 is_marked 字段**：✅ 已完成（Phase 2 Task 6，schema v13 纯 DELETE 模式）
 - **性能优化**：批量查询替代 N+1，后台线程加载文件列表
 - **撤销安全增强**：Stage 6 schema 扩展存储操作前快照
@@ -786,6 +788,9 @@ v0.47.0），下一步重点：
 - **原因**：Stage 4/5 期间 Q8:C 决策"边开发边小规模拆分"实际未执行
 - **推荐方案**：UX 重构 Phase 2 Task 7，至少拆出 `ScanController` / `AssemblyController` / `MetadataView` / `TransactionScope`
 - **影响范围**：UI 层全部，但不动业务逻辑，仅结构调整
+- **状态**：✅ 已落地（UX 重构 Phase 2 Task 7，v0.48.0：TransactionScope / ScanController /
+  AssemblyController / MetadataView 已拆出，TD-H10/L25/M35/M36 同步处理；
+  MainWindow 保留薄委托与文件操作编排，可进一步瘦身）
 - **权威来源**：[ux-redesign-roadmap.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/ux-redesign-roadmap.md) Task 7
 
 ### P0-2：文档与代码同步
@@ -1036,7 +1041,7 @@ a84bebf Stage 5 Task 7: 全局搜索 + ContentUnit.status 简化 (v0.40.0)
 
 ## 9.5 第五步：与用户对齐方向（不写代码）
 
-17. **向用户确认下一个 Task**：根据 [ux-redesign-roadmap.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/ux-redesign-roadmap.md) Phase 2，Task 6（数据库与死代码清理）已完成（v0.47.0），下一个是 Task 7（MainWindow 拆分）
+17. **向用户确认下一个 Task**：根据 [ux-redesign-roadmap.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/ux-redesign-roadmap.md)，Task 6（v0.47.0）与 Task 7（v0.48.0）已完成，下一个是 Phase 3 Task 8（UI 美化）
 18. **理解用户工作流**：确认实现计划后再编码；Task 完成后运行自动化检查 + 提供手动验收步骤；用户验收通过后才提交；不自动进入下一个 Task
 19. **理解用户决策风格**：待确认需求按 A/B/C 阻塞级别分类，先解决 A/B
 

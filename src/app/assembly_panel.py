@@ -23,8 +23,7 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -37,86 +36,12 @@ from PySide6.QtWidgets import (
 )
 
 from app import ui_constants as ui
+from app.file_list_model import FileListModel
 from application.assembly_service import AssemblyService, is_image_file
 from application.errors import ContentUnitNotFoundError
 from domain.models import ContentUnit, FileEntry
 
 logger = logging.getLogger(__name__)
-
-
-class AssemblyListModel(QAbstractListModel):
-    """装配面板文件列表 model。
-
-    数据源为 FileEntry 列表（来自 AssemblyService.list_mod_group_files）。
-    与 FileListModel 区别：装配面板只显示文件名 + 类型图标，不需要 4 列表格。
-    """
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._entries: list[FileEntry] = []
-        self._dir_icon: QIcon | None = None
-        self._file_icon: QIcon | None = None
-        self._icons_initialized = False
-
-    def rowCount(self, parent: QModelIndex | None = None) -> int:  # noqa: N802 (Qt 命名)
-        if parent is None:
-            parent = QModelIndex()
-        if parent.isValid():
-            return 0
-        return len(self._entries)
-
-    def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> object:  # noqa: N802 (Qt 命名)
-        if not index.isValid():
-            return None
-        row = index.row()
-        if row < 0 or row >= len(self._entries):
-            return None
-        entry = self._entries[row]
-        if role == Qt.DisplayRole:
-            return entry.name
-        if role == Qt.ToolTipRole:
-            return entry.path
-        if role == Qt.UserRole:
-            return entry
-        if role == Qt.DecorationRole:
-            return self._icon_for(entry)
-        return None
-
-    def refresh(self, entries: list[FileEntry]) -> None:
-        """重置列表。"""
-        self.beginResetModel()
-        self._entries = list(entries)
-        self.endResetModel()
-
-    def entry_at(self, row: int) -> FileEntry | None:
-        """返回指定行的 FileEntry（供测试）。"""
-        if row < 0 or row >= len(self._entries):
-            return None
-        return self._entries[row]
-
-    def entry_count(self) -> int:
-        """返回行数（供测试）。"""
-        return len(self._entries)
-
-    def _icon_for(self, entry: FileEntry) -> QIcon | None:
-        self._ensure_icons()
-        return self._dir_icon if entry.is_dir else self._file_icon
-
-    def _ensure_icons(self) -> None:
-        """懒加载图标缓存。"""
-        if self._icons_initialized:
-            return
-        from PySide6.QtWidgets import QApplication, QStyle
-
-        app = QApplication.instance()
-        if app is None:
-            return
-        style = app.style()
-        if style is None:
-            return
-        self._dir_icon = style.standardIcon(QStyle.SP_DirIcon)
-        self._file_icon = style.standardIcon(QStyle.SP_FileIcon)
-        self._icons_initialized = True
 
 
 class AssemblyPanel(QWidget):
@@ -200,7 +125,9 @@ class AssemblyPanel(QWidget):
         self._list_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._list_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._list_model = AssemblyListModel()
+        # UX 重构 Task 7 Step 6（TD-M36）：复用 FileListModel 单列模式，
+        # 替代原 AssemblyListModel（消除双模型维护，视觉行为保持一致）
+        self._list_model = FileListModel(single_column=True)
         self._list_view.setModel(self._list_model)
         self._list_view.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self._list_view)

@@ -216,7 +216,7 @@
 
 **实施记录（分批：Commit 1 = 控制器拆分，Commit 2 = 技术债 + FileListView 统一）：**
 
-**Commit 1（进行中）：**
+**Commit 1 ✅：**
 - 新增 [transaction_scope.py](src/app/transaction_scope.py)：`_commit` / `_rollback` /
   `_handle_service_error` 逻辑封装（TD-M31），MainWindow 委托调用
 - 新增 [scan_controller.py](src/app/scan_controller.py)：ScanWorker + QThread 生命周期
@@ -228,7 +228,14 @@
   封面选择编排迁出（面板信号改由 MetadataView 接管）
 - MainWindow 实例变量与逻辑相应瘦身，全部现有测试保持通过（1283 passed, 4 skipped）
 
-**Commit 2（待办）：** TD-H10 / TD-L25 / TD-M35 同步处理 + TD-M36 FileListView 统一。
+**Commit 2 ✅：**
+- TD-H10：`FileOperationService` 从 `infrastructure/` 迁移到 `application/`
+  （消除 infrastructure → application 反向依赖；FolderCacheSyncHelper 保持 infrastructure）
+- TD-L25：`FolderCacheSyncHelper` 新增语义化 `delete_folder_subtree(path)`，
+  `_sync_on_delete` 不再访问 helper 私有 `_repo`
+- TD-M35：`rename` 跨盘统一抛 `CrossDriveError`（与 `move` 一致，FileOperationError 子类）
+- TD-M36：移除 `AssemblyListModel`，装配面板复用 `FileListModel(single_column=True)`
+  （单列纯文件名 + 标准图标，视觉行为一致，消除双模型维护）
 
 ---
 

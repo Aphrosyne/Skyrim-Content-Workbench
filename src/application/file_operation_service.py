@@ -1,4 +1,4 @@
-"""文件操作服务（简化版）。
+"""文件操作服务。
 
 阶段 3 Task 3：实现 new_folder + move 两个最小方法，每次操作写 operation_history 表。
 Stage 5 Task 3a：新增 rename + delete_to_recycle_bin，补齐基础文件 CRUD。
@@ -8,6 +8,12 @@ new_folder/move 自动同步 folder_cache + ContentUnit.path，消除调用方
 （ContentUnitCreationService/AssemblyService）手动同步的隐式契约（TD-M22）。
 注入后调用方无需再各自实现 _resolve_parent_id_by_path / _sync_folder_cache 等
 重复逻辑；未注入（helper/repo 为 None）时保持原行为，向后兼容。
+
+UX 重构 Task 7 Step 5（TD-H10）：本服务从 infrastructure 层迁移到 application 层——
+其职责（文件操作编排 + folder_cache 同步 + ContentUnit.path 更新 + 操作历史写入）
+属于应用层业务编排，且原位置存在 infrastructure → application 反向依赖（import
+application.errors）。FolderCacheSyncHelper 仍位于 infrastructure（仅依赖
+FolderCacheRepository），由本服务注入使用。
 
 约束（AGENTS 规则 2/3）：
 - 不覆盖已有文件/目录：目标存在抛 ConflictError。
@@ -467,11 +473,12 @@ class FileOperationService:
             raise FileOperationError(f"无法检查目标路径：{e}") from e
 
         # 跨盘检测（rename 不跨盘，Windows 下跨盘 rename 会退化为 copy+delete）
+        # TD-M35：与 move 一致统一抛 CrossDriveError（FileOperationError 子类）
         try:
             old_dev = old_path.stat().st_dev
             parent_dev = old_path.parent.stat().st_dev
             if old_dev != parent_dev:
-                raise FileOperationError(
+                raise CrossDriveError(
                     f"跨盘重命名不支持：{old_path}（dev={old_dev}）→ {new_path}（dev={parent_dev}）"
                 )
         except OSError as e:
@@ -622,36 +629,16 @@ class FileOperationService:
     def _sync_on_delete(self, path: Path) -> None:
         """删除后同步 folder_cache。
 
-        - 目录：删除该节点及所有子节点（递归删除，注意 FK 约束顺序：先子后父）
-        - 文件：仅更新父目录 mtime
+        - 目录：删除该节点及所有子节点（helper.delete_folder_subtree，先子后父）
+        - 文件：无 folder_cache 记录 → 仅更新父目录 mtime
+        - TD-L25：folder_cache 子树删除封装在 FolderCacheSyncHelper，
+          不再直接访问 helper 私有 `_repo`
 
         Raises:
             FileOperationError: folder_cache 同步失败。
         """
-        # 删除前判断是否为目录（删除后无法判断，需在调用前记录）
-        # 这里 path 已被删除，无法 is_dir()；通过 folder_cache 中是否有该路径判断
-        target_key = make_path_key(str(path))
-        sep = os.sep
-        target_prefix = target_key.rstrip(sep) + sep
-
-        # 查询所有需要删除的 folder_cache 记录（该路径及其子节点）
-        all_folders = self._folder_cache_helper._repo.list_all()  # noqa: SLF001
-        to_delete = [
-            fc
-            for fc in all_folders
-            if make_path_key(fc.path) == target_key
-            or make_path_key(fc.path).startswith(target_prefix)
-        ]
-
-        # 按路径深度降序删除（先子后父，避免 FK 约束冲突）
-        to_delete.sort(key=lambda fc: len(fc.path), reverse=True)
-        for fc in to_delete:
-            try:
-                self._folder_cache_helper._repo.delete(fc.id)  # noqa: SLF001
-            except (RepositoryError, sqlite3.Error) as e:
-                raise FileOperationError(f"删除 folder_cache 失败：path={fc.path} err={e}") from e
-
-        # 更新父目录 mtime（best-effort）
+        self._folder_cache_helper.delete_folder_subtree(path)
+        # 更新父目录 mtime（best-effort，TD-L18 策略）
         self._folder_cache_helper.update_folder_mtime(path.parent)
 
     def _delete_content_units_on_path(self, path: Path) -> None:

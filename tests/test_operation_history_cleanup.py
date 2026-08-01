@@ -19,9 +19,9 @@ from pathlib import Path
 
 import pytest
 
+from application.file_operation_service import FileOperationService
 from domain.models import OperationHistory
 from infrastructure.db import init_db
-from infrastructure.file_operation_service import FileOperationService
 from infrastructure.repositories.operation_history import OperationHistoryRepository
 
 
