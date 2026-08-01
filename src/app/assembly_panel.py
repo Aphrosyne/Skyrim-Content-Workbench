@@ -144,6 +144,7 @@ class AssemblyPanel(QWidget):
         on_cover_renamed: Callable[[Path], None] | None = None,
         on_file_op: Callable[[str, list[FileEntry]], None] | None = None,
         on_pin_changed: Callable[[bool], None] | None = None,
+        on_drop_files: Callable[[list[Path]], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -156,6 +157,9 @@ class AssemblyPanel(QWidget):
         # 参数 True 表示已钉住，False 表示已取消钉住。
         # 取消钉住时 MainWindow 调用 _follow_middle_selection_after_unpin 跟随中栏（B4）。
         self._on_pin_changed = on_pin_changed
+        # UX 重构 Phase 1 Task 4：拖拽文件到装配面板回调
+        # 参数为拖入的文件路径列表（仅文件，不含文件夹——A4 决策）。
+        self._on_drop_files = on_drop_files
         self._current_unit: ContentUnit | None = None
         # 当前透视的文件夹路径（bind_folder 设置，bind_mod_group 同步设置）
         self._current_folder_path: Path | None = None
@@ -165,6 +169,8 @@ class AssemblyPanel(QWidget):
         self._is_pinned: bool = False
 
         self._setup_ui()
+        # UX 重构 Phase 1 Task 4：装配面板作为 drop target（仅钉住时接受文件拖入）
+        self.setAcceptDrops(True)
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -347,6 +353,56 @@ class AssemblyPanel(QWidget):
     def entry_at(self, row: int) -> FileEntry | None:
         """返回指定行的 FileEntry（供测试）。"""
         return self._list_model.entry_at(row)
+
+    # --- UX 重构 Phase 1 Task 4：拖拽 drop target ---
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        """接受文件/文件夹拖入（仅钉住时；修复2：与右键添加行为一致，接受文件夹）。"""
+        if not self._can_accept_drop(event.mimeData()):
+            event.ignore()
+            return
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if not self._can_accept_drop(event.mimeData()):
+            event.ignore()
+            return
+        event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        """处理拖入：提取文件/文件夹路径，回调 MainWindow 移动。
+
+        修复2：与右键「添加到钉住文件夹」一致，同时接受文件和文件夹。
+        """
+        if not self._can_accept_drop(event.mimeData()):
+            event.ignore()
+            return
+        paths: list[Path] = []
+        for url in event.mimeData().urls():
+            local = url.toLocalFile()
+            if local:
+                p = Path(local)
+                # 接受文件和文件夹（与右键添加行为一致）
+                if p.exists():
+                    paths.append(p)
+        if not paths or self._on_drop_files is None:
+            event.ignore()
+            return
+        self._on_drop_files(paths)
+        event.acceptProposedAction()
+
+    def _can_accept_drop(self, mime_data) -> bool:
+        """判断是否可以接受拖入：钉住 + 有文件夹 + 有 URL + 至少一个存在路径。"""
+        if not self._is_pinned or self._current_folder_path is None:
+            return False
+        if not mime_data.hasUrls():
+            return False
+        # 修复2：至少有一个存在的文件/文件夹才接受拖入
+        for url in mime_data.urls():
+            local = url.toLocalFile()
+            if local and Path(local).exists():
+                return True
+        return False
 
     # --- 内部 ---
 

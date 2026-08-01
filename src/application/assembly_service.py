@@ -197,7 +197,30 @@ class AssemblyService:
             FileOperationError: 其他文件操作失败。
         """
         unit = self._get_unit_or_raise(unit_id)
-        folder_path = Path(unit.path)
+        return self.add_file_by_folder_path(Path(unit.path), src_path)
+
+    def add_file_by_folder_path(self, folder_path: Path, src_path: Path) -> FileEntry:
+        """从源路径移动文件到指定文件夹（不依赖 ContentUnit）。
+
+        UX 重构 Phase 1 Task 4：支持「添加到钉住文件夹」功能，
+        钉住的文件夹可能不是内容单元，直接按路径移动。
+
+        - 源文件必须存在。
+        - 目标路径 = folder_path / src_path.name，不能已存在（AGENTS 规则 2）。
+        - Stage 4.5 H4：move 内部自动更新 folder_path 的 folder_cache mtime。
+        - 不自动重命名（spec §7.4：自动整理阶段不修改任何文件名）。
+
+        Args:
+            folder_path: 目标文件夹路径。
+            src_path: 源文件路径。
+
+        Returns:
+            移动后的 FileEntry（指向目标文件夹内的新路径）。
+
+        Raises:
+            ConflictError: 目标路径已存在同名文件。
+            FileOperationError: 其他文件操作失败。
+        """
         dst_path = folder_path / src_path.name
 
         # H4：move 内部自动更新 dst.parent（= folder_path）的 folder_cache mtime

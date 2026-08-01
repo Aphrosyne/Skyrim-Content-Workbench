@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt
+from PySide6.QtCore import QAbstractListModel, QMimeData, QModelIndex, Qt, QUrl
 from PySide6.QtGui import QBrush, QColor, QIcon, QPixmap
 
 from app import ui_constants as ui
@@ -185,6 +185,37 @@ class CardListModel(QAbstractListModel):
         if pixmap.isNull():
             return None
         return pixmap
+
+    # --- 拖拽支持（UX 重构 Phase 1 Task 4）---
+
+    def flags(self, index: QModelIndex) -> Qt.ItemFlag:  # noqa: N802 (Qt 命名)
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        return (
+            Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled
+        )
+
+    def mimeTypes(self) -> list[str]:  # noqa: N802 (Qt 命名)
+        return ["text/uri-list"]
+
+    def mimeData(self, indexes: list[QModelIndex]) -> QMimeData | None:  # noqa: N802 (Qt 命名)
+        if self._source is None:
+            return None
+        urls: list[QUrl] = []
+        seen: set[str] = set()
+        for idx in indexes:
+            if not idx.isValid():
+                continue
+            entry = self._source.entry_at(idx.row())
+            if entry is None or entry.path in seen:
+                continue
+            seen.add(entry.path)
+            urls.append(QUrl.fromLocalFile(entry.path))
+        if not urls:
+            return None
+        mime = QMimeData()
+        mime.setUrls(urls)
+        return mime
 
     # --- 数据源绑定 ---
 

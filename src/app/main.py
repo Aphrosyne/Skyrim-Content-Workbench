@@ -24,7 +24,6 @@ from application.content_service import ContentService
 from application.content_unit_creation_service import ContentUnitCreationService
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
-from application.quick_insert_service import QuickInsertService
 from application.search_service import SearchService
 from application.tag_service import TagService
 from application.thumbnail_service import ThumbnailService
@@ -117,8 +116,8 @@ def main() -> int:
     )
     # Stage 4.5 H4：FileOperationService 注入 FolderCacheSyncHelper + ContentUnitRepository，
     # new_folder/move 自动同步 folder_cache + ContentUnit.path，消除调用方手动同步。
-    # 各 Service（ContentUnitCreationService/AssemblyService/QuickInsertService）在 0.3c/d/e
-    # 移除各自的重复同步逻辑后，统一由 FileOperationService 内部同步。
+    # 各 Service（ContentUnitCreationService/AssemblyService）移除各自的重复同步逻辑后，
+    # 统一由 FileOperationService 内部同步。
     folder_cache_repo = FolderCacheRepository(conn)
     content_unit_repo = ContentUnitRepository(conn)
     folder_cache_helper = FolderCacheSyncHelper(folder_cache_repo)
@@ -138,14 +137,6 @@ def main() -> int:
     assembly_service = AssemblyService(
         file_operation_service,
         ContentUnitRepository(conn),
-    )
-    # 快速插入服务（阶段 3 Task 5）：复用 file_op / content_unit_repo
-    # Stage 4.5 H4：folder_cache 同步由 FileOperationService 内部 helper 自动完成，
-    # QuickInsertService 不再需要 folder_cache_repo。
-    quick_insert_service = QuickInsertService(
-        file_operation_service,
-        ContentUnitRepository(conn),
-        uow=uow,
     )
     # 标签服务（阶段 4 Task 1）：标签分类 / 标签 CRUD + JSON 导入导出 + 预置加载
     tag_service = TagService(
@@ -204,7 +195,6 @@ def main() -> int:
         commit_callback=conn.commit,
         content_unit_creation_service=content_unit_creation_service,
         assembly_service=assembly_service,
-        quick_insert_service=quick_insert_service,
         rollback_callback=conn.rollback,
         tag_service=tag_service,
         thumbnail_coordinator=thumbnail_coordinator,

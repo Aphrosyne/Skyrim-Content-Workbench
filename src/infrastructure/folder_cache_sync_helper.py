@@ -1,6 +1,6 @@
 """folder_cache 同步辅助（Stage 4.5 TD-M22 + H4 + TD-L18）。
 
-集中各 Service（ContentUnitCreationService / QuickInsertService / AssemblyService）中
+集中各 Service（ContentUnitCreationService / AssemblyService）中
 重复的 folder_cache 同步逻辑，避免 Stage 5 undo 实现时反向同步逻辑复制粘贴。
 
 放置在 infrastructure 层：FileOperationService（infrastructure）需注入本 helper

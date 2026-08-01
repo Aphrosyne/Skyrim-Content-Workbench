@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PySide6.QtCore import QAbstractTableModel, QMimeData, QModelIndex, Qt, QUrl
 from PySide6.QtGui import QBrush, QColor, QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QStyle
 
@@ -205,6 +205,37 @@ class FileListModel(QAbstractTableModel):
             direction = ui.SORT_ASC_SYMBOL if self._sort_ascending else ui.SORT_DESC_SYMBOL
             return f"{header} {direction}"
         return header
+
+    # --- 拖拽支持（UX 重构 Phase 1 Task 4）---
+
+    def flags(self, index: QModelIndex) -> Qt.ItemFlag:  # noqa: N802 (Qt 命名)
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        return (
+            Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled
+        )
+
+    def mimeTypes(self) -> list[str]:  # noqa: N802 (Qt 命名)
+        return ["text/uri-list"]
+
+    def mimeData(self, indexes: list[QModelIndex]) -> QMimeData | None:  # noqa: N802 (Qt 命名)
+        urls: list[QUrl] = []
+        seen: set[str] = set()
+        for idx in indexes:
+            if not idx.isValid():
+                continue
+            if idx.row() < 0 or idx.row() >= len(self._entries):
+                continue
+            entry = self._entries[idx.row()]
+            if entry.path in seen:
+                continue
+            seen.add(entry.path)
+            urls.append(QUrl.fromLocalFile(entry.path))
+        if not urls:
+            return None
+        mime = QMimeData()
+        mime.setUrls(urls)
+        return mime
 
     # --- 刷新 ---
 

@@ -10,6 +10,48 @@
 
 ---
 
+## [0.45.0] - 2026-08-01
+
+UX 重构 Phase 1 Task 4：「添加到钉住文件夹」+ 基础拖拽（快速插入移除）+ 验收修复
+
+移除「快速插入」功能及其服务，由「添加到钉住文件夹」菜单项和中栏/装配面板拖拽替代。装配面板作为 drop target 仅在钉住状态下接受文件/文件夹拖入。同步落地 3 项基于验收反馈的修复：钉住文件夹内操作后装配面板同步刷新、重命名后中栏内容消失的系统性修复、程序启动时多个小窗口闪过。schema_version 维持 v12，无数据库迁移。
+
+**移除功能**
+
+- **快速插入服务**：[quick_insert_service.py](src/application/quick_insert_service.py) 删除，[test_quick_insert_service.py](tests/test_quick_insert_service.py) 删除
+- [main.py](src/app/main.py) / [application/__init__.py](src/application/__init__.py) 移除 `QuickInsertService` 导入与实例化
+- [main_window.py](src/app/main_window.py) 移除 `quick_insert_service` 注入与相关调用
+
+**新增功能**
+
+- **「添加到钉住文件夹」菜单项**：中栏右键文件/文件夹 → 「添加到钉住文件夹」（仅装配面板钉住时可见）→ 复用 `_perform_move_to` 移动到钉住文件夹，统一冲突解决流程
+- **装配面板 drop target**：[assembly_panel.py](src/app/assembly_panel.py) 实现 `dragEnterEvent`/`dragMoveEvent`/`dropEvent`，仅钉住状态下接受文件/文件夹拖入（与右键添加行为一致），通过 `on_drop_files` 回调委托 MainWindow
+- **中栏内拖拽**：[file_list_model.py](src/app/file_list_model.py) / [card_list_model.py](src/app/card_list_model.py) 实现 `mimeData` 返回含本地文件 URL 的 `QMimeData`，支持拖出到装配面板或资源管理器
+- **拖拽到文件夹**：中栏内拖拽文件到同目录的文件夹 = 「移入该文件夹」（`_on_drop_to_folder`），含自子目录检测与冲突解决
+- **`_perform_move_to` 扩展**：新增 `refresh_assembly` 参数，拖入装配面板时无条件刷新装配面板；拖入中栏被钉住文件夹时通过 `_refresh_assembly_if_affected` 同步刷新
+- [ui_constants.py](src/app/ui_constants.py) 新增文案：MENU_ADD_TO_PINNED / ASSEMBLY_DROP_NOT_PINNED 等
+
+**修复（基于验收反馈）**
+
+- **修复 1：钉住文件夹内操作后装配面板同步刷新**：新增 `_refresh_assembly_if_affected(*affected_dirs)` 辅助方法，在重命名/删除/新建文件夹/粘贴/移动等文件操作后检查受影响目录是否与装配面板钉住文件夹匹配，匹配则调用 `refresh_current`。覆盖「双击进入被钉住文件夹后进行任何操作」场景，含 5 个测试用例（rename/delete/new_folder/paste/move_to）
+- **修复 2：重命名后中栏内容消失（系统性修复）**：新增 `_restore_middle_after_tree_refresh(dir_path)` 方法统一处理 `_refresh_tree` 后的中栏恢复。`_refresh_tree` 会清空 `content_list_model` 且 `restore_expanded_paths` 恢复选中节点不触发 `selectionChanged` 信号，导致中栏空白。新方法通过 `find_index_by_path` 恢复目录树选中 + 直接调用 `_refresh_content_list` 刷新中栏（不依赖信号），替代原 `_refresh_content_list_after_file_op` 在重命名路径的调用
+- **修复 3：程序启动时多个小窗口闪过**：所有容器组件（`QWidget`/`QSplitter`）创建时显式传入 `self` 作为父对象，避免短暂成为顶级窗口
+
+**设计要点**
+
+- **拖拽范围控制**：装配面板仅在钉住时接受 drop（A4 决策），避免误操作；中栏内拖拽接受文件和文件夹（与右键添加行为一致）
+- **冲突解决复用**：「添加到钉住文件夹」/拖拽到装配面板/拖拽到文件夹均复用 `_perform_move_to` + `ConflictResolutionDialog`，统一重命名/跳过/覆盖询问
+- **自子目录检测**：拖拽到文件夹时拒绝「拖入自身」和「父目录拖入子目录」（`SelfSubdirectoryError`）
+- **装配面板同步刷新触发点**：所有文件操作（重命名/删除/新建/粘贴/移动）在操作完成后调用 `_refresh_assembly_if_affected`，比较 `make_path_key` 归一化路径，避免大小写/分隔符差异
+
+**测试**
+
+- 新增 Task 4 测试用例：添加到钉住文件夹（单文件/多文件/冲突对话框/覆盖/中文文件名）、装配面板拖拽（拒绝未钉住/接受文件/接受文件夹/混合/冲突/移动文件/移动文件夹）、中栏拖拽到文件夹（内部/冲突/自子目录拒绝/父到子拒绝）、拖到钉住文件夹后刷新装配面板、FileListModel/CardListModel mimeData
+- 新增修复 1 测试用例 5 个：钉住文件夹内 rename/delete/new_folder/paste/move_to 后装配面板同步刷新
+- 全量回归：1279 tests passed, 4 skipped（Windows 权限相关），ruff check + format 全通过
+
+---
+
 ## [0.44.0] - 2026-07-31
 
 UX 重构 Phase 1 Task 3：装配面板 📌 钉住功能

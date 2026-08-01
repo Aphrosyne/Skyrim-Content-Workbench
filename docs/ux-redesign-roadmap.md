@@ -123,6 +123,26 @@
   - **先做**：中栏内拖拽文件到同目录的文件夹 = "移入该文件夹"
   - **后做**：中栏文件/文件夹 → 拖到目录树节点 = "移动到该目录"（复杂度高，涉及 drop target 判断、循环检测、跨盘处理等，单独验收）
 
+**Task 4 实施记录（v0.45.0）：**
+
+- **快速插入服务移除**：`QuickInsertService` / `test_quick_insert_service.py` 删除，`main.py` / `application/__init__.py` / `main_window.py` 移除注入与调用。
+- **「添加到钉住文件夹」菜单项**：中栏右键文件/文件夹 → 「添加到钉住文件夹」（仅装配面板钉住时可见），复用 `_perform_move_to` 移动到钉住文件夹，统一冲突解决流程（`ConflictResolutionDialog`）。
+- **装配面板 drop target**：`AssemblyPanel` 实现 `dragEnterEvent`/`dragMoveEvent`/`dropEvent`，仅钉住状态下接受文件/文件夹拖入（与右键添加行为一致），通过 `on_drop_files` 回调委托 MainWindow 走 `_perform_move_to(refresh_assembly=True)`。
+- **中栏内拖拽**：`FileListModel` / `CardListModel` 实现 `mimeData` 返回含本地文件 URL 的 `QMimeData`；`_on_drop_to_folder` 处理拖到同目录文件夹（含自子目录检测 `SelfSubdirectoryError` + 冲突解决）。
+- **`_perform_move_to` 扩展**：新增 `refresh_assembly` 参数，拖入装配面板时无条件刷新；拖入中栏被钉住文件夹时通过 `_refresh_assembly_if_affected` 同步刷新。
+- **测试**：新增 Task 4 测试（添加到钉住/装配面板拖拽/中栏拖拽到文件夹/mimeData），全量回归 1279 passed, 4 skipped。
+
+**Task 4 验收修复（基于用户反馈）：**
+
+- **修复 1：钉住文件夹内操作后装配面板同步刷新**：新增 `_refresh_assembly_if_affected(*affected_dirs)`，在重命名/删除/新建文件夹/粘贴/移动后检查受影响目录是否与钉住文件夹匹配，匹配则 `refresh_current`。覆盖「双击进入被钉住文件夹后进行任何操作」场景，含 5 个测试（rename/delete/new_folder/paste/move_to）。
+- **修复 2：重命名后中栏内容消失（系统性修复）**：新增 `_restore_middle_after_tree_refresh(dir_path)` 统一处理 `_refresh_tree` 后的中栏恢复——`_refresh_tree` 清空 `content_list_model` 且 `restore_expanded_paths` 恢复选中不触发 `selectionChanged` 信号导致中栏空白。新方法通过 `find_index_by_path` 恢复目录树选中 + 直接调用 `_refresh_content_list` 刷新中栏（不依赖信号）。
+- **修复 3：程序启动时多个小窗口闪过**：所有容器组件（`QWidget`/`QSplitter`）创建时显式传入 `self` 作为父对象，避免短暂成为顶级窗口。
+
+**留给后续 Task 的项：**
+
+- 中栏文件/文件夹 → 拖到目录树节点 = "移动到该目录"（复杂度高，登记为后续拖拽增强，不在 Task 5 范围）。
+- 拖拽视觉反馈（目标高亮、中栏自动滚动）→ open-questions §11，归入 Task 8 UI 美化。
+
 ---
 
 ## Phase 2：交互优化 + 代码清理

@@ -107,13 +107,13 @@ from application.errors import (
 )
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
-from application.quick_insert_service import QuickInsertService
 from application.scan_service import ScanSummary
 from application.search_service import SearchService
 from application.tag_service import TagService
 from application.undo_service import UndoService
 from domain.models import ContentUnit, FileEntry, ManagedRoot
 from infrastructure.file_operation_service import FileOperationService
+from infrastructure.path_utils import make_path_key
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,9 @@ class _RubberBandTableView(QTableView):
         self._rubber_band: QRubberBand | None = None
         self._origin = QPoint()
         self._drag_selecting = False
+        # UX 重构 Phase 1 Task 4：内部拖拽到文件夹的回调
+        # 签名：(target_folder: Path, src_paths: list[Path]) -> None
+        self.on_drop_to_folder: Callable[[Path, list[Path]], None] | None = None
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         if event.button() == Qt.MouseButton.LeftButton:
@@ -213,6 +216,96 @@ class _RubberBandTableView(QTableView):
             | QItemSelectionModel.SelectionFlag.Rows,
         )
 
+    # --- UX 重构 Phase 1 Task 4：内部拖拽到文件夹 ---
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if event.source() is self and event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if event.source() is self and event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if event.source() is not self or not event.mimeData().hasUrls():
+            event.ignore()
+            return
+        index = self.indexAt(event.pos())
+        if not index.isValid():
+            event.ignore()
+            return
+        entry = self.model().data(index, Qt.UserRole)
+        if entry is None or not entry.is_dir:
+            event.ignore()
+            return
+        src_paths = [
+            Path(url.toLocalFile())
+            for url in event.mimeData().urls()
+            if url.toLocalFile() and url.toLocalFile() != entry.path
+        ]
+        if not src_paths:
+            event.ignore()
+            return
+        if self.on_drop_to_folder is not None:
+            self.on_drop_to_folder(Path(entry.path), src_paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+
+class _DragDropListView(QListView):
+    """支持内部拖拽到文件夹的 QListView（卡片视图用）。
+
+    UX 重构 Phase 1 Task 4：与 _RubberBandTableView 相同的拖拽逻辑，
+    用于卡片视图内拖拽文件到同目录文件夹。
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.on_drop_to_folder: Callable[[Path, list[Path]], None] | None = None
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if event.source() is self and event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if event.source() is self and event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if event.source() is not self or not event.mimeData().hasUrls():
+            event.ignore()
+            return
+        index = self.indexAt(event.pos())
+        if not index.isValid():
+            event.ignore()
+            return
+        entry = self.model().data(index, Qt.UserRole)
+        if entry is None or not entry.is_dir:
+            event.ignore()
+            return
+        src_paths = [
+            Path(url.toLocalFile())
+            for url in event.mimeData().urls()
+            if url.toLocalFile() and url.toLocalFile() != entry.path
+        ]
+        if not src_paths:
+            event.ignore()
+            return
+        if self.on_drop_to_folder is not None:
+            self.on_drop_to_folder(Path(entry.path), src_paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
 
 class MainWindow(QMainWindow):
     """应用主窗口。
@@ -230,7 +323,6 @@ class MainWindow(QMainWindow):
         commit_callback: Callable[[], None] | None = None,
         content_unit_creation_service: ContentUnitCreationService | None = None,
         assembly_service: AssemblyService | None = None,
-        quick_insert_service: QuickInsertService | None = None,
         rollback_callback: Callable[[], None] | None = None,
         tag_service: TagService | None = None,
         thumbnail_coordinator: ThumbnailCoordinator | None = None,
@@ -249,7 +341,6 @@ class MainWindow(QMainWindow):
         self._rollback_callback = rollback_callback
         self._content_unit_creation_service = content_unit_creation_service
         self._assembly_service = assembly_service
-        self._quick_insert_service = quick_insert_service
         self._tag_service = tag_service
         # Stage 5 Task 3a：文件操作服务（new_folder / rename / delete）
         self._file_operation_service = file_operation_service
@@ -382,7 +473,9 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self) -> None:
         # === 顶部工具栏（UX 重构 Phase 1 Task 1：移除模式切换按钮） ===
-        top_bar = QWidget()
+        # 修复3：所有容器 QWidget/QSplitter 创建时传入 self 作为 parent，
+        # 避免短暂成为顶层窗口导致 Windows 上启动时小窗口闪烁。
+        top_bar = QWidget(self)
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(8, 4, 8, 4)
 
@@ -401,15 +494,6 @@ class MainWindow(QMainWindow):
         self._search_box.setVisible(self._search_service is not None)
         top_layout.addWidget(self._search_box)
 
-        # 快速插入按钮（阶段 3 Task 5）：
-        # UX 重构 Phase 1 Task 1（C2 决策）：移除模式后永久隐藏，Commit 3 正式移除。
-        self._quick_insert_button = QPushButton(ui.QUICK_INSERT_BUTTON)
-        self._quick_insert_button.setToolTip(ui.QUICK_INSERT_TOOLTIP)
-        self._quick_insert_button.clicked.connect(self._on_quick_insert_clicked)
-        self._quick_insert_button.setVisible(False)
-        self._quick_insert_button.setEnabled(False)
-        top_layout.addWidget(self._quick_insert_button)
-
         # 标签管理按钮（阶段 4 Task 1）：打开标签管理对话框
         self._tag_manager_button = QPushButton(ui.TAG_MANAGER_BUTTON)
         self._tag_manager_button.setToolTip(ui.TAG_MANAGER_TOOLTIP)
@@ -426,10 +510,10 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self._operation_history_button)
 
         # === 三栏 Splitter ===
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Horizontal, self)
 
         # === 左栏：受管理根目录 + 扫描控制 + 目录树 + 详情 ===
-        left = QWidget()
+        left = QWidget(self)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -516,7 +600,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(left)
 
         # === 中栏：文件列表（UX 重构 Phase 1 Task 2：装配面板迁至右栏） ===
-        middle = QWidget()
+        middle = QWidget(self)
         middle_layout = QVBoxLayout(middle)
         middle_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -525,7 +609,7 @@ class MainWindow(QMainWindow):
 
         # 视图切换栏（Stage 5 Task 1，Q1=A：独立一行，在 TagFilterBar 之上）
         # Stage 5 Task 2：左侧增加前进/后退导航按钮 + 排序下拉框
-        self._view_switch_bar = QWidget()
+        self._view_switch_bar = QWidget(self)
         view_switch_layout = QHBoxLayout(self._view_switch_bar)
         view_switch_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -643,7 +727,10 @@ class MainWindow(QMainWindow):
         self._content_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._content_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._content_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._content_view.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+        # UX 重构 Phase 1 Task 4：启用拖拽（DragDrop 支持内部拖到文件夹）
+        self._content_view.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self._content_view.setDragEnabled(True)
+        self._content_view.on_drop_to_folder = self._on_drop_to_folder
         self._content_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._content_view.verticalHeader().setVisible(False)
         self._content_view.horizontalHeader().setHighlightSections(False)
@@ -664,7 +751,7 @@ class MainWindow(QMainWindow):
         self._content_stack.addWidget(self._content_view)  # index 0
 
         # 卡片视图（QListView，IconMode，大图）
-        self._card_view = QListView()
+        self._card_view = _DragDropListView()
         self._card_view.setViewMode(QListView.ViewMode.IconMode)
         self._card_view.setIconSize(QSize(ui.ZOOM_SLIDER_DEFAULT, ui.ZOOM_SLIDER_DEFAULT))
         # Task 2 验收修复：固定 gridSize 避免长文件名撑大卡片
@@ -682,7 +769,10 @@ class MainWindow(QMainWindow):
         self._card_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._card_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._card_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._card_view.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+        # UX 重构 Phase 1 Task 4：启用拖拽（DragDrop 支持内部拖到文件夹）
+        self._card_view.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self._card_view.setDragEnabled(True)
+        self._card_view.on_drop_to_folder = self._on_drop_to_folder
         self._card_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._card_view.setModel(self._card_list_model)
         self._card_view.doubleClicked.connect(self._on_entry_activated)
@@ -706,12 +796,12 @@ class MainWindow(QMainWindow):
         splitter.addWidget(middle)
 
         # === 右栏：元数据（上）+ 装配面板（下），垂直分割（UX 重构 Phase 1 Task 2） ===
-        right = QWidget()
+        right = QWidget(self)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
         # 上下分割：上方元数据，下方装配面板（初始比例 3:2，可拖拽调整）
-        self._right_splitter = QSplitter(Qt.Vertical)
+        self._right_splitter = QSplitter(Qt.Vertical, self)
 
         self._metadata_group = QGroupBox(ui.METADATA_GROUP_TITLE)
         metadata_layout = QVBoxLayout(self._metadata_group)
@@ -746,6 +836,7 @@ class MainWindow(QMainWindow):
                 on_cover_renamed=self._on_assembly_rename_cover,
                 on_file_op=self._on_assembly_file_op,
                 on_pin_changed=self._on_assembly_pin_changed,
+                on_drop_files=self._on_drop_to_assembly,
             )
             self._right_splitter.addWidget(self._assembly_panel)
             # 初始拉伸比例：元数据 3 : 装配 2（C1 决策）
@@ -765,7 +856,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(2, 1)
 
         # 主布局：顶部模式栏 + 三栏 splitter
-        central = QWidget()
+        central = QWidget(self)
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
@@ -1696,6 +1787,18 @@ class MainWindow(QMainWindow):
                 )
             )
 
+        # 添加到钉住文件夹（UX 重构 Phase 1 Task 4）：
+        # A1：仅装配面板钉住时显示；B1：支持多选；B6：放在「移动到...」之前。
+        if (
+            self._assembly_service is not None
+            and self._assembly_panel is not None
+            and self._assembly_panel.is_pinned()
+            and self._assembly_panel.current_folder_path() is not None
+        ):
+            actions.append(
+                (ui.MENU_ADD_TO_PINNED, lambda: self._on_add_to_pinned_folder(entries), True)
+            )
+
         # Stage 5 Task 3a：新建文件夹 / 重命名 / 删除（仅需 FileOperationService）
         # Stage 5 Task 3b：复制 / 剪切（需 FileOperationService + ClipboardService）
         # Stage 5 Task 5：移动到...（仅需 FileOperationService）
@@ -2037,6 +2140,8 @@ class MainWindow(QMainWindow):
             # _refresh_tree 会清空列表，必须用保存的 dir_path 直接刷新
             # （_refresh_content_list_for_current_mode 依赖 selection 可能失效）
             self._refresh_content_list_after_file_op(dir_path)
+            # 修复1：若新建文件夹发生在钉住的装配面板文件夹内，同步刷新装配面板
+            self._refresh_assembly_if_affected(dir_path)
             self.statusBar().showMessage(ui.MENU_NEW_FOLDER_SUCCESS.format(name=name), 3000)
         except Exception as e:  # noqa: BLE001
             self._handle_service_error(e, ui.MENU_OPERATION_FAILED.format(error=str(e)))
@@ -2091,9 +2196,18 @@ class MainWindow(QMainWindow):
         UX 重构 Phase 1 Task 2 修复1：抽取核心逻辑，装配面板调用时
         refresh_middle=False，避免中栏被刷新到文件父目录（错误进入文件夹）。
 
+        修复5（系统性修复）：_refresh_tree 会清空中栏列表（content_list_model.refresh([])），
+        且 restore_expanded_paths 可能在 _refresh_tree 内部已恢复目录树选中节点。
+        若选中节点已被恢复，再调用 setCurrentIndex 设置相同节点不会触发
+        selectionChanged 信号，导致 _on_tree_selection_changed 不执行，
+        中栏内容保持空白。
+
+        解决方案：_refresh_tree 后统一通过 _restore_middle_after_tree_refresh
+        恢复目录树选中 + 直接刷新中栏内容（不依赖 selectionChanged 信号）。
+
         Args:
             entry: 待重命名的条目。
-            refresh_middle: True 刷新中栏到文件父目录；False 不刷新中栏。
+            refresh_middle: True 刷新中栏到文件父目录；False 保持中栏原显示目录。
 
         Returns:
             True 表示执行了重命名；False 表示用户取消或无变化。
@@ -2104,6 +2218,9 @@ class MainWindow(QMainWindow):
         old_name = old_path.name
         # 保存父目录路径：rename 后 _refresh_tree 会清空列表，需用此路径直接刷新
         dir_path = str(old_path.parent)
+        # 修复5：refresh_middle=False 时记录原显示目录，_refresh_tree 后恢复
+        # （_refresh_tree 会清空中栏，不恢复会导致中栏空白）
+        preserved_display_dir = self._current_displayed_dir() if not refresh_middle else None
         name, ok = self._show_rename_dialog(old_name)
         if not ok or not name:
             return False
@@ -2114,13 +2231,67 @@ class MainWindow(QMainWindow):
             self._file_operation_service.rename(old_path, name)
             self._commit()
             self._refresh_tree()
+            # 修复5：统一恢复中栏显示（不依赖 selectionChanged 信号）
             if refresh_middle:
-                self._refresh_content_list_after_file_op(dir_path)
+                self._restore_middle_after_tree_refresh(dir_path)
+            elif preserved_display_dir is not None:
+                self._restore_middle_after_tree_refresh(preserved_display_dir)
             self.statusBar().showMessage(ui.MENU_RENAME_SUCCESS.format(name=name), 3000)
             return True
         except Exception as e:  # noqa: BLE001
             self._handle_service_error(e, ui.MENU_OPERATION_FAILED.format(error=str(e)))
             return False
+
+    def _restore_middle_after_tree_refresh(self, dir_path: str) -> None:
+        """_refresh_tree 后恢复中栏显示：恢复目录树选中 + 直接刷新中栏内容。
+
+        _refresh_tree 会：
+        1. reset tree model（beginResetModel/endResetModel）
+        2. restore_expanded_paths 尝试恢复选中（仅在父节点已展开时成功）
+        3. 清空 content_list_model
+
+        问题：若步骤 2 已恢复选中节点，再 setCurrentIndex 相同节点不会触发
+        selectionChanged 信号，_on_tree_selection_changed 不执行，中栏空白。
+        若步骤 2 未恢复选中（父节点未展开），setCurrentIndex 新节点会触发信号，
+        但信号处理内的 _refresh_content_list 依赖 selectionModel，时序不可控。
+
+        解决方案：始终通过 find_index_by_path 恢复目录树选中（处理父节点未展开情况），
+        然后直接调用 _refresh_content_list 刷新中栏（不依赖 selectionChanged 信号）。
+
+        Args:
+            dir_path: 需要在中栏显示的目录路径。
+        """
+        # 恢复目录树选中节点（find_index_by_path 会 fetchMore 加载未展开的子节点）
+        target_idx = self._tree_model.find_index_by_path(self._tree_view, dir_path)
+        if target_idx.isValid():
+            self._tree_view.setCurrentIndex(target_idx)
+        # 直接刷新中栏内容（_refresh_tree 已清空列表，
+        # 不能依赖 setCurrentIndex 触发 selectionChanged，因为选中可能未变）
+        self._refresh_content_list(dir_path)
+        # 修复1：若受影响目录与装配面板钉住文件夹相同，同步刷新装配面板
+        self._refresh_assembly_if_affected(dir_path)
+
+    def _refresh_assembly_if_affected(self, *affected_dirs: str | Path) -> None:
+        """文件操作后，若受影响目录与装配面板当前透视文件夹相同则刷新装配面板。
+
+        修复1（含用户补充）：双击进入被钉住的文件夹内进行任何操作（重命名、删除、
+        新建文件夹、粘贴、移动等）都应当同步刷新被钉住的装配面板。
+
+        比较使用 make_path_key 归一化（AGENTS 规则 9），避免大小写/分隔符差异。
+
+        Args:
+            *affected_dirs: 文件操作受影响的目录路径列表（源/目标均可）。
+        """
+        if self._assembly_panel is None:
+            return
+        pinned_folder = self._assembly_panel.current_folder_path()
+        if pinned_folder is None:
+            return
+        pinned_key = make_path_key(pinned_folder)
+        for d in affected_dirs:
+            if d is not None and make_path_key(d) == pinned_key:
+                self._assembly_panel.refresh_current()
+                return
 
     def _on_rename_entry(self, entry: FileEntry) -> None:
         """右键条目 → 重命名（中栏，刷新中栏到父目录）。"""
@@ -2158,6 +2329,9 @@ class MainWindow(QMainWindow):
             self._commit()
             self._refresh_tree()
             self._refresh_content_list_after_file_op(dir_path)
+            # 修复1：若删除发生在钉住的装配面板文件夹内，同步刷新装配面板
+            if dir_path is not None:
+                self._refresh_assembly_if_affected(dir_path)
             ok_count = len(histories)
             fail_count = n - ok_count
             if sync_errors:
@@ -2191,8 +2365,6 @@ class MainWindow(QMainWindow):
         if self._assembly_panel is None:
             return
         self._assembly_panel.bind_mod_group(unit)
-        # 同步快速插入按钮可用性（C2：永久禁用，此处保留调用不删方法）
-        self._update_quick_insert_button_state()
 
     def _bind_assembly_folder(self, folder_path: Path | None) -> None:
         """装配面板透视任意文件夹路径（不依赖 ContentUnit）。
@@ -2204,7 +2376,6 @@ class MainWindow(QMainWindow):
         if self._assembly_panel is None:
             return
         self._assembly_panel.bind_folder(folder_path)
-        self._update_quick_insert_button_state()
 
     def _is_assembly_pinned(self) -> bool:
         """返回装配面板当前是否处于钉住状态（UX 重构 Phase 1 Task 3）。"""
@@ -2262,6 +2433,72 @@ class MainWindow(QMainWindow):
         """
         if not pinned:
             self._follow_middle_selection_after_unpin()
+
+    def _on_add_to_pinned_folder(self, entries: list[FileEntry]) -> None:
+        """添加选中文件到钉住的文件夹（UX 重构 Phase 1 Task 4）。
+
+        - A2：移动后立即刷新中栏。
+        - B1：支持多选。
+        - 修复3：冲突走 ConflictResolutionDialog 询问（重命名/跳过/覆盖）。
+        - 修复4：嵌套检查（SelfSubdirectoryError）由 FileOperationService.move 保证。
+        - C2：状态栏提示。
+        - C3：保留历史记录（FileOperationService.move 自动写 operation_history）。
+        """
+        if self._assembly_service is None or self._assembly_panel is None:
+            return
+        folder_path = self._assembly_panel.current_folder_path()
+        if folder_path is None:
+            return
+        src_paths = [Path(e.path) for e in entries]
+        self._perform_move_to(
+            src_paths,
+            folder_path,
+            refresh_assembly=True,
+            ok_msg=ui.ADD_TO_PINNED_OK,
+            fail_title=ui.ADD_TO_PINNED_FAILED,
+            partial_msg=ui.ADD_TO_PINNED_PARTIAL,
+        )
+
+    def _on_drop_to_folder(self, target_folder: Path, src_paths: list[Path]) -> None:
+        """中栏内部拖拽文件到同目录文件夹（UX 重构 Phase 1 Task 4）。
+
+        - A5：拖拽无需确认。
+        - B4：文件夹可拖拽（move 支持文件和文件夹）。
+        - 修复1：target_folder 命中装配面板钉住文件夹时同步刷新装配面板
+          （由 _perform_move_to 内部判断）。
+        - 修复3：冲突走 ConflictResolutionDialog 询问。
+        - 修复4：嵌套检查由 FileOperationService.move 保证。
+        """
+        self._perform_move_to(
+            src_paths,
+            target_folder,
+            refresh_assembly=False,
+            ok_msg=ui.DROP_TO_FOLDER_OK,
+            fail_title=ui.DROP_TO_FOLDER_FAILED,
+            partial_msg=ui.DROP_TO_FOLDER_PARTIAL,
+        )
+
+    def _on_drop_to_assembly(self, file_paths: list[Path]) -> None:
+        """拖拽文件/文件夹到装配面板（UX 重构 Phase 1 Task 4）。
+
+        - A3：拖拽无需确认。
+        - 修复2：同时接受文件和文件夹（与右键添加行为一致）。
+        - 修复3：冲突走 ConflictResolutionDialog 询问。
+        - 修复4：嵌套检查由 FileOperationService.move 保证。
+        """
+        if self._assembly_panel is None:
+            return
+        folder_path = self._assembly_panel.current_folder_path()
+        if folder_path is None:
+            return
+        self._perform_move_to(
+            file_paths,
+            folder_path,
+            refresh_assembly=True,
+            ok_msg=ui.ADD_TO_PINNED_OK,
+            fail_title=ui.ADD_TO_PINNED_FAILED,
+            partial_msg=ui.ADD_TO_PINNED_PARTIAL,
+        )
 
     def _on_assembly_rename_cover(self, image_path: Path) -> None:
         """装配面板右键重命名预览图：rename_as_cover_by_path + 刷新 + 提交。
@@ -2335,24 +2572,6 @@ class MainWindow(QMainWindow):
             self._assembly_panel.refresh_current()
         elif action == "copy_path" and len(entries) == 1:
             self._copy_path_to_clipboard(entries[0].path)
-
-    # --- 快速插入（阶段 3 Task 5） ---
-
-    def _update_quick_insert_button_state(self) -> None:
-        """更新「快速插入」按钮可用性。
-
-        UX 重构 Phase 1 Task 1（C2 决策）：移除模式后按钮永久隐藏且禁用。
-        方法保留待 Commit 3 正式移除按钮和 QuickInsertService。
-        """
-        self._quick_insert_button.setEnabled(False)
-
-    def _on_quick_insert_clicked(self) -> None:
-        """快速插入按钮点击（C2 决策：已永久禁用，此方法保留待 Commit 3 移除）。
-
-        UX 重构 Phase 1 Task 1：移除整理模式后，目标路径机制失效。
-        按钮已 setVisible(False) + setEnabled(False)，此方法不会被触发。
-        """
-        return
 
     def _on_tag_manager_clicked(self) -> None:
         """打开标签管理对话框（阶段 4 Task 1）。
@@ -2827,6 +3046,12 @@ class MainWindow(QMainWindow):
         self._commit()
         self._refresh_tree()
         self._refresh_content_list_for_current_mode()
+        # 修复1：若粘贴目标目录与钉住的装配面板文件夹相同，同步刷新装配面板。
+        # 若为 cut 操作，源目录内容也变化，需一并检查。
+        affected_dirs: list[Path] = [dst_dir]
+        if operation == "cut":
+            affected_dirs.extend(Path(p).parent for p in entry.paths if p)
+        self._refresh_assembly_if_affected(*affected_dirs)
 
         # 状态栏提示
         if fail_count == 0:
@@ -2919,15 +3144,33 @@ class MainWindow(QMainWindow):
             return
         self._perform_move_to(src_paths, target_dir)
 
-    def _perform_move_to(self, src_paths: list[Path], target_dir: Path) -> None:
+    def _perform_move_to(
+        self,
+        src_paths: list[Path],
+        target_dir: Path,
+        *,
+        refresh_assembly: bool = False,
+        ok_msg: str = ui.SHORTCUT_MOVE_TO_OK,
+        fail_title: str = ui.MOVE_TO_DIALOG_TITLE,
+        partial_msg: str = ui.SHORTCUT_MOVE_TO_PARTIAL,
+    ) -> None:
         """执行移动到目标目录（复用 ConflictResolutionService 处理冲突）。
 
         流程与 _perform_paste 类似，但 operation 固定为 'cut'（移动），
         且不涉及剪贴板清理。
 
+        UX 重构 Phase 1 Task 4 修复3：拖拽 / 添加到钉住文件夹也走此路径，
+        统一冲突解决流程（重命名/跳过/覆盖询问），统一自目录检测（修复4）。
+
         Args:
             src_paths: 源路径列表。
             target_dir: 目标目录。
+            refresh_assembly: 是否强制刷新装配面板（拖入装配面板时为 True）。
+                修复1：无论此参数为何，只要 target_dir 与装配面板当前透视的
+                文件夹相同，就会刷新装配面板（覆盖拖拽到中栏被钉住文件夹场景）。
+            ok_msg: 成功状态栏提示模板，支持 {n}/{dir_name}/{name} 占位符。
+            fail_title: 失败弹窗标题。
+            partial_msg: 部分失败摘要模板，支持 {ok}/{fail} 占位符。
         """
         from application.conflict_resolution_service import (  # noqa: PLC0415
             ConflictResolutionService,
@@ -2935,12 +3178,15 @@ class MainWindow(QMainWindow):
             has_cross_drive_cut,
         )
 
+        if self._file_operation_service is None:
+            return
+
         conflict_service = ConflictResolutionService()
         conflicts = conflict_service.scan_conflicts(src_paths, target_dir, operation="cut")
 
         # 跨盘剪切检测（Q7=B 拒绝）
         if has_cross_drive_cut(conflicts):
-            QMessageBox.warning(self, ui.MOVE_TO_DIALOG_TITLE, ui.SHORTCUT_MOVE_TO_CROSS_DRIVE)
+            QMessageBox.warning(self, fail_title, ui.SHORTCUT_MOVE_TO_CROSS_DRIVE)
             return
 
         # 冲突解决（Q5=A 复用 ConflictResolutionDialog）
@@ -2986,20 +3232,29 @@ class MainWindow(QMainWindow):
         self._commit()
         self._refresh_tree()
         self._refresh_content_list_for_current_mode()
+        # 修复1：拖拽到中栏被钉住文件夹后同步刷新装配面板。
+        # 检查 target_dir（目标）和各 src 的父目录（源），任一命中钉住文件夹则刷新。
+        # refresh_assembly=True（拖入装配面板）时无条件刷新。
+        if refresh_assembly:
+            if self._assembly_panel is not None:
+                self._assembly_panel.refresh_current()
+        else:
+            affected_dirs = [target_dir] + [Path(p).parent for p in src_paths]
+            self._refresh_assembly_if_affected(*affected_dirs)
 
         # 状态栏提示
         if fail_count == 0:
             self.statusBar().showMessage(
-                ui.SHORTCUT_MOVE_TO_OK.format(n=ok_count, dir_name=target_dir.name),
+                ok_msg.format(n=ok_count, dir_name=target_dir.name, name=target_dir.name),
                 3000,
             )
         else:
             QMessageBox.information(
                 self,
-                ui.MOVE_TO_DIALOG_TITLE,
-                ui.SHORTCUT_MOVE_TO_PARTIAL.format(ok=ok_count, fail=fail_count)
+                fail_title,
+                partial_msg.format(ok=ok_count, fail=fail_count)
                 + "\n\n"
-                + "\n".join(errors[:5]),
+                + "\n".join(errors[:MAX_ERROR_SUMMARY_LINES]),
             )
 
     def _update_metadata(self, unit: ContentUnit) -> None:

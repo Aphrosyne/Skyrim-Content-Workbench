@@ -235,25 +235,16 @@ ASSEMBLY_PIN_TOOLTIP_PINNED = "取消钉住"
 ASSEMBLY_PIN_STATUS_PINNED = "已钉住：{name}"
 ASSEMBLY_PIN_STATUS_UNPINNED_FOLLOW = "已取消钉住，跟随中栏选中"
 
-# 快速插入（阶段 3 Task 5）
-QUICK_INSERT_BUTTON = "快速插入"
-QUICK_INSERT_TOOLTIP = "将当前装配面板绑定的 Mod 组移入选中的目标目录"
-QUICK_INSERT_CONFIRM_TITLE = "确认快速插入"
-QUICK_INSERT_CONFIRM_TEXT = (
-    "将把当前 Mod 组文件夹移动到目标目录：\n\n"
-    "源路径：{src}\n"
-    "目标路径：{dst}\n\n"
-    "此操作会真实移动文件，可通过操作历史撤销。是否继续？"
-)
-QUICK_INSERT_OK = "已快速插入：{name} → {target}"
-QUICK_INSERT_FAILED = "快速插入失败"
-QUICK_INSERT_NO_BINDING = "请先双击选中一个 Mod 组后再快速插入。"
-QUICK_INSERT_NO_TARGET = "请先在目录树中选中目标目录后再快速插入。"
-QUICK_INSERT_SAME_AS_SOURCE = "目标目录与源 Mod 组位置相同，无需移动。"
-QUICK_INSERT_TARGET_NOT_DIR = "选中的目标不是目录，无法快速插入。"
-QUICK_INSERT_CONFLICT_HINT = "目标目录已存在同名文件夹，请重命名或移除后重试。"
-QUICK_INSERT_CROSS_DRIVE_HINT = "跨盘移动暂不支持，请将 Mod 组和目标放在同一磁盘。"
-QUICK_INSERT_SELF_SUBDIR_HINT = "不能将 Mod 组移动到自身子目录内。"
+# 添加到钉住文件夹（UX 重构 Phase 1 Task 4）
+MENU_ADD_TO_PINNED = "添加到钉住文件夹"
+ADD_TO_PINNED_OK = "已添加 {n} 个文件到「{name}」"
+ADD_TO_PINNED_FAILED = "添加到钉住文件夹失败"
+ADD_TO_PINNED_PARTIAL = "部分文件添加失败（成功 {ok}，失败 {fail}）"
+
+# 拖拽到文件夹（UX 重构 Phase 1 Task 4）
+DROP_TO_FOLDER_OK = "已移动 {n} 个文件到「{name}」"
+DROP_TO_FOLDER_FAILED = "拖拽移动失败"
+DROP_TO_FOLDER_PARTIAL = "部分文件移动失败（成功 {ok}，失败 {fail}）"
 
 # 元数据面板区域
 METADATA_GROUP_TITLE = "元数据"

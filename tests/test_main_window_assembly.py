@@ -22,6 +22,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt  # noqa: E402
 
+from app import ui_constants as ui  # noqa: E402
 from app.main_window import MainWindow  # noqa: E402
 from application.assembly_service import AssemblyService  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
@@ -91,9 +92,6 @@ def main_window_env(qapp, tmp_path: Path):
     # Stage 4.5 H4：各 Service 不再需要 folder_cache_repo
     content_unit_creation_service = ContentUnitCreationService(file_op_service, content_service)
     assembly_service = AssemblyService(file_op_service, ContentUnitRepository(conn))
-    from application.quick_insert_service import QuickInsertService
-
-    quick_insert_service = QuickInsertService(file_op_service, ContentUnitRepository(conn))
     # UX 重构 Phase 1 Task 2 Commit 2：注入 clipboard_service 用于装配面板文件操作
     from application.clipboard_service import ClipboardService
 
@@ -113,7 +111,6 @@ def main_window_env(qapp, tmp_path: Path):
         rollback_callback=conn.rollback,
         content_unit_creation_service=content_unit_creation_service,
         assembly_service=assembly_service,
-        quick_insert_service=quick_insert_service,
         file_operation_service=file_op_service,
         clipboard_service=clipboard_service,
     )
@@ -341,6 +338,130 @@ def test_on_assembly_rename_cover_not_image(qapp, main_window_env, monkeypatch) 
 
 
 # === 中栏右键菜单「加入装配」（UX Task 2 B2-2：已移除，测试与辅助类一并删除） ===
+
+
+# === 修复5：装配面板重命名后中栏保持显示 ===
+
+
+def test_assembly_rename_preserves_middle_display(qapp, main_window_env, monkeypatch) -> None:
+    """修复5：装配面板内重命名文件后，中栏保持原显示目录（不空白、不进入子文件夹）。
+
+    场景：装配面板钉住 Mod 组文件夹，中栏显示暂存区。
+    在装配面板内右键重命名 preview.jpg → renamed.jpg，
+    中栏应仍显示暂存区内容（包含 BDOR 7z 等其他文件），不应空白。
+    """
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    # 在 Mod 组内放置 preview.jpg
+    (mod_folder / "preview.jpg").write_bytes(b"\x00" * 50)
+    # 钉住装配面板，并刷新让其读取新增的 preview.jpg
+    window._assembly_panel.pin()  # noqa: SLF001
+    window._assembly_panel.refresh_current()  # noqa: SLF001
+    qapp.processEvents()
+
+    # 中栏切回暂存区（与装配面板钉住的文件夹不同）
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    staging = root_dir / "Stash"
+    # 中栏应显示暂存区内容
+    assert window._current_displayed_dir() == str(staging)  # noqa: SLF001
+    middle_count_before = window._content_list_model.entry_count()  # noqa: SLF001
+    assert middle_count_before > 0
+
+    # 在装配面板内重命名 preview.jpg → renamed.jpg
+    # 找到 preview.jpg 条目
+    rename_entry = None
+    for i in range(window._assembly_panel.entry_count()):  # noqa: SLF001
+        e = window._assembly_panel.entry_at(i)  # noqa: SLF001
+        if e is not None and e.name == "preview.jpg":
+            rename_entry = e
+            break
+    assert rename_entry is not None, "装配面板未显示 preview.jpg"
+
+    # mock 重命名对话框：返回 "renamed.jpg"
+    monkeypatch.setattr(
+        window,
+        "_show_rename_dialog",
+        lambda old_name: ("renamed.jpg", True),  # noqa: SLF001
+    )
+
+    # 调用 _on_assembly_file_op("rename", [entry])
+    window._on_assembly_file_op("rename", [rename_entry])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 修复5：中栏应保持显示暂存区，且内容不为空
+    assert window._current_displayed_dir() == str(staging)  # noqa: SLF001
+    middle_count_after = window._content_list_model.entry_count()  # noqa: SLF001
+    assert middle_count_after > 0, "修复5：装配面板重命名后中栏内容不应消失"
+    # 中栏条目数应保持不变（重命名发生在 mod_folder，不影响 staging）
+    assert middle_count_after == middle_count_before
+
+    # 装配面板刷新后显示新名称
+    names = [
+        window._assembly_panel.entry_at(i).name  # noqa: SLF001
+        for i in range(window._assembly_panel.entry_count())  # noqa: SLF001
+    ]
+    assert "renamed.jpg" in names
+    assert "preview.jpg" not in names
+
+
+def test_assembly_rename_preserves_middle_display_when_pinned_same_folder(
+    qapp, main_window_env, monkeypatch
+) -> None:
+    """修复5：钉住的就是中栏显示目录时，重命名后中栏仍保持显示且反映新名称。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    # 在 Mod 组内放置 preview.jpg
+    (mod_folder / "preview.jpg").write_bytes(b"\x00" * 50)
+    # 钉住装配面板，并刷新让其读取新增的 preview.jpg
+    window._assembly_panel.pin()  # noqa: SLF001
+    window._assembly_panel.refresh_current()  # noqa: SLF001
+    qapp.processEvents()
+
+    # 中栏导航到 mod_folder（与装配面板钉住的相同）
+    # 通过目录树选中 mod_folder 节点，使 _current_displayed_dir 返回 mod_folder
+    target_idx = window._tree_model.find_index_by_path(  # noqa: SLF001
+        window._tree_view,
+        str(mod_folder),  # noqa: SLF001
+    )
+    assert target_idx.isValid(), "未在目录树中找到 mod_folder 节点"
+    window._tree_view.setCurrentIndex(target_idx)  # noqa: SLF001
+    qapp.processEvents()
+    assert window._current_displayed_dir() == str(mod_folder)  # noqa: SLF001
+
+    # 装配面板找到 preview.jpg
+    rename_entry = None
+    for i in range(window._assembly_panel.entry_count()):  # noqa: SLF001
+        e = window._assembly_panel.entry_at(i)  # noqa: SLF001
+        if e is not None and e.name == "preview.jpg":
+            rename_entry = e
+            break
+    assert rename_entry is not None
+
+    monkeypatch.setattr(
+        window,
+        "_show_rename_dialog",
+        lambda old_name: ("renamed.jpg", True),  # noqa: SLF001
+    )
+    window._on_assembly_file_op("rename", [rename_entry])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 修复5：中栏仍显示 mod_folder，且内容不为空
+    assert window._current_displayed_dir() == str(mod_folder)  # noqa: SLF001
+    middle_count_after = window._content_list_model.entry_count()  # noqa: SLF001
+    assert middle_count_after > 0, "修复5：中栏内容不应消失"
+    # 中栏应反映新名称
+    middle_names = [
+        window._content_list_model.entry_at(i).name  # noqa: SLF001
+        for i in range(window._content_list_model.entry_count())  # noqa: SLF001
+    ]
+    assert "renamed.jpg" in middle_names
 
 
 # === 中文路径支持 ===
@@ -909,3 +1030,767 @@ def test_pin_toggle_button_icon(qapp, main_window_env) -> None:
     qapp.processEvents()
     assert not window.assembly_panel_is_pinned()
     assert window._assembly_panel._pin_button.text() == "📌"  # noqa: SLF001
+
+
+# === 添加到钉住文件夹（UX 重构 Phase 1 Task 4）===
+
+
+def _get_menu_labels(window: MainWindow, entries) -> list[str]:
+    """构造右键菜单并返回标签列表。"""
+    actions = window._build_content_menu_actions(entries)  # noqa: SLF001
+    return [label for label, _, _ in actions]
+
+
+def test_add_to_pinned_menu_hidden_when_not_pinned(qapp, main_window_env) -> None:
+    """A1：未钉住时不显示「添加到钉住文件夹」菜单项。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    entry = _find_entry_by_name(window, "preview.jpg")
+    assert entry is not None
+    labels = _get_menu_labels(window, [entry])
+    assert ui.MENU_ADD_TO_PINNED not in labels
+
+
+def test_add_to_pinned_menu_shown_when_pinned(qapp, main_window_env) -> None:
+    """A1：钉住后显示「添加到钉住文件夹」菜单项。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    # 切回暂存区选中文件
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    entry = _find_entry_by_name(window, "preview.jpg")
+    assert entry is not None
+    labels = _get_menu_labels(window, [entry])
+    assert ui.MENU_ADD_TO_PINNED in labels
+
+
+def test_add_to_pinned_menu_before_move_to(qapp, main_window_env) -> None:
+    """B6：「添加到钉住文件夹」在「移动到...」之前。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    entry = _find_entry_by_name(window, "preview.jpg")
+    assert entry is not None
+    labels = _get_menu_labels(window, [entry])
+    assert ui.MENU_ADD_TO_PINNED in labels
+    assert ui.MENU_MOVE_TO in labels
+    assert labels.index(ui.MENU_ADD_TO_PINNED) < labels.index(ui.MENU_MOVE_TO)
+
+
+def test_add_to_pinned_single_file(qapp, main_window_env) -> None:
+    """单文件添加到钉住文件夹：文件移动 + 中栏刷新 + 装配面板刷新。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    entry = _find_entry_by_name(window, "preview.jpg")
+    assert entry is not None
+
+    window._on_add_to_pinned_folder([entry])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 文件已移入钉住文件夹
+    assert (mod_folder / "preview.jpg").is_file()
+    # 源文件已不存在
+    assert not (Path(root_dir_of(main_window_env)) / "Stash" / "preview.jpg").exists()
+    # 装配面板刷新后显示新文件
+    assembly_entries = window._assembly_panel.entry_count()  # noqa: SLF001
+    assert assembly_entries >= 1
+
+
+def root_dir_of(main_window_env):
+    """从 main_window_env 提取 root_dir。"""
+    _, _, root_dir, _ = main_window_env
+    return root_dir
+
+
+def test_add_to_pinned_multiple_files(qapp, main_window_env) -> None:
+    """B1：多选文件添加到钉住文件夹。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    entries = []
+    for name in ("preview.jpg", "extra_patch.zip"):
+        e = _find_entry_by_name(window, name)
+        assert e is not None
+        entries.append(e)
+
+    window._on_add_to_pinned_folder(entries)  # noqa: SLF001
+    qapp.processEvents()
+
+    assert (mod_folder / "preview.jpg").is_file()
+    assert (mod_folder / "extra_patch.zip").is_file()
+
+
+def test_add_to_pinned_conflict_opens_dialog(qapp, main_window_env, monkeypatch) -> None:
+    """修复3：目标已存在同名文件时弹出 ConflictResolutionDialog 询问。
+
+    用户选择「跳过」→ 原文件保留，目标文件不被覆盖。
+    """
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    # 在 Mod 组文件夹内预放同名文件
+    (mod_folder / "preview.jpg").write_bytes(b"existing")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    entry = _find_entry_by_name(window, "preview.jpg")
+    assert entry is not None
+
+    # mock ConflictResolutionDialog：模拟用户选择「跳过」
+    from app import conflict_resolution_dialog as crd_mod
+    from application.conflict_resolution_service import RESOLUTION_SKIP
+
+    class _FakeDialog:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def exec(self) -> int:  # noqa: D401, ANN004
+            return 1  # Accepted
+
+        def decisions(self) -> list[str]:
+            return [RESOLUTION_SKIP]
+
+    monkeypatch.setattr(crd_mod, "ConflictResolutionDialog", _FakeDialog)
+    # mock QMessageBox 避免部分失败弹窗
+    monkeypatch.setattr("app.main_window.QMessageBox.information", lambda *a, **kw: None)
+
+    window._on_add_to_pinned_folder([entry])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 跳过：原目标文件未被覆盖，源文件保留
+    assert (mod_folder / "preview.jpg").read_bytes() == b"existing"
+    assert entry.path and Path(entry.path).is_file()
+
+
+def test_add_to_pinned_conflict_overwrite(qapp, main_window_env, monkeypatch) -> None:
+    """修复3：冲突时用户选择「覆盖」→ 目标文件被源文件覆盖。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    (mod_folder / "preview.jpg").write_bytes(b"existing")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    entry = _find_entry_by_name(window, "preview.jpg")
+    assert entry is not None
+    # 覆盖源文件内容（与 existing 不同）
+    Path(entry.path).write_bytes(b"new content")
+
+    from app import conflict_resolution_dialog as crd_mod
+    from application.conflict_resolution_service import RESOLUTION_OVERWRITE
+
+    class _FakeDialog:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def exec(self) -> int:  # noqa: ANN004
+            return 1
+
+        def decisions(self) -> list[str]:
+            return [RESOLUTION_OVERWRITE]
+
+    monkeypatch.setattr(crd_mod, "ConflictResolutionDialog", _FakeDialog)
+
+    window._on_add_to_pinned_folder([entry])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 覆盖：目标文件被源文件覆盖
+    assert (mod_folder / "preview.jpg").read_bytes() == b"new content"
+    assert not Path(entry.path).exists()
+
+
+def test_add_to_pinned_chinese_filename(qapp, main_window_env) -> None:
+    """中文文件名添加到钉住文件夹。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    # 在暂存区创建中文文件名文件
+    staging = root_dir / "Stash"
+    chinese_file = staging / "汉化补丁.zip"
+    chinese_file.write_bytes(b"localization")
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    entry = _find_entry_by_name(window, "汉化补丁.zip")
+    assert entry is not None
+
+    window._on_add_to_pinned_folder([entry])  # noqa: SLF001
+    qapp.processEvents()
+
+    assert (mod_folder / "汉化补丁.zip").is_file()
+    assert not chinese_file.exists()
+
+
+# === 修复1（用户补充）：双击进入被钉住的文件夹内进行操作后装配面板同步刷新 ===
+
+
+def test_pinned_assembly_refreshes_on_middle_rename(qapp, main_window_env, monkeypatch) -> None:
+    """修复1：钉住文件夹后，双击进入该文件夹，在中栏重命名文件 → 装配面板同步刷新。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    (mod_folder / "preview.jpg").write_bytes(b"\x00" * 50)
+    # 钉住装配面板并刷新
+    window._assembly_panel.pin()  # noqa: SLF001
+    window._assembly_panel.refresh_current()  # noqa: SLF001
+    qapp.processEvents()
+    assert window._assembly_panel.entry_count() == 2  # 7z + preview.jpg
+
+    # 双击进入 mod_folder（中栏导航到 mod_folder）
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    _double_click_entry(qapp, window, "ModA")
+    qapp.processEvents()
+    assert window._current_displayed_dir() == str(mod_folder)  # noqa: SLF001
+
+    # 在中栏找到 preview.jpg 并重命名
+    entry = _find_entry_by_name(window, "preview.jpg")
+    assert entry is not None
+    monkeypatch.setattr(window, "_show_rename_dialog", lambda old: ("renamed.jpg", True))  # noqa: SLF001
+    window._on_rename_entry(entry)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 装配面板应同步刷新，显示新名称
+    names = [
+        window._assembly_panel.entry_at(i).name  # noqa: SLF001
+        for i in range(window._assembly_panel.entry_count())  # noqa: SLF001
+    ]
+    assert "renamed.jpg" in names
+    assert "preview.jpg" not in names
+
+
+def test_pinned_assembly_refreshes_on_middle_delete(qapp, main_window_env, monkeypatch) -> None:
+    """修复1：钉住文件夹后，双击进入该文件夹，在中栏删除文件 → 装配面板同步刷新。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    (mod_folder / "extra.txt").write_text("data", encoding="utf-8")
+    window._assembly_panel.pin()  # noqa: SLF001
+    window._assembly_panel.refresh_current()  # noqa: SLF001
+    qapp.processEvents()
+    assert window._assembly_panel.entry_count() == 2
+
+    # 双击进入 mod_folder
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    _double_click_entry(qapp, window, "ModA")
+    qapp.processEvents()
+
+    # 在中栏找到 extra.txt 并删除
+    entry = _find_entry_by_name(window, "extra.txt")
+    assert entry is not None
+    monkeypatch.setattr(
+        "app.main_window.QMessageBox.question",
+        lambda *a, **kw: __import__("PySide6").QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+    window._on_delete_entries([entry])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 装配面板应同步刷新，只剩 7z
+    assert window._assembly_panel.entry_count() == 1
+    assert window._assembly_panel.entry_at(0).name == "BDOR Black Knight 1.0.7z"  # noqa: SLF001
+
+
+def test_pinned_assembly_refreshes_on_middle_new_folder(qapp, main_window_env, monkeypatch) -> None:
+    """修复1：钉住文件夹后，双击进入该文件夹，在中栏新建文件夹 → 装配面板同步刷新。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    window._assembly_panel.pin()  # noqa: SLF001
+    window._assembly_panel.refresh_current()  # noqa: SLF001
+    qapp.processEvents()
+    assert window._assembly_panel.entry_count() == 1
+
+    # 双击进入 mod_folder
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    _double_click_entry(qapp, window, "ModA")
+    qapp.processEvents()
+
+    # 在中栏新建文件夹
+    monkeypatch.setattr(
+        "app.main_window.QInputDialog.getText",
+        lambda *a, **kw: ("NewSub", True),
+    )
+    window._on_new_folder_in_dir(str(mod_folder))  # noqa: SLF001
+    qapp.processEvents()
+
+    # 装配面板应同步刷新，显示新建的文件夹
+    assert window._assembly_panel.entry_count() == 2  # noqa: SLF001
+    names = [
+        window._assembly_panel.entry_at(i).name  # noqa: SLF001
+        for i in range(window._assembly_panel.entry_count())  # noqa: SLF001
+    ]
+    assert "NewSub" in names
+
+
+def test_pinned_assembly_refreshes_on_middle_paste(qapp, main_window_env) -> None:
+    """修复1（补充）：钉住文件夹后，双击进入该文件夹，粘贴文件 → 装配面板同步刷新。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    (mod_folder / "preview.jpg").write_bytes(b"\x00" * 50)
+    window._assembly_panel.pin()  # noqa: SLF001
+    window._assembly_panel.refresh_current()  # noqa: SLF001
+    qapp.processEvents()
+    assert window._assembly_panel.entry_count() == 2  # 7z + preview.jpg
+
+    # 双击进入 mod_folder（中栏导航到 mod_folder）
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    _double_click_entry(qapp, window, "ModA")
+    qapp.processEvents()
+    assert window._current_displayed_dir() == str(mod_folder)  # noqa: SLF001
+
+    # 准备一个外部文件作为复制源，设置剪贴板后粘贴到 mod_folder
+    external = root_dir / "external.txt"
+    external.write_text("external", encoding="utf-8")
+    window._clipboard_service.set_copy([str(external)])  # noqa: SLF001
+    window._perform_paste(mod_folder)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 装配面板应同步刷新，包含 external.txt
+    names = [
+        window._assembly_panel.entry_at(i).name  # noqa: SLF001
+        for i in range(window._assembly_panel.entry_count())  # noqa: SLF001
+    ]
+    assert "external.txt" in names
+
+
+def test_pinned_assembly_refreshes_on_middle_move_to(qapp, main_window_env) -> None:
+    """修复1（补充）：钉住文件夹后，双击进入该文件夹，移动文件到外部 → 装配面板同步刷新。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    (mod_folder / "preview.jpg").write_bytes(b"\x00" * 50)
+    window._assembly_panel.pin()  # noqa: SLF001
+    window._assembly_panel.refresh_current()  # noqa: SLF001
+    qapp.processEvents()
+    assert window._assembly_panel.entry_count() == 2  # 7z + preview.jpg
+
+    # 双击进入 mod_folder
+    _select_staging(qapp, window)
+    qapp.processEvents()
+    _double_click_entry(qapp, window, "ModA")
+    qapp.processEvents()
+    assert window._current_displayed_dir() == str(mod_folder)  # noqa: SLF001
+
+    # 将 mod_folder 内的 preview.jpg 移动到独立目标目录（避免与暂存区同名文件冲突）
+    dest_dir = root_dir / "dest"
+    dest_dir.mkdir()
+    window._perform_move_to([mod_folder / "preview.jpg"], dest_dir)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 装配面板应同步刷新，只剩 7z
+    assert window._assembly_panel.entry_count() == 1  # noqa: SLF001
+    assert window._assembly_panel.entry_at(0).name == "BDOR Black Knight 1.0.7z"  # noqa: SLF001
+
+
+# === 拖拽支持（UX 重构 Phase 1 Task 4）===
+
+
+def _make_mime(paths: list[Path]):
+    """构造含文件 URL 的 QMimeData。"""
+    from PySide6.QtCore import QMimeData, QUrl
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(p)) for p in paths])
+    return mime
+
+
+def _make_drop_event(mime, pos=(0, 0)):
+    """构造 QDropEvent。"""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QDropEvent
+
+    return QDropEvent(
+        QPointF(pos[0], pos[1]),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def test_assembly_drop_rejected_when_not_pinned(qapp, main_window_env) -> None:
+    """未钉住时装配面板拒绝拖入。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    staging = root_dir / "Stash"
+    src = staging / "preview.jpg"
+    mime = _make_mime([src])
+
+    # 未钉住时应拒绝
+    assert not window._assembly_panel._can_accept_drop(mime)  # noqa: SLF001
+
+
+def test_assembly_drop_accepted_for_folder(qapp, main_window_env) -> None:
+    """修复2：拖入文件夹时接受（与右键添加行为一致）。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    # 构造一个文件夹路径
+    folder = root_dir / "Stash" / "SubFolder"
+    folder.mkdir()
+    mime = _make_mime([folder])
+    assert window._assembly_panel._can_accept_drop(mime)  # noqa: SLF001
+
+
+def test_assembly_drop_accepted_when_pinned_and_file(qapp, main_window_env) -> None:
+    """钉住 + 文件时接受拖入。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    src = root_dir / "Stash" / "preview.jpg"
+    mime = _make_mime([src])
+    assert window._assembly_panel._can_accept_drop(mime)  # noqa: SLF001
+
+
+def test_assembly_drop_moves_file(qapp, main_window_env) -> None:
+    """拖拽文件到装配面板：文件移入钉住文件夹。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    src = root_dir / "Stash" / "preview.jpg"
+    mime = _make_mime([src])
+    event = _make_drop_event(mime)
+    window._assembly_panel.dropEvent(event)  # noqa: SLF001
+    qapp.processEvents()
+
+    assert (mod_folder / "preview.jpg").is_file()
+    assert not src.exists()
+
+
+def test_assembly_drop_moves_folder(qapp, main_window_env) -> None:
+    """修复2：拖拽文件夹到装配面板，文件夹移入钉住文件夹。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    # 在暂存区创建一个子文件夹（含一个文件）
+    folder_src = root_dir / "Stash" / "SubFolder"
+    folder_src.mkdir()
+    (folder_src / "inner.txt").write_bytes(b"inner")
+
+    mime = _make_mime([folder_src])
+    event = _make_drop_event(mime)
+    window._assembly_panel.dropEvent(event)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 文件夹被移入钉住文件夹
+    assert (mod_folder / "SubFolder").is_dir()
+    assert (mod_folder / "SubFolder" / "inner.txt").is_file()
+    assert not folder_src.exists()
+
+
+def test_assembly_drop_mixed_files_and_folders(qapp, main_window_env) -> None:
+    """修复2：拖入文件+文件夹混合时，两者都移入钉住文件夹。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    file_src = root_dir / "Stash" / "preview.jpg"
+    folder_src = root_dir / "Stash" / "ExtraFolder"  # 文件夹
+    folder_src.mkdir()
+    mime = _make_mime([file_src, folder_src])
+    event = _make_drop_event(mime)
+    window._assembly_panel.dropEvent(event)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 文件和文件夹都被移入
+    assert (mod_folder / "preview.jpg").is_file()
+    assert (mod_folder / "ExtraFolder").is_dir()
+
+
+def test_assembly_drop_conflict_opens_dialog(qapp, main_window_env, monkeypatch) -> None:
+    """修复3：拖拽到装配面板遇冲突时弹出 ConflictResolutionDialog 询问。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    # 预放同名文件
+    (mod_folder / "preview.jpg").write_bytes(b"existing")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    src = root_dir / "Stash" / "preview.jpg"
+    # 改源文件内容，与 existing 区分
+    src.write_bytes(b"new")
+
+    # mock ConflictResolutionDialog：模拟用户选择「跳过」
+    from app import conflict_resolution_dialog as crd_mod
+    from application.conflict_resolution_service import RESOLUTION_SKIP
+
+    class _FakeDialog:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def exec(self) -> int:  # noqa: ANN004
+            return 1
+
+        def decisions(self) -> list[str]:
+            return [RESOLUTION_SKIP]
+
+    monkeypatch.setattr(crd_mod, "ConflictResolutionDialog", _FakeDialog)
+
+    mime = _make_mime([src])
+    event = _make_drop_event(mime)
+    window._assembly_panel.dropEvent(event)  # noqa: SLF001
+    qapp.processEvents()
+
+    # 跳过：目标保留 existing，源文件保留原位
+    assert (mod_folder / "preview.jpg").read_bytes() == b"existing"
+    assert src.is_file()
+
+
+def test_drop_to_folder_internal(qapp, main_window_env) -> None:
+    """中栏内部拖拽文件到同目录文件夹。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    # 在暂存区创建一个子文件夹
+    staging = root_dir / "Stash"
+    target_folder = staging / "分类"
+    target_folder.mkdir()
+
+    src = staging / "preview.jpg"
+    assert src.is_file()
+
+    window._on_drop_to_folder(target_folder, [src])  # noqa: SLF001
+    qapp.processEvents()
+
+    assert (target_folder / "preview.jpg").is_file()
+    assert not src.exists()
+
+
+def test_drop_to_folder_conflict_opens_dialog(qapp, main_window_env, monkeypatch) -> None:
+    """修复3：中栏内部拖拽冲突时弹出 ConflictResolutionDialog 询问（与复制粘贴一致）。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    staging = root_dir / "Stash"
+    target_folder = staging / "分类"
+    target_folder.mkdir()
+    (target_folder / "preview.jpg").write_bytes(b"existing")
+
+    src = staging / "preview.jpg"
+    src.write_bytes(b"new")
+
+    # mock ConflictResolutionDialog：模拟用户选择「重命名」
+    from app import conflict_resolution_dialog as crd_mod
+    from application.conflict_resolution_service import RESOLUTION_RENAME
+
+    class _FakeDialog:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def exec(self) -> int:  # noqa: ANN004
+            return 1
+
+        def decisions(self) -> list[str]:
+            return [RESOLUTION_RENAME]
+
+    monkeypatch.setattr(crd_mod, "ConflictResolutionDialog", _FakeDialog)
+
+    window._on_drop_to_folder(target_folder, [src])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 重命名：原目标保留 existing，源文件以 "preview (1).jpg" 重命名后移入
+    assert (target_folder / "preview.jpg").read_bytes() == b"existing"
+    assert (target_folder / "preview (1).jpg").is_file()
+    assert (target_folder / "preview (1).jpg").read_bytes() == b"new"
+    assert not src.exists()
+
+
+def test_drop_to_folder_self_subdirectory_rejected(qapp, main_window_env, monkeypatch) -> None:
+    """修复4：中栏内拖拽文件夹到自身子目录被拒绝（SelfSubdirectoryError）。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    staging = root_dir / "Stash"
+    target_folder = staging / "TargetFolder"
+    target_folder.mkdir()
+    # 源 = 目标文件夹自身（拖到自身）
+    src = target_folder
+
+    # mock 部分失败弹窗（SelfSubdirectoryError 会被收集到 errors）
+    monkeypatch.setattr("app.main_window.QMessageBox.information", lambda *a, **kw: None)
+
+    window._on_drop_to_folder(target_folder, [src])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 源文件夹未被移动（仍在原位）
+    assert target_folder.is_dir()
+
+
+def test_drop_to_folder_parent_into_child_rejected(qapp, main_window_env, monkeypatch) -> None:
+    """修复4：父目录拖入子目录被拒绝。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    staging = root_dir / "Stash"
+    parent_folder = staging / "Parent"
+    parent_folder.mkdir()
+    child_folder = parent_folder / "Child"
+    child_folder.mkdir()
+
+    # 源 = 父目录，目标 = 子目录（拖父进子）
+    monkeypatch.setattr("app.main_window.QMessageBox.information", lambda *a, **kw: None)
+
+    window._on_drop_to_folder(child_folder, [parent_folder])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 父目录未被移动（仍在原位）
+    assert parent_folder.is_dir()
+    # 子目录中未出现父目录副本
+    assert not (child_folder / "Parent").exists()
+
+
+def test_drop_to_pinned_folder_refreshes_assembly(qapp, main_window_env) -> None:
+    """修复1：拖拽到中栏被钉住文件夹后装配面板同步刷新。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    # 创建 Mod 组并钉住（装配面板钉住 mod_folder）
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    window._assembly_panel.pin()  # noqa: SLF001
+    qapp.processEvents()
+
+    # 中栏切回暂存区
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    # 装配面板当前透视 mod_folder，记录初始条目数
+    initial_count = window._assembly_panel.entry_count()  # noqa: SLF001
+
+    # 拖拽 preview.jpg 到中栏的 mod_folder（即装配面板钉住的文件夹）
+    src = root_dir / "Stash" / "preview.jpg"
+    window._on_drop_to_folder(mod_folder, [src])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 修复1：装配面板应同步刷新，新文件出现在装配面板
+    assert window._assembly_panel.entry_count() == initial_count + 1  # noqa: SLF001
+    names = [
+        window._assembly_panel.entry_at(i).name  # noqa: SLF001
+        for i in range(window._assembly_panel.entry_count())  # noqa: SLF001
+    ]
+    assert "preview.jpg" in names
+
+
+def test_file_list_model_mime_data(qapp, main_window_env) -> None:
+    """FileListModel.mimeData 生成正确的 file URL。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    model = window._content_list_model  # noqa: SLF001
+    entry = _find_entry_by_name(window, "preview.jpg")
+    assert entry is not None
+    idx = model.index(0, 0)
+    mime = model.mimeData([idx])
+    assert mime is not None
+    urls = mime.urls()
+    assert len(urls) >= 1
+    assert all(url.scheme() == "file" for url in urls)
+
+
+def test_card_list_model_mime_data(qapp, main_window_env) -> None:
+    """CardListModel.mimeData 生成正确的 file URL。"""
+    window, _, _, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    # 切换到卡片视图
+    window._content_stack.setCurrentIndex(1)  # noqa: SLF001
+    qapp.processEvents()
+
+    model = window._card_list_model  # noqa: SLF001
+    idx = model.index(0, 0)
+    mime = model.mimeData([idx])
+    assert mime is not None
+    urls = mime.urls()
+    assert len(urls) >= 1

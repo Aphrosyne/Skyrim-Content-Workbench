@@ -289,6 +289,80 @@ class TestAddFile:
             svc.add_file("nonexistent-id", src)
 
 
+# === add_file_by_folder_path ===
+
+
+class TestAddFileByFolderPath:
+    """UX 重构 Phase 1 Task 4：按文件夹路径添加文件（不依赖 ContentUnit）。"""
+
+    def test_moves_file_to_folder(self, assembly_env) -> None:
+        """按路径移动文件到目标文件夹（非内容单元文件夹也可用）。"""
+        svc, _, _, staging, _, _ = assembly_env
+        # 目标文件夹：不标记为内容单元的普通文件夹
+        target_folder = staging / "分类目录"
+        target_folder.mkdir()
+        src = staging / "汉化包.zip"
+        src.write_bytes(b"localization")
+
+        entry = svc.add_file_by_folder_path(target_folder, src)
+
+        assert not src.exists()
+        target = target_folder / "汉化包.zip"
+        assert target.is_file()
+        assert target.read_bytes() == b"localization"
+        assert entry.name == "汉化包.zip"
+        assert entry.path == str(target)
+
+    def test_preserves_original_filename(self, assembly_env) -> None:
+        """不自动重命名（与 add_file 行为一致）。"""
+        svc, _, _, staging, _, _ = assembly_env
+        target_folder = staging / "目标"
+        target_folder.mkdir()
+        src = staging / "preview_v2.png"
+        src.write_bytes(b"img")
+
+        svc.add_file_by_folder_path(target_folder, src)
+
+        assert (target_folder / "preview_v2.png").is_file()
+
+    def test_conflict_when_target_exists(self, assembly_env) -> None:
+        """目标文件夹已存在同名文件抛 ConflictError。"""
+        svc, _, _, staging, _, _ = assembly_env
+        target_folder = staging / "目标"
+        target_folder.mkdir()
+        (target_folder / "已存在.txt").write_bytes(b"old")
+        src = staging / "已存在.txt"
+        src.write_bytes(b"new")
+
+        with pytest.raises(ConflictError):
+            svc.add_file_by_folder_path(target_folder, src)
+
+    def test_works_with_content_unit_folder(self, assembly_env) -> None:
+        """对内容单元文件夹同样适用（与 add_file 等价）。"""
+        svc, _, _, staging, mod_folder, unit = assembly_env
+        src = staging / "补充文件.txt"
+        src.write_bytes(b"extra")
+
+        entry = svc.add_file_by_folder_path(mod_folder, src)
+
+        assert not src.exists()
+        target = mod_folder / "补充文件.txt"
+        assert target.is_file()
+        assert entry.path == str(target)
+
+    def test_chinese_path(self, assembly_env) -> None:
+        """中文路径 + 中文文件名。"""
+        svc, _, _, staging, _, _ = assembly_env
+        target_folder = staging / "中文文件夹"
+        target_folder.mkdir()
+        src = staging / "中文名文件.7z"
+        src.write_bytes(b"data")
+
+        svc.add_file_by_folder_path(target_folder, src)
+
+        assert (target_folder / "中文名文件.7z").is_file()
+
+
 # === remove_file ===
 
 
