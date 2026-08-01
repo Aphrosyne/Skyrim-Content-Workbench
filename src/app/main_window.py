@@ -40,7 +40,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QPoint, QRect, QSettings, QSize, Qt, QThread
+from PySide6.QtCore import QItemSelectionModel, QPoint, QRect, QSettings, QSize, Qt
 from PySide6.QtGui import QFontMetrics, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -73,10 +73,10 @@ from PySide6.QtWidgets import (
 )
 
 from app import ui_constants as ui
+from app.assembly_controller import AssemblyController
 from app.assembly_panel import AssemblyPanel
 from app.batch_tag_dialog import BatchTagDialog
 from app.card_list_model import CardListModel
-from app.cover_picker_dialog import CoverPickerDialog
 from app.file_list_model import (
     SORT_MODIFIED,
     SORT_NAME,
@@ -86,17 +86,18 @@ from app.file_list_model import (
 )
 from app.folder_tree_model import FolderTreeModel
 from app.metadata_panel import MetadataPanel
+from app.metadata_view import MetadataView
 from app.path_display import make_display_path_from_service
-from app.scan_worker import ScanWorker
+from app.scan_controller import ScanController
 from app.tag_filter import TagFilterBar
 from app.tag_manager_dialog import TagManagerDialog
 from app.thumbnail_coordinator import ThumbnailCoordinator
+from app.transaction_scope import TransactionScope
 from application.assembly_service import AssemblyService
 from application.clipboard_service import ClipboardService
 from application.content_service import ContentService
 from application.content_unit_creation_service import ContentUnitCreationService
 from application.errors import (
-    ApplicationError,
     ConflictError,
     CrossDriveError,
     FileOperationError,
@@ -341,8 +342,8 @@ class MainWindow(QMainWindow):
         self._tree_service = folder_tree_service
         self._content_service = content_service
         self._db_path = db_path
-        self._commit_callback = commit_callback
-        self._rollback_callback = rollback_callback
+        # UX 重构 Task 7 Step 1：事务边界封装（TD-M31）
+        self._transaction_scope = TransactionScope(commit_callback, rollback_callback, parent=self)
         self._content_unit_creation_service = content_unit_creation_service
         self._assembly_service = assembly_service
         self._tag_service = tag_service
@@ -358,9 +359,12 @@ class MainWindow(QMainWindow):
         self._search_dialog: QDialog | None = None
         # Stage 4 Task 4：缩略图调度器（可选注入，便于测试）
         self._thumbnail_coordinator = thumbnail_coordinator
-        self._thread: QThread | None = None
-        self._worker: ScanWorker | None = None
-        self._is_scanning = False
+        # UX 重构 Task 7 Step 2：扫描线程生命周期控制器（TD-M21/M26）
+        self._scan_controller = ScanController(db_path, self)
+        self._scan_controller.scan_started.connect(self._on_scan_started)
+        self._scan_controller.scan_progress.connect(self._on_scan_progress)
+        self._scan_controller.scan_finished.connect(self._on_scan_finished)
+        self._scan_controller.scan_failed.connect(self._on_scan_failed)
 
         # Stage 5 Task 1：QSettings 持久化缩放值与视图模式（Q1=A）
         self._qsettings = QSettings(QSETTINGS_ORGANIZATION, QSETTINGS_APPLICATION)
@@ -378,6 +382,15 @@ class MainWindow(QMainWindow):
         self.resize(ui.WINDOW_DEFAULT_WIDTH, ui.WINDOW_DEFAULT_HEIGHT)
 
         self._setup_ui()
+        # UX 重构 Task 7 Step 3/4：装配面板与元数据控制器
+        self._assembly_controller = AssemblyController(self._assembly_panel, self)
+        self._metadata_view = MetadataView(
+            self._metadata_panel,
+            self._content_service,
+            self._transaction_scope,
+            dialog_parent=self,
+        )
+        self._metadata_view.saved.connect(self._on_metadata_saved)
         self._refresh_root_list()
         self._refresh_tree()
         # Stage 5 Task 4：注册键盘快捷键
@@ -413,65 +426,24 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         """关闭窗口前等待后台线程退出，避免 QThread Running 状态析构 CTD。"""
-        if self._thread is not None and self._thread.isRunning():
-            self._thread.quit()
-            self._thread.wait(5000)
+        # UX 重构 Task 7 Step 2：扫描线程生命周期由 ScanController 管理
+        self._scan_controller.shutdown()
         # Stage 4 Task 4：等待缩略图 coordinator 退出
         if self._thumbnail_coordinator is not None:
             self._thumbnail_coordinator.shutdown()
         super().closeEvent(event)
 
     def _commit(self) -> None:
-        """提交当前数据库事务。"""
-        if self._commit_callback is not None:
-            try:
-                self._commit_callback()
-            except Exception:  # noqa: BLE001
-                # TD-M11：提交失败时通过 QMessageBox 提示用户，避免静默失败
-                logger.exception("数据库提交失败")
-                QMessageBox.critical(
-                    self,
-                    ui.DB_COMMIT_FAILED_TITLE,
-                    ui.DB_COMMIT_FAILED_MESSAGE,
-                )
+        """提交当前数据库事务（UX 重构 Task 7 Step 1：委托 TransactionScope）。"""
+        self._transaction_scope.commit()
 
     def _rollback(self) -> None:
-        """回滚当前数据库事务。
-
-        文件操作失败时调用，释放 SQLite 写锁，避免后续操作 "database is locked"。
-        注意：文件系统层面的变更无法回滚（文件已移动），仅回滚数据库事务。
-        """
-        if self._rollback_callback is not None:
-            try:
-                self._rollback_callback()
-            except Exception:  # noqa: BLE001
-                logger.exception("数据库回滚失败")
+        """回滚当前数据库事务（UX 重构 Task 7 Step 1：委托 TransactionScope）。"""
+        self._transaction_scope.rollback()
 
     def _handle_service_error(self, e: Exception, title: str, *, rollback: bool = True) -> None:
-        """统一处理 Service 调用异常（H7 修复）。
-
-        将异常分类转换为用户可读的 QMessageBox 提示，技术细节通过 logger 记录。
-        所有 handler 的 except 块统一调用本方法，避免错误处理代码重复散落。
-
-        Args:
-            e: Service 抛出的异常。
-            title: QMessageBox 标题（通常为 ui_constants 中的 *_FAILED 常量）。
-            rollback: 是否调用 _rollback()。D3 决策下，已注入 UnitOfWork 的
-                Service 内部已管理事务（成功 commit、失败 rollback），调用方
-                不再需要 rollback，设置 rollback=False。未注入 UoW 的 Service
-                仍需调用方 rollback，设置 rollback=True（默认）。
-        """
-        if rollback:
-            self._rollback()
-        if isinstance(e, ConflictError):
-            QMessageBox.information(self, title, f"目标已存在：\n{e}")
-        elif isinstance(e, FileOperationError):
-            QMessageBox.information(self, title, f"文件操作失败：\n{e}")
-        elif isinstance(e, ApplicationError):
-            QMessageBox.information(self, title, str(e))
-        else:
-            logger.exception(title)
-            QMessageBox.critical(self, title, "操作失败，请查看日志。")
+        """统一处理 Service 调用异常（H7 修复，UX 重构 Task 7 Step 1：委托 TransactionScope）。"""
+        self._transaction_scope.handle_service_error(e, title, rollback=rollback)
 
     # --- UI 构建 ---
 
@@ -831,9 +803,7 @@ class MainWindow(QMainWindow):
             )
             # UX 重构 Phase 2 Task 5 修复：注入 managed_root_service 用于路径简化显示
             self._metadata_panel.set_managed_root_service(self._service)
-            self._metadata_panel.on_saved.connect(self._on_metadata_saved)
-            self._metadata_panel.on_save_failed.connect(self._on_metadata_save_failed)
-            self._metadata_panel.on_pick_cover_requested.connect(self._on_pick_cover_requested)
+            # 面板信号由 MetadataView 接管（UX 重构 Task 7 Step 4）
             self._metadata_panel.setVisible(False)
             metadata_layout.addWidget(self._metadata_panel)
         else:
@@ -919,9 +889,10 @@ class MainWindow(QMainWindow):
 
     def _on_selection_changed(self) -> None:
         has_selection = self._selected_root_id() is not None
-        self._scan_button.setEnabled(has_selection and not self._is_scanning)
-        self._scan_full_button.setEnabled(has_selection and not self._is_scanning)
-        self._remove_button.setEnabled(has_selection and not self._is_scanning)
+        scanning = self._scan_controller.is_scanning()
+        self._scan_button.setEnabled(has_selection and not scanning)
+        self._scan_full_button.setEnabled(has_selection and not scanning)
+        self._remove_button.setEnabled(has_selection and not scanning)
 
     # --- 目录树 ---
 
@@ -2422,22 +2393,9 @@ class MainWindow(QMainWindow):
 
         修复1（含用户补充）：双击进入被钉住的文件夹内进行任何操作（重命名、删除、
         新建文件夹、粘贴、移动等）都应当同步刷新被钉住的装配面板。
-
-        比较使用 make_path_key 归一化（AGENTS 规则 9），避免大小写/分隔符差异。
-
-        Args:
-            *affected_dirs: 文件操作受影响的目录路径列表（源/目标均可）。
+        UX 重构 Task 7 Step 3：委托 AssemblyController。
         """
-        if self._assembly_panel is None:
-            return
-        pinned_folder = self._assembly_panel.current_folder_path()
-        if pinned_folder is None:
-            return
-        pinned_key = make_path_key(pinned_folder)
-        for d in affected_dirs:
-            if d is not None and make_path_key(d) == pinned_key:
-                self._assembly_panel.refresh_current()
-                return
+        self._assembly_controller.refresh_if_affected(*affected_dirs)
 
     def _on_rename_entry(self, entry: FileEntry) -> None:
         """右键条目 → 重命名（中栏，刷新中栏到父目录）。"""
@@ -2501,45 +2459,23 @@ class MainWindow(QMainWindow):
     # --- 装配面板（阶段 3 Task 4） ---
 
     def _bind_assembly_panel(self, unit: ContentUnit | None) -> None:
-        """绑定/解绑装配面板到指定 Mod 组 ContentUnit。
-
-        UX 重构 Phase 1 Task 1 Commit 3：
-        - 装配面板始终可见，未绑定时显示空状态占位（bind_mod_group(None)）。
-        - 移除 staging_path 参数（L2：移除文件功能已移除）。
-        UX 重构 Phase 1 Task 3：钉住状态下此调用被装配面板内部短路（A1/A2）。
-        """
-        if self._assembly_panel is None:
-            return
-        self._assembly_panel.bind_mod_group(unit)
+        """绑定/解绑装配面板（UX 重构 Task 7 Step 3：委托 AssemblyController）。"""
+        self._assembly_controller.bind_to_unit(unit)
 
     def _bind_assembly_folder(self, folder_path: Path | None) -> None:
-        """装配面板透视任意文件夹路径（不依赖 ContentUnit）。
-
-        UX 重构 Phase 1 Task 2：装配面板语义扩展为"文件夹透视器"。
-        单击非内容单元文件夹时调用，显示其内部文件。
-        UX 重构 Phase 1 Task 3：钉住状态下此调用被装配面板内部短路（A1/A2）。
-        """
-        if self._assembly_panel is None:
-            return
-        self._assembly_panel.bind_folder(folder_path)
+        """装配面板透视任意文件夹路径（UX 重构 Task 7 Step 3：委托 AssemblyController）。"""
+        self._assembly_controller.bind_to_folder(folder_path)
 
     def _is_assembly_pinned(self) -> bool:
-        """返回装配面板当前是否处于钉住状态（UX 重构 Phase 1 Task 3）。"""
-        if self._assembly_panel is None:
-            return False
-        return self._assembly_panel.is_pinned()
+        """返回装配面板当前是否处于钉住状态（委托 AssemblyController）。"""
+        return self._assembly_controller.is_pinned()
 
     def _follow_middle_selection_after_unpin(self) -> None:
-        """取消钉住后立即跟随中栏当前选中（B4 决策）。
+        """取消钉住后立即跟随中栏当前选中（B4 决策，委托 AssemblyController）。"""
+        self._assembly_controller.follow_selection(self._current_middle_selection_entry())
 
-        UX 重构 Phase 1 Task 3：
-        - 中栏选中文件夹内容单元 → 绑定该 Mod 组
-        - 中栏选中非内容单元文件夹 → 透视该文件夹
-        - 中栏选中文件或无选中 → 解绑显空状态
-        """
-        if self._assembly_panel is None:
-            return
-        # 取中栏当前活动视图的选中
+    def _current_middle_selection_entry(self) -> FileEntry | None:
+        """返回中栏当前活动视图的单选条目（无选中/多选返回 None）。"""
         active_view = (
             self._card_view if self._current_view_index == VIEW_INDEX_CARD else self._content_view
         )
@@ -2550,23 +2486,11 @@ class MainWindow(QMainWindow):
         )
         sm = active_view.selectionModel() if active_view is not None else None
         if sm is None:
-            self._bind_assembly_panel(None)
-            return
+            return None
         indexes = sm.selectedRows()
         if not indexes or len(indexes) > 1:
-            # 无选中或多选 → 解绑
-            self._bind_assembly_panel(None)
-            return
-        entry = active_model.entry_at(indexes[0].row())
-        if entry is None:
-            self._bind_assembly_panel(None)
-            return
-        if entry.content_unit is not None:
-            self._bind_assembly_panel(entry.content_unit if entry.is_dir else None)
-        elif entry.is_dir:
-            self._bind_assembly_folder(Path(entry.path))
-        else:
-            self._bind_assembly_panel(None)
+            return None
+        return active_model.entry_at(indexes[0].row())
 
     def _on_assembly_pin_changed(self, pinned: bool) -> None:
         """装配面板钉住状态变化回调（UX 重构 Phase 1 Task 3）。
@@ -2581,19 +2505,8 @@ class MainWindow(QMainWindow):
             self._follow_middle_selection_after_unpin()
 
     def _pin_folder_from_context(self, folder_path: Path) -> None:
-        """右键菜单「钉住此文件夹」（UX 重构 Phase 2 Task 5，Q2=C）。
-
-        对任意文件夹右键 → 钉住该文件夹。
-        - 多选取第一个（Q2 决策）
-        - 若已有钉住文件夹，替换为新选择（让后来的覆盖前面的）
-        - 钉住后状态栏提示
-
-        Args:
-            folder_path: 要钉住的文件夹路径。
-        """
-        if self._assembly_panel is None:
-            return
-        self._assembly_panel.pin_folder(folder_path)
+        """右键菜单「钉住此文件夹」（Q2=C，委托 AssemblyController）。"""
+        self._assembly_controller.pin_folder(folder_path)
         name = folder_path.name
         self.statusBar().showMessage(ui.ASSEMBLY_PIN_STATUS_PINNED.format(name=name), 3000)
 
@@ -2602,11 +2515,9 @@ class MainWindow(QMainWindow):
 
         中栏/目录树右键取消钉住：调用 AssemblyPanel.unpin + 触发跟随中栏逻辑。
         """
-        if self._assembly_panel is None:
+        if not self._assembly_controller.is_pinned():
             return
-        if not self._assembly_panel.is_pinned():
-            return
-        self._assembly_panel.unpin()
+        self._assembly_controller.unpin()
         self._follow_middle_selection_after_unpin()
         self.statusBar().showMessage(ui.ASSEMBLY_PIN_STATUS_UNPINNED_FOLLOW, 3000)
 
@@ -3488,8 +3399,8 @@ class MainWindow(QMainWindow):
         # 切换显示：若有 MetadataPanel，隐藏 label 显示 panel
         if self._metadata_panel is not None:
             self._metadata_label.setVisible(False)
-            self._metadata_panel.setVisible(True)
-            self._metadata_panel.load_unit(unit)
+            # UX 重构 Task 7 Step 4：面板加载委托 MetadataView
+            self._metadata_view.load_unit(unit)
         else:
             self._metadata_label.setText(self._metadata_full_text)
             self._metadata_label.setToolTip(self._metadata_full_text)
@@ -3497,70 +3408,16 @@ class MainWindow(QMainWindow):
     # --- Stage 4 Task 2：MetadataPanel 信号处理 ---
 
     def _on_metadata_saved(self, updated_unit: ContentUnit) -> None:
-        """MetadataPanel 保存成功 → 提交事务 + 刷新中栏 + 状态栏提示。
+        """MetadataView 保存成功（事务已提交）→ 刷新中栏 + 状态栏提示。
 
-        事务边界：MetadataPanel 不自提交，由 MainWindow 在信号回调中提交。
-
-        Stage 4.5 M4 修复：缩略图缓存失效由 ContentService.update_metadata 在
-        事务内条件性处理（仅 cover_path 变化时调 invalidate，且在 commit 前执行，
-        随事务一起提交）。此处不再无条件 invalidate，避免：
-        1. 双重 invalidate（Service 层已处理 + UI 层再处理）
-        2. UI 层 invalidate 的 DELETE 操作未在事务内提交，阻塞后台 worker 写入
-           （导致 database is locked + 缩略图无法重新生成 + 关闭时 worker 等待延迟）
+        UX 重构 Task 7 Step 4：事务提交由 MetadataView 在保存时完成，
+        MainWindow 仅负责刷新联动。
         """
-        self._commit()
         # 刷新中栏文件列表（标题可能在列表项中显示，封面图标也可能变化）
         self._refresh_content_list_for_current_mode()
         # 同步元数据面板状态（updated_unit 包含最新字段）
         self._update_metadata(updated_unit)
         self.statusBar().showMessage(ui.METADATA_PANEL_SAVE_OK, 3000)
-
-    def _on_metadata_save_failed(self, error_message: str) -> None:
-        """MetadataPanel 保存失败 → 回滚事务（M18 修复）。
-
-        标签 attach/detach 失败时，update_metadata 已写入但未提交，
-        需回滚事务避免"部分成功"状态被意外提交。
-        错误提示已由 MetadataPanel 内部显示，此处仅做 rollback。
-        """
-        self._rollback()
-
-    def _on_pick_cover_requested(self, unit_id: str) -> None:
-        """MetadataPanel 请求设置封面 → 弹出 CoverPickerDialog。
-
-        选定后调用 MetadataPanel.set_cover_path(relative_path) 仅更新表单状态，
-        不立即保存。用户需点击「保存」按钮才提交到数据库。
-        """
-        if self._metadata_panel is None:
-            return
-        try:
-            unit = self._content_service.get_by_id(unit_id)
-        except Exception:  # noqa: BLE001
-            logger.exception("获取内容单元失败：unit_id=%s", unit_id)
-            QMessageBox.information(self, ui.METADATA_PANEL_SAVE_FAILED, "获取内容单元失败。")
-            return
-        if unit is None:
-            QMessageBox.information(self, ui.METADATA_PANEL_SAVE_FAILED, "内容单元不存在。")
-            return
-
-        candidates = self._content_service.list_cover_candidates(unit.path)
-        if not candidates:
-            QMessageBox.information(
-                self, ui.COVER_PICKER_DIALOG_TITLE, ui.COVER_PICKER_DIALOG_EMPTY
-            )
-            return
-
-        dialog = CoverPickerDialog(
-            candidates,
-            Path(unit.path),
-            current_cover=unit.cover_path,
-            parent=self,
-        )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        rel_path = dialog.selected_relative_path()
-        if rel_path is None:
-            return
-        self._metadata_panel.set_cover_path(rel_path)
 
     def _on_batch_tag(self, entries: list[FileEntry]) -> None:
         """批量打标签：弹出 BatchTagDialog。
@@ -3670,7 +3527,7 @@ class MainWindow(QMainWindow):
 
     def _on_add_root(self) -> None:
         """打开目录选择对话框，添加受管理根目录。"""
-        if self._is_scanning:
+        if self._scan_controller.is_scanning():
             return
         start_dir = ""
         existing = self._service.list_roots()
@@ -3697,7 +3554,7 @@ class MainWindow(QMainWindow):
         folder_cache / content_unit 扫描记录（重叠守卫 + UoW 事务，Service 内部提交）。
         仅删除应用数据库记录；不删除、不移动、不修改磁盘上的任何用户文件。
         """
-        if self._is_scanning:
+        if self._scan_controller.is_scanning():
             return
         root_id = self._selected_root_id()
         if root_id is None:
@@ -3737,7 +3594,7 @@ class MainWindow(QMainWindow):
 
     def _on_scan(self, incremental: bool = True) -> None:
         """启动后台扫描。扫描期间禁用扫描入口。"""
-        if self._is_scanning:
+        if self._scan_controller.is_scanning():
             return
         root_id = self._selected_root_id()
         if root_id is None:
@@ -3745,23 +3602,11 @@ class MainWindow(QMainWindow):
             return
 
         self._begin_scanning()
-
-        self._thread = QThread()
-        self._worker = ScanWorker(self._db_path, root_id, incremental=incremental)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.scan_started.connect(self._on_scan_started)
-        self._worker.scan_finished.connect(self._thread.quit)
-        self._worker.scan_failed.connect(self._thread.quit)
-        self._worker.scan_finished.connect(self._on_scan_finished)
-        self._worker.scan_failed.connect(self._on_scan_failed)
-        self._thread.finished.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._on_thread_finished)
-        self._thread.start()
+        # UX 重构 Task 7 Step 2：线程生命周期由 ScanController 管理
+        self._scan_controller.start_scan(root_id, incremental=incremental)
 
     def _begin_scanning(self) -> None:
-        self._is_scanning = True
+        """扫描开始：禁用扫描入口与根目录操作按钮（UI 状态）。"""
         self._scan_button.setText(ui.SCAN_BUTTON_SCANNING)
         self._scan_button.setEnabled(False)
         self._scan_full_button.setEnabled(False)
@@ -3771,7 +3616,6 @@ class MainWindow(QMainWindow):
 
     def _end_scanning(self) -> None:
         """恢复按钮状态。"""
-        self._is_scanning = False
         self._scan_button.setText(ui.SCAN_BUTTON)
         self._add_button.setEnabled(True)
         has_selection = self._selected_root_id() is not None
@@ -3779,24 +3623,12 @@ class MainWindow(QMainWindow):
         self._scan_full_button.setEnabled(has_selection)
         self._remove_button.setEnabled(has_selection)
 
-    def _on_thread_finished(self) -> None:
-        """QThread 真正退出后清理 Python 引用。
-
-        仅当退出的线程是当前扫描线程（self._thread）时才清除引用，
-        避免旧线程退出时误清除新扫描线程的引用（TD-H4 竞态修复）。
-
-        竞态场景：扫描完成 → _on_scan_finished 恢复按钮 → 用户立即点击扫描
-        → 新 QThread 覆盖 self._thread → 旧线程退出触发本方法。
-        若不校验 sender，会盲目清除指向新扫描的引用，导致 closeEvent
-        无法等待新线程（TD-H5 崩溃风险）。
-        """
-        sender = self.sender()
-        if sender is self._thread:
-            self._worker = None
-            self._thread = None
-
     def _on_scan_started(self) -> None:
         self._set_status(ui.STATUS_SCANNING)
+
+    def _on_scan_progress(self, text: str) -> None:
+        """TD-M13：扫描进度文本 → 状态栏（ScanWorker 当前仅发送"正在扫描…"）。"""
+        self._set_status(text)
 
     def _on_scan_finished(self, summary: ScanSummary) -> None:
         """扫描完成：展示摘要、刷新目录树、刷新当前中栏文件列表。

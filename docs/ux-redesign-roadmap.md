@@ -214,6 +214,22 @@
   - `TransactionScope`（`_commit` / `_rollback` 从事务编排中解耦）
 - 同步处理的技术债：TD-H10（FileOperationService 分层归属）、TD-L25（helper 私有 `_repo` 访问）、TD-M26（MainWindow 集成测试）、TD-M35（跨盘异常类型统一）
 
+**实施记录（分批：Commit 1 = 控制器拆分，Commit 2 = 技术债 + FileListView 统一）：**
+
+**Commit 1（进行中）：**
+- 新增 [transaction_scope.py](src/app/transaction_scope.py)：`_commit` / `_rollback` /
+  `_handle_service_error` 逻辑封装（TD-M31），MainWindow 委托调用
+- 新增 [scan_controller.py](src/app/scan_controller.py)：ScanWorker + QThread 生命周期
+  （TD-H4/H5 sender 竞态校验迁入），TD-M13 进度信号接线；新增
+  [test_scan_controller.py](tests/test_scan_controller.py) 单元测试（TD-M26 起点）
+- 新增 [assembly_controller.py](src/app/assembly_controller.py)：装配面板绑定 / 钉住 /
+  跟随中栏 / 受影响刷新逻辑迁出，MainWindow 保留文件操作编排与薄委托
+- 新增 [metadata_view.py](src/app/metadata_view.py)：元数据面板加载 / 保存提交 /
+  封面选择编排迁出（面板信号改由 MetadataView 接管）
+- MainWindow 实例变量与逻辑相应瘦身，全部现有测试保持通过（1283 passed, 4 skipped）
+
+**Commit 2（待办）：** TD-H10 / TD-L25 / TD-M35 同步处理 + TD-M36 FileListView 统一。
+
 ---
 
 ## Phase 3：UI 美化

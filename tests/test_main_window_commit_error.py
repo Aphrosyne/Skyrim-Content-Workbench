@@ -70,7 +70,7 @@ def test_commit_failure_shows_critical_message_box(
         called.append((parent, title, message))
 
     monkeypatch.setattr(
-        "app.main_window.QMessageBox.critical",
+        "app.transaction_scope.QMessageBox.critical",
         fake_critical,
     )
 
@@ -110,7 +110,7 @@ def test_commit_success_does_not_show_message_box(qapp, tmp_path: Path, monkeypa
 
     called: list[tuple] = []
     monkeypatch.setattr(
-        "app.main_window.QMessageBox.critical",
+        "app.transaction_scope.QMessageBox.critical",
         lambda *args, **kwargs: called.append(args),
     )
 
