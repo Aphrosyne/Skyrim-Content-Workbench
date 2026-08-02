@@ -698,15 +698,20 @@
   `FileListModel(single_column=True)`（单列纯文件名 + 标准图标，视觉行为一致），
   消除双模型维护。
 
-### TD-L30: 装配面板命名"文件夹透视器"待用户确认
+### TD-L30: Assembly* 代码标识符 legacy 命名（显示名已改为「文件夹预览」）✅ 已决策（v0.50.2）
 
 - **位置**: [assembly_panel.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/assembly_panel.py) / [ui_constants.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/ui_constants.py)
 - **背景**: UX 重构 Phase 1 Task 2 扩展装配面板语义为"文件夹透视器"（可透视任意
   文件夹，不限于内容单元），面板名称仍为"装配面板"，是否改名待用户确认
   （Task 2 遗留项，登记为技术债）。
 - **影响范围**: UI 文案与文档术语。
-- **推荐修复方案**: 用户确认后统一改名（UI 文案集中在 ui_constants.py）。
-- **建议修复阶段**: **UX 重构 Task 8**（与 TD-L28 术语统一一并处理）。
+- **决策（2026-08-02，UI合理性1）**: 显示名改为「文件夹预览」
+  （`ASSEMBLY_PANEL_TITLE`，v0.50.2 生效）；代码标识符
+  （`AssemblyPanel` / `assembly_panel.py` / `assembly_controller.py` /
+  `assembly_service.py` / `ASSEMBLY_*` 常量，共 17 个文件）保留 legacy 命名，
+  避免纯机械改名引入回归。
+- **建议修复阶段**: **UX 重构 Task 8**：代码标识符统一改名（与 TD-L28
+  术语统一一并处理），改名后同步更新 3 个测试文件与相关文档。
 
 ### TD-L31: ui_constants 缩略图死常量与 WebP 实现不符 ✅ 已修复（UX 重构 Task 6）
 

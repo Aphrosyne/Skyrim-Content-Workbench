@@ -230,7 +230,9 @@ BATCH_UNMARK_CONTENT_UNIT_FAILED = "批量取消标记失败"
 
 # 装配面板（阶段 3 Task 4）
 # UX 重构 Phase 1 Task 2：移除 ASSEMBLY_PANEL_CLOSE_BUTTON（B1-1 关闭按钮已删）
-ASSEMBLY_PANEL_TITLE = "装配面板"
+# UI 术语（2026-08-02，UI合理性1）：显示名已改为「文件夹预览」。
+# 代码标识符保留 Assembly*/assembly_* 命名（legacy），待 UX 重构 Task 8 统一改名。
+ASSEMBLY_PANEL_TITLE = "文件夹预览"
 ASSEMBLY_PANEL_HINT = "当前 Mod 组：{name}"
 # UX 重构 Phase 1 Task 2：非内容单元文件夹透视时的提示文案
 ASSEMBLY_PANEL_FOLDER_HINT = "当前文件夹：{name}"
