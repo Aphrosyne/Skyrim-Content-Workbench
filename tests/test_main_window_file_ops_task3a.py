@@ -607,6 +607,38 @@ class TestDelete:
             assert e is not None
             assert e.name != "preview.jpg"
 
+    def test_delete_folder_confirm_shows_file_count(self, qapp, file_ops_env, monkeypatch) -> None:
+        """操作合理性3：删除文件夹时确认文案提示内部文件数。"""
+        window, _, root_dir, _ = file_ops_env
+        # 构造一个含 2 个文件的子目录
+        sub = root_dir / "Stash" / "SubFolder"
+        sub.mkdir()
+        (sub / "a.txt").write_text("a", encoding="utf-8")
+        (sub / "b.txt").write_text("b", encoding="utf-8")
+        entry = FileEntry(
+            name="SubFolder",
+            path=str(sub),
+            is_dir=True,
+            modified_at="2026-08-02T00:00:00Z",
+        )
+
+        captured: list[str] = []
+
+        def fake_question(parent, title, text, *args, **kwargs):
+            captured.append(text)
+            return QMessageBox.StandardButton.No
+
+        monkeypatch.setattr(QMessageBox, "question", fake_question)
+
+        window._on_delete_entries([entry])  # noqa: SLF001
+        qapp.processEvents()
+
+        assert captured, "确认对话框应弹出"
+        assert "文件夹内含 2 个文件" in captured[0]
+        assert "此操作不可撤销" in captured[0]
+        # 用户选择 No → 文件夹未被删除
+        assert sub.is_dir()
+
 
 # === 空白区域右键菜单 ===
 

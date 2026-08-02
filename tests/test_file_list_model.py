@@ -234,7 +234,27 @@ class TestDisplayRole:
         model = FileListModel()
         model.refresh([_make_entry("f.txt", "/f.txt", is_dir=False, size=12345)])
         idx = model.index(0, COL_SIZE)
-        assert model.data(idx, Qt.DisplayRole) == "12345"
+        # UI合理性5：大小列带单位自动缩写
+        assert model.data(idx, Qt.DisplayRole) == "12.1 KB"
+
+    def test_size_text_formats_with_units(self, qapp) -> None:  # noqa: ANN001
+        """大小列格式化：B / KB / MB / GB，去除尾随 0。"""
+        from PySide6.QtCore import Qt
+
+        model = FileListModel()
+        cases = [
+            (10, "10 B"),
+            (1023, "1023 B"),
+            (1024, "1 KB"),
+            (1536, "1.5 KB"),
+            (12345, "12.1 KB"),
+            (5 * 1024 * 1024, "5 MB"),
+            (3.5 * 1024 * 1024 * 1024, "3.5 GB"),
+        ]
+        for size, expected in cases:
+            model.refresh([_make_entry("f", "/f", is_dir=False, size=int(size))])
+            idx = model.index(0, COL_SIZE)
+            assert model.data(idx, Qt.DisplayRole) == expected, f"size={size}"
 
     def test_size_column_directory_empty_string(self, qapp) -> None:  # noqa: ANN001
         from PySide6.QtCore import Qt

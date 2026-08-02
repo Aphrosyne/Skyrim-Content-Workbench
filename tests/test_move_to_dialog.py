@@ -23,6 +23,8 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtWidgets import QPushButton  # noqa: E402
+
 from app.move_to_dialog import MoveToDialog  # noqa: E402
 from application.folder_tree_service import FolderTreeService  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
@@ -359,5 +361,68 @@ def test_dialog_uses_independent_model(qapp, tree_service, mod_tree):
         assert model is not None
         # 已 refresh 加载根节点
         assert model.root_node_count() > 0
+    finally:
+        dialog.close()
+
+
+# === 最近移动目标（操作便捷性3，2026-08-02） ===
+
+
+def test_recent_target_buttons_created(qapp, tree_service, mod_tree):
+    """提供 recent_targets 时创建快捷按钮（Tooltip 为完整路径）。"""
+    src = mod_tree / "Armor" / "寒霜之心.7z"
+    weapons = str(mod_tree / "Weapons")
+    dialog = MoveToDialog(tree_service, [src], recent_targets=[weapons])
+    try:
+        buttons = [b for b in dialog.findChildren(QPushButton) if b.toolTip() == weapons]
+        assert len(buttons) == 1
+        assert buttons[0].text() == "Weapons"
+    finally:
+        dialog.close()
+
+
+def test_recent_target_click_selects_and_accepts(qapp, tree_service, mod_tree):
+    """点击最近目标按钮 → 选中并 accept。"""
+    src = mod_tree / "Armor" / "寒霜之心.7z"
+    weapons = str(mod_tree / "Weapons")
+    dialog = MoveToDialog(tree_service, [src], recent_targets=[weapons, str(mod_tree / "空目录")])
+    try:
+        dialog._on_recent_clicked(weapons)  # noqa: SLF001
+        selected = dialog.selected_target_path()
+        assert selected is not None
+        assert selected == Path(weapons)
+        assert dialog.result() == 1  # QDialog.Accepted
+    finally:
+        dialog.close()
+
+
+def test_recent_self_target_rejected(qapp, tree_service, mod_tree):
+    """最近目标为源自身/子目录 → 拒绝（不选中、不 accept）。"""
+    src = mod_tree / "Armor" / "寒霜之心.7z"
+    dialog = MoveToDialog(tree_service, [src], recent_targets=[str(src), str(mod_tree / "Armor")])
+    try:
+        dialog._on_recent_clicked(str(src))  # noqa: SLF001
+        assert dialog.selected_target_path() is None
+        assert dialog.result() == 0
+    finally:
+        dialog.close()
+
+
+def test_default_expand_prefers_recent_target(qapp, tree_service, mod_tree):
+    """有最近目标时默认展开/选中最近目标（而非源父目录）。"""
+    src = mod_tree / "Armor" / "寒霜之心.7z"
+    weapons = str(mod_tree / "Weapons")
+    dialog = MoveToDialog(
+        tree_service,
+        [src],
+        default_expand_path=mod_tree / "Armor",
+        recent_targets=[weapons],
+    )
+    try:
+        qapp.processEvents()
+        current = dialog._tree_view.currentIndex()  # noqa: SLF001
+        node = dialog._tree_model.node_at(current)  # noqa: SLF001
+        assert node is not None
+        assert node.real_path == weapons
     finally:
         dialog.close()

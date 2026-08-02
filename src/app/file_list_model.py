@@ -83,10 +83,24 @@ def _type_text(entry: FileEntry) -> str:
 
 
 def _size_text(entry: FileEntry) -> str:
-    """构造大小列文本：文件返回字节数；文件夹返回空字符串。"""
+    """构造大小列文本：文件返回带单位的自动缩写；文件夹返回空字符串。
+
+    UI合理性5（2026-08-02）：B / KB / MB / GB / TB（1024 进制，保留 1 位小数，
+    去除尾随 0）。排序仍基于 entry.size 原始值，不受显示格式影响。
+    """
     if entry.is_dir or entry.size is None:
         return ""
-    return str(entry.size)
+    size = entry.size
+    if size < 1024:
+        return f"{size} B"
+    units = ("KB", "MB", "GB", "TB")
+    value = float(size)
+    for unit in units:
+        value /= 1024.0
+        if value < 1024 or unit == units[-1]:
+            text = f"{value:.1f}".rstrip("0").rstrip(".")
+            return f"{text} {unit}"
+    return f"{size} B"
 
 
 def _modified_text(entry: FileEntry) -> str:

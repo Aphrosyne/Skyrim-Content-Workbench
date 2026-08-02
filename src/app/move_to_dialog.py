@@ -63,11 +63,14 @@ class MoveToDialog(QDialog):
         folder_tree_service: FolderTreeService,
         src_paths: list[Path],
         default_expand_path: Path | None = None,
+        recent_targets: list[str] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._src_paths: list[Path] = list(src_paths)
         self._default_expand_path = default_expand_path
+        # 操作便捷性3：最近移动目标（MainWindow 注入，用于顶部快捷区 + 默认定位）
+        self._recent_targets: list[str] = list(recent_targets or [])
         self._selected_target: Path | None = None
 
         self.setWindowTitle(ui.MOVE_TO_DIALOG_TITLE)
@@ -91,6 +94,19 @@ class MoveToDialog(QDialog):
         self._hint_label = QLabel(hint_text)
         self._hint_label.setWordWrap(True)
         layout.addWidget(self._hint_label)
+
+        # 操作便捷性3：最近移动目标快捷按钮（点击直接确认）
+        if self._recent_targets:
+            recent_row = QHBoxLayout()
+            recent_label = QLabel(ui.MOVE_TO_DIALOG_RECENT_LABEL)
+            recent_row.addWidget(recent_label)
+            for target in self._recent_targets:
+                btn = QPushButton(Path(target).name)
+                btn.setToolTip(target)
+                btn.clicked.connect(lambda checked=False, t=target: self._on_recent_clicked(t))
+                recent_row.addWidget(btn)
+            recent_row.addStretch(1)
+            layout.addLayout(recent_row)
 
         # 目录树
         self._tree_view = QTreeView()
@@ -123,21 +139,47 @@ class MoveToDialog(QDialog):
         layout.addLayout(button_row)
 
     def _default_expand(self) -> None:
-        """Q7=A：默认展开源所在目录的父目录并选中。"""
+        """默认定位：有最近目标时优先展开/选中最近目标，否则源父目录（Q7=A）。"""
+        # 最近目标优先（操作便捷性3：高频目标一步可见）
+        if self._recent_targets:
+            try:
+                idx = self._tree_model.find_index_by_path(self._tree_view, self._recent_targets[0])
+                if idx.isValid():
+                    self._expand_ancestors(idx)
+                    self._tree_view.setCurrentIndex(idx)
+                    return
+            except Exception:  # noqa: BLE001
+                logger.debug("定位最近目标失败，回退源父目录", exc_info=True)
+
         if self._default_expand_path is None:
             return
         try:
             target_str = str(self._default_expand_path)
             idx = self._tree_model.find_index_by_path(self._tree_view, target_str)
             if idx.isValid():
+                self._expand_ancestors(idx)
                 self._tree_view.setCurrentIndex(idx)
-                # 展开父节点使选中可见
-                parent = idx.parent()
-                if parent.isValid():
-                    self._tree_view.setExpanded(parent, True)
         except Exception:  # noqa: BLE001
             # 默认展开失败不影响对话框使用，用户可手动展开
             logger.debug("默认展开目录树失败", exc_info=True)
+
+    def _expand_ancestors(self, index) -> None:
+        """展开 index 的全部祖先节点，使目标可见。"""
+        chain: list = []
+        parent = index.parent()
+        while parent.isValid():
+            chain.append(parent)
+            parent = parent.parent()
+        for p in reversed(chain):
+            self._tree_view.setExpanded(p, True)
+
+    def _on_recent_clicked(self, target: str) -> None:
+        """最近目标按钮点击：校验后直接确认。"""
+        target_path = Path(target)
+        if self._is_self_or_subdirectory(target_path):
+            return
+        self._selected_target = target_path
+        self.accept()
 
     def _on_selection_changed(self, current, _previous) -> None:  # noqa: ANN001 (Qt 签名)
         """选中变化 → 更新路径回显 + 校验源自身/子目录。"""

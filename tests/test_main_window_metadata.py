@@ -51,7 +51,36 @@ from infrastructure.repositories.tag_category import (  # noqa: E402
 
 
 class _FakeAction:
-    """模拟 QAction：仅提供 setEnabled no-op，供 FakeMenu.addAction 返回。"""
+    """模拟 QAction：提供菜单构建所需的属性/方法，供 FakeMenu.addAction 返回。"""
+
+    def __init__(self, text: str = "") -> None:
+        self._text = text
+        self._tooltip: str | None = None
+
+    def text(self) -> str:
+        return self._text
+
+    def setToolTip(self, tooltip: str) -> None:  # noqa: ANN001 (Qt 签名)
+        self._tooltip = tooltip
+
+    def setEnabled(self, enabled: bool) -> None:  # noqa: ANN001 (Qt 签名)
+        pass
+
+    def menu(self):
+        """子菜单容器（本替身不支持，返回 None 即可）。"""
+        return None
+
+    @property
+    def triggered(self):
+        """信号对象（提供 connect no-op，供最近目标子菜单连接）。"""
+        return _FakeSignal()
+
+
+class _FakeSignal:
+    """模拟 Qt Signal：connect no-op。"""
+
+    def connect(self, slot) -> None:  # noqa: ANN001
+        pass
 
     def setEnabled(self, enabled: bool) -> None:  # noqa: ANN001 (Qt 签名)
         pass
@@ -423,13 +452,26 @@ def test_batch_tag_menu_appears_for_multi_selection(qapp, main_window_with_tags)
     class FakeMenu:
         def __init__(self, *args, **kwargs):
             self._actions = []
+            self._title = args[0] if args else ""
 
         def addAction(self, label):
-            self._actions.append(label)
-            return _FakeAction()
+            act = _FakeAction(label)
+            self._actions.append(act)
+            return act
+
+        def actions(self):
+            return list(self._actions)
+
+        def insertMenu(self, before_action, submenu):
+            """在指定 action 前插入子菜单（记录到 actions，供最近目标测试）。"""
+            idx = self._actions.index(before_action)
+            self._actions.insert(idx, _FakeAction(f"<submenu:{submenu._title}>"))
+
+        def addMenu(self, submenu):
+            self._actions.append(_FakeAction(f"<submenu:{submenu._title}>"))
 
         def exec(self, *args, **kwargs):
-            menu_items.extend(self._actions)
+            menu_items.extend(a.text() for a in self._actions)
             return None
 
     import app.main_window as mw_module
@@ -461,13 +503,25 @@ def test_batch_tag_menu_not_appears_for_single_selection(qapp, main_window_with_
     class FakeMenu:
         def __init__(self, *args, **kwargs):
             self._actions = []
+            self._title = args[0] if args else ""
 
         def addAction(self, label):
-            self._actions.append(label)
-            return _FakeAction()
+            act = _FakeAction(label)
+            self._actions.append(act)
+            return act
+
+        def actions(self):
+            return list(self._actions)
+
+        def insertMenu(self, before_action, submenu):
+            idx = self._actions.index(before_action)
+            self._actions.insert(idx, _FakeAction(f"<submenu:{submenu._title}>"))
+
+        def addMenu(self, submenu):
+            self._actions.append(_FakeAction(f"<submenu:{submenu._title}>"))
 
         def exec(self, *args, **kwargs):
-            menu_items.extend(self._actions)
+            menu_items.extend(a.text() for a in self._actions)
             return None
 
     import app.main_window as mw_module

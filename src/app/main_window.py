@@ -35,6 +35,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import subprocess
 from collections.abc import Callable
@@ -88,6 +89,7 @@ from app.folder_tree_model import FolderTreeModel
 from app.metadata_panel import MetadataPanel
 from app.metadata_view import MetadataView
 from app.path_display import make_display_path_from_service
+from app.recent_move_targets import RecentMoveTargets
 from app.scan_controller import ScanController
 from app.tag_filter import TagFilterBar
 from app.tag_manager_dialog import TagManagerDialog
@@ -368,6 +370,8 @@ class MainWindow(QMainWindow):
 
         # Stage 5 Task 1：QSettings 持久化缩放值与视图模式（Q1=A）
         self._qsettings = QSettings(QSETTINGS_ORGANIZATION, QSETTINGS_APPLICATION)
+        # 操作便捷性3（2026-08-02）：最近移动目标（右键子菜单 / Ctrl+Q / 对话框快捷区）
+        self._recent_move_targets = RecentMoveTargets(self._qsettings)
         self._current_view_index: int = VIEW_INDEX_LIST  # 默认列表视图
         self._card_icon_size: int = ui.ZOOM_SLIDER_DEFAULT
 
@@ -1640,6 +1644,10 @@ class MainWindow(QMainWindow):
             menu.addSeparator()
         collapse_action = menu.addAction(ui.MENU_COLLAPSE_ALL)
 
+        # 操作便捷性3：在「移动到...」后插入「移动到最近目录」子菜单（节点有效时）
+        if node is not None and move_to_action is not None:
+            self._insert_recent_move_submenu(menu, [Path(node.real_path)])
+
         chosen = menu.exec(self._tree_view.viewport().mapToGlobal(pos))
         if chosen is None:
             return
@@ -1658,8 +1666,6 @@ class MainWindow(QMainWindow):
         elif explorer_action is not None and chosen is explorer_action:
             self._on_open_in_explorer(node.real_path)
         elif pin_action is not None and chosen is pin_action:
-            from pathlib import Path  # noqa: PLC0415
-
             self._pin_folder_from_context(Path(node.real_path))
         elif unpin_action is not None and chosen is unpin_action:
             self._unpin_from_context()
@@ -1729,6 +1735,9 @@ class MainWindow(QMainWindow):
         for label, _, enabled in actions:
             act = menu.addAction(label)
             act.setEnabled(enabled)
+
+        # 操作便捷性3：在「移动到...」后插入「移动到最近目录」子菜单
+        self._insert_recent_move_submenu(menu, [Path(e.path) for e in entries])
 
         chosen = menu.exec(active_view.viewport().mapToGlobal(pos))
         if chosen is None:
@@ -2303,6 +2312,11 @@ class MainWindow(QMainWindow):
             edit.selectAll()
         edit.setFocus()
 
+        # UI合理性6（2026-08-02）：重命名弹窗适当调宽（约为默认宽度的 3/2）
+        dialog.adjustSize()
+        hint = dialog.sizeHint()
+        dialog.resize(int(hint.width() * 1.5), hint.height())
+
         if dialog.exec() == QDialog.DialogCode.Accepted:
             return edit.text().strip(), True
         return "", False
@@ -2411,6 +2425,17 @@ class MainWindow(QMainWindow):
             text = ui.MENU_DELETE_CONFIRM_TEXT_SINGLE
         else:
             text = ui.MENU_DELETE_CONFIRM_TEXT_MULTI.format(n=n)
+        # 操作合理性3（2026-08-02）：删除确认时提示文件夹内部条目数（顶层，快速）
+        dir_file_count = 0
+        for e in entries:
+            if e.is_dir:
+                with contextlib.suppress(OSError):
+                    dir_file_count += sum(1 for _ in Path(e.path).iterdir())
+        if dir_file_count > 0:
+            text = text.replace(
+                "此操作不可撤销。",
+                ui.MENU_DELETE_CONFIRM_FOLDER_FILES.format(n=dir_file_count),
+            )
         reply = QMessageBox.question(
             self,
             ui.MENU_DELETE_CONFIRM_TITLE,
@@ -2817,6 +2842,12 @@ class MainWindow(QMainWindow):
             self._shortcut_move_to_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
             self._shortcut_move_to_tree.activated.connect(self._on_shortcut_move_to_tree)
 
+            # 操作便捷性3：Ctrl+Q 移动到最近目标（窗口级，任意位置可触发）。
+            # 默认快捷键暂定 Ctrl+Q，后续做自定义快捷键菜单时再开放配置。
+            self._shortcut_move_to_latest = QShortcut(QKeySequence("Ctrl+Q"), self)
+            self._shortcut_move_to_latest.setContext(Qt.ShortcutContext.WindowShortcut)
+            self._shortcut_move_to_latest.activated.connect(self._on_shortcut_move_to_latest)
+
         # Ctrl+C / Ctrl+X / Ctrl+V 依赖 FileOperationService + ClipboardService
         if self._file_operation_service is not None and self._clipboard_service is not None:
             # 中栏 Ctrl+C / Ctrl+X / Ctrl+V（Task 3b 真实逻辑）
@@ -3193,6 +3224,19 @@ class MainWindow(QMainWindow):
             return
         self._on_move_to(entries)
 
+    def _on_shortcut_move_to_latest(self) -> None:
+        """Ctrl+Q：中栏选中条目 → 直接移动到最近目标（操作便捷性3）。"""
+        entries = self._get_selected_entries()
+        if not entries:
+            self.statusBar().showMessage(ui.SHORTCUT_MOVE_TO_NO_SELECTION, 2000)
+            return
+        latest = self._recent_move_targets.latest()
+        if latest is None:
+            self.statusBar().showMessage(ui.SHORTCUT_MOVE_TO_LATEST_NO_TARGET, 3000)
+            return
+        src_paths = [Path(e.path) for e in entries]
+        self._perform_move_to(src_paths, Path(latest))
+
     def _on_shortcut_move_to_tree(self) -> None:
         """Ctrl+M 目录树：触发移动到对话框。"""
         sm = self._tree_view.selectionModel()
@@ -3236,6 +3280,37 @@ class MainWindow(QMainWindow):
         default_expand = src_path.parent
         self._open_move_to_dialog([src_path], default_expand)
 
+    def _on_move_to_recent(self, src_paths: list[Path], target: str) -> None:
+        """执行移动到最近目标（复用 _perform_move_to 完整安全流程）。"""
+        self._perform_move_to(src_paths, Path(target))
+
+    def _insert_recent_move_submenu(self, menu, src_paths: list[Path]) -> None:
+        """在「移动到...」菜单项后插入「移动到最近目录」子菜单。
+
+        操作便捷性3（2026-08-02）：最近移动目标快捷入口。
+        无最近目标时不插入；子菜单项文本用路径简化显示，Tooltip 为完整路径。
+        """
+        recent = self._recent_move_targets.list_recent()
+        if not recent:
+            return
+        submenu = QMenu(ui.MENU_MOVE_TO_RECENT, menu)
+        for target in recent:
+            display = make_display_path_from_service(target, self._service)
+            act = submenu.addAction(display)
+            act.setToolTip(target)
+            act.triggered.connect(
+                lambda checked=False, t=target: self._on_move_to_recent(src_paths, t)
+            )
+        # 插到「移动到...」之后（insertMenu 在指定 action 之前插入，故用下一项）
+        actions = menu.actions()
+        for i, act in enumerate(actions):
+            if act.text() == ui.MENU_MOVE_TO:
+                if i + 1 < len(actions):
+                    menu.insertMenu(actions[i + 1], submenu)
+                else:
+                    menu.addMenu(submenu)
+                break
+
     def _open_move_to_dialog(self, src_paths: list[Path], default_expand: Path | None) -> None:
         """打开「移动到...」对话框并处理结果。
 
@@ -3249,6 +3324,7 @@ class MainWindow(QMainWindow):
             folder_tree_service=self._tree_service,
             src_paths=src_paths,
             default_expand_path=default_expand,
+            recent_targets=self._recent_move_targets.list_recent(),
             parent=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -3343,6 +3419,10 @@ class MainWindow(QMainWindow):
             except (ConflictError, FileOperationError) as e:
                 fail_count += 1
                 errors.append(ui.SHORTCUT_MOVE_TO_FAILED.format(error=str(e)))
+
+        # 操作便捷性3：记录最近移动目标（至少 1 项成功）
+        if ok_count > 0:
+            self._recent_move_targets.record(target_dir)
 
         # 提交事务 + 刷新 UI
         self._commit()
