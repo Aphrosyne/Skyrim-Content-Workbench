@@ -134,7 +134,7 @@ class ConflictResolutionDialog(QDialog):
         self._table.setItem(row, _COL_SOURCE, source_item)
 
         # 决策单选组
-        decision_widget = QWidget()
+        decision_widget = QWidget(self)
         decision_layout = QHBoxLayout(decision_widget)
         decision_layout.setContentsMargins(4, 0, 4, 0)
         group = QButtonGroup(decision_widget)

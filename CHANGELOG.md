@@ -8,6 +8,43 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.50.0] - 2026-08-02
+
+标签系统体验优化 + 元数据/装配面板样式修复（UI合理性8 / UI合理性7 / 操作便捷性4）。
+
+**新增功能**
+
+- **预选标签按分类分组 + 可折叠（UI合理性8 + UI合理性7）**：元数据面板预选区域
+  按 TagCategory 垂直分组（分组标题按钮可折叠，默认展开，组内按名称排序）；
+  组内标签为 FlowLayout 按钮流（新增 [flow_layout.py](src/app/flow_layout.py)，
+  基于 Qt 官方示例），替代 QListWidget 流式平铺——分组头与标签不再混排，
+  空列表不再出现无法交互的矩形；最近使用区域无记录时整体隐藏
+- **最近使用标签（UI合理性8）**：新增 [recent_tags.py](src/app/recent_tags.py)，
+  记录最近 10 个成功添加的标签（QSettings 持久化）；元数据面板「最近使用」区域
+  点击直接添加；右键内容单元 → 「添加最近标签 ▸」子菜单，点击立即 attach + 提交
+- **标签即时保存（操作便捷性4）**：chip 添加/移除、预选点击、最近标签点击立即
+  attach/detach + 提交（TransactionScope.commit）；「保存」按钮仅负责
+  标题/来源/备注/封面（推翻 2026-07-19 决策 1 的标签部分，用户确认 2026-08-02）
+- **元数据面板布局与样式修复（UI合理性8 验收反馈）**：
+  - 高度参数提取为 ui_constants 常量（METADATA_PANEL_TAG_LIST_HEIGHT /
+    METADATA_PANEL_PRESET_SCROLL_HEIGHT / METADATA_PANEL_NOTES_EDIT_HEIGHT，
+    可手动调整）；chip 区改为单行、释放垂直空间
+  - 删除「无标签」提示（_tags_empty_hint）
+  - 预设标签区高度策略修复：改为「Expanding + 上限常量」并移除面板底部 stretch，
+    使 PRESET_SCROLL_HEIGHT 真正生效；小窗口下自动压缩到 60px，
+    来源 URL / 备注不再被遮挡
+  - chip 区由 QListWidget 改为 FlowLayout 按钮（与「最近使用/已有标签」按钮同款
+    浅灰描边），修复 QListWidget 流式模式下的标签偏移/裁切与无边框问题
+  - 区域样式统一：chip / 最近使用 / 已有标签背景统一为系统 palette Base 深灰
+    （与左栏目录树内部矩形一致）+ 4px 圆角（PANEL_REGION_STYLE_TEMPLATE，
+    同色边框使圆角生效、视觉无边框线）
+  - 装配面板改为与左栏目录树同构的三层结构：1px 浅色外边框 → 窗体底色 →
+    内部灰色圆角列表矩形
+
+**测试**：1313 passed, 4 skipped（新增 RecentTags / 分组折叠 / 最近标签 /
+即时保存持久化 / 右键子菜单等 14 项；原保存期标签失败测试改写为即时路径）；
+ruff check + format 全绿。
+
 ## [0.49.0] - 2026-08-02
 
 工作流便捷性优化（实际工作流测试反馈第一批）：最近移动目标 + 3 项小修。

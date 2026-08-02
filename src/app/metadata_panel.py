@@ -42,20 +42,21 @@ spec §7.2 / §10.3：右栏元数据面板，显示与编辑内容单元元数�
 from __future__ import annotations
 
 import logging
+import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QFontMetrics, QPainter, QPixmap
+from PySide6.QtGui import QFontMetrics, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QCompleter,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QTextEdit,
     QVBoxLayout,
@@ -63,7 +64,9 @@ from PySide6.QtWidgets import (
 )
 
 from app import ui_constants as ui
+from app.flow_layout import FlowLayout
 from app.path_display import make_display_path_from_service
+from app.recent_tags import RecentTags
 from application.content_service import ContentService
 from application.errors import (
     ApplicationError,
@@ -72,6 +75,7 @@ from application.errors import (
 )
 from application.tag_service import TagService
 from domain.models import ContentUnit, Tag
+from infrastructure.repositories.errors import RepositoryError
 
 logger = logging.getLogger(__name__)
 
@@ -195,10 +199,6 @@ class _ResizableImageLabel(QWidget):
         painter.drawPixmap(x, y, scaled)
 
 
-# chip 列表 item 中存储 Tag 实体的角色
-_ROLE_TAG = Qt.UserRole
-
-
 class MetadataPanel(QWidget):
     """元数据编辑面板。
 
@@ -220,16 +220,30 @@ class MetadataPanel(QWidget):
         self,
         content_service: ContentService,
         tag_service: TagService,
+        commit_callback: Callable[[], None] | None = None,
+        on_tags_saved: Callable[[], None] | None = None,
+        recent_tags: RecentTags | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._content_service = content_service
         self._tag_service = tag_service
+        # 操作便捷性4（2026-08-02）：标签即时保存的提交回调 / 保存成功通知
+        self._commit_callback = commit_callback
+        self._on_tags_saved = on_tags_saved
+        # UI合理性8（2026-08-02）：最近使用标签记录（显示 + 记录）
+        self._recent_tags = recent_tags
         self._current_unit: ContentUnit | None = None
-        # 当前编辑中（未保存）的 chip 列表：list[Tag]
+        # 当前已保存的 chip 列表（即时保存模式）：list[Tag]
         self._current_tags: list[Tag] = []
-        # 加载时保存的原始标签 ID 集合，用于保存时计算 add / remove diff
-        self._original_tag_ids: set[str] = set()
+        # chip 按钮映射（tag → QPushButton，FlowLayout 中顺序一致）
+        self._chip_buttons: list[tuple[Tag, QPushButton]] = []
+        # 预选区域分组折叠状态：category_id → 是否折叠
+        self._preset_collapsed: set[str] = set()
+        # 预选分组内容容器：category_id → QWidget（折叠控制）
+        self._preset_groups: dict[str, QWidget] = {}
+        # 预选标签按钮（测试接口遍历用）
+        self._preset_buttons: list[QPushButton] = []
         # UX 重构 Phase 2 Task 5 修复：受管理根目录服务，用于路径简化显示
         self._managed_root_service = None
 
@@ -241,7 +255,15 @@ class MetadataPanel(QWidget):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        # 统一区域样式：背景取系统 palette Base（与左栏受管理根目录列表 / 目录树
+        # 内部矩形、以及输入框一致的颜色），无边框无圆角。
+        self._region_bg = self.palette().color(QPalette.ColorRole.Base).name()
+        self.setStyleSheet(
+            ui.PANEL_REGION_STYLE_TEMPLATE.format(
+                bg=self._region_bg, obj=ui.PANEL_REGION_OBJECT_NAME
+            )
+        )
 
         # 未选中内容单元时的占位提示
         self._hint_label = QLabel(ui.METADATA_PANEL_NO_UNIT_HINT)
@@ -282,22 +304,22 @@ class MetadataPanel(QWidget):
         self._tags_label = QLabel(ui.METADATA_PANEL_TAGS_LABEL)
         layout.addWidget(self._tags_label)
 
-        # chip 列表：横向 wrap
-        self._tag_list = QListWidget()
-        self._tag_list.setFlow(QListWidget.Flow.LeftToRight)
-        self._tag_list.setWrapping(True)
-        self._tag_list.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self._tag_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self._tag_list.setFixedHeight(80)
-        self._tag_list.setSpacing(2)
-        # 单击 → 移除
-        self._tag_list.itemClicked.connect(self._on_tag_clicked)
+        # chip 区：QFrame + FlowLayout 按钮（UI合理性8 布局修复）。
+        # QListWidget 流式模式下 item 高度大于单行固定高度会产生偏移/裁切，
+        # 且 item 无边框；改用与「最近使用/已有标签」一致的按钮（浅灰描边），
+        # FlowLayout 无 viewport 偏移，标签与背景对齐。
+        self._tag_list = QFrame(self)
+        self._tag_list.setObjectName(ui.PANEL_REGION_OBJECT_NAME)
+        self._tag_list.setFrameShape(QFrame.Shape.NoFrame)
+        # 显式设置自身背景与圆角（同色边框使 radius 生效，视觉无边框线）
+        self._tag_list.setStyleSheet(
+            f"QFrame {{ background: {self._region_bg}; "
+            f"border: 1px solid {self._region_bg}; border-radius: 4px; }}"
+        )
+        self._tag_list.setFixedHeight(ui.METADATA_PANEL_TAG_LIST_HEIGHT)
+        self._tag_flow = FlowLayout(self._tag_list)
+        self._tag_flow.setContentsMargins(2, 1, 2, 1)
         layout.addWidget(self._tag_list)
-
-        # 空标签提示
-        self._tags_empty_hint = QLabel(ui.METADATA_PANEL_EMPTY_TAGS_HINT)
-        self._tags_empty_hint.setStyleSheet("color: #999;")
-        layout.addWidget(self._tags_empty_hint)
 
         # 标签输入框 + QCompleter
         self._tag_input = QLineEdit()
@@ -311,18 +333,49 @@ class MetadataPanel(QWidget):
         self._tag_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._tag_input.setCompleter(self._tag_completer)
 
-        # 预选标签区域：显示所有已有标签（排除已在 chip 列表的），单击快速添加
+        # 最近使用标签区域（UI合理性8）：标题独立成行（无背景、字号稍小），
+        # 标签按钮单独放在圆角容器内（背景与输入框一致），点击直接添加（即时保存）。
+        # 修复：所有容器显式传 parent，避免无 parent 成为顶级窗口导致启动/刷新时闪窗
+        # （与 UX 重构 Phase 1 Task 4 修复 3 同根因）
+        self._recent_title = QLabel(ui.METADATA_PANEL_RECENT_TAGS_LABEL)
+        self._recent_title.setStyleSheet(ui.PANEL_SECTION_TITLE_STYLE)
+        layout.addWidget(self._recent_title)
+        self._recent_widget = QFrame(self)
+        self._recent_widget.setObjectName(ui.PANEL_REGION_OBJECT_NAME)
+        self._recent_widget.setFrameShape(QFrame.Shape.NoFrame)  # QFrame 默认 frame 会盖住 QSS 背景
+        # panel 级 QSS 对 QFrame 背景不生效，显式设置自身背景与圆角
+        # （同色边框使 radius 生效，视觉无边框线）。
+        self._recent_widget.setStyleSheet(
+            f"QFrame {{ background: {self._region_bg}; "
+            f"border: 1px solid {self._region_bg}; border-radius: 4px; }}"
+        )
+        self._recent_flow_layout = FlowLayout(self._recent_widget)
+        layout.addWidget(self._recent_widget)
+        self._recent_widget.setVisible(False)
+
+        # 预选标签区域：按分类分组（标题按钮可折叠 + 组内标签按钮流）。
+        # UI合理性8：垂直分组替代 QListWidget 流式平铺，分组头与标签不再混排。
         self._preset_label = QLabel(ui.METADATA_PANEL_PRESET_TAGS_LABEL)
+        self._preset_label.setStyleSheet(ui.PANEL_SECTION_TITLE_STYLE)
         layout.addWidget(self._preset_label)
-        self._preset_list = QListWidget()
-        self._preset_list.setFlow(QListWidget.Flow.LeftToRight)
-        self._preset_list.setWrapping(True)
-        self._preset_list.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self._preset_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self._preset_list.setFixedHeight(80)
-        self._preset_list.setSpacing(2)
-        self._preset_list.itemClicked.connect(self._on_preset_tag_clicked)
-        layout.addWidget(self._preset_list)
+        self._preset_scroll = QScrollArea(self)
+        self._preset_scroll.setWidgetResizable(True)
+        # 统一区域样式（面板级 QSS 提供背景；NoFrame 避免默认边框）
+        self._preset_scroll.setObjectName(ui.PANEL_REGION_OBJECT_NAME)
+        self._preset_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # 高度可压缩（60~120，Expanding 优先被压缩）：窗口较小时先压缩本区，
+        # 保住来源 URL / 备注不被遮挡。
+        self._preset_scroll.setMinimumHeight(60)
+        self._preset_scroll.setMaximumHeight(ui.METADATA_PANEL_PRESET_SCROLL_HEIGHT)
+        self._preset_scroll.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+        )
+        self._preset_content = QWidget(self._preset_scroll)
+        self._preset_layout = QVBoxLayout(self._preset_content)
+        self._preset_layout.setContentsMargins(0, 0, 0, 0)
+        self._preset_layout.setSpacing(2)
+        self._preset_scroll.setWidget(self._preset_content)
+        layout.addWidget(self._preset_scroll)
         self._preset_empty_hint = QLabel(ui.METADATA_PANEL_PRESET_TAGS_EMPTY_HINT)
         self._preset_empty_hint.setStyleSheet("color: #999;")
         layout.addWidget(self._preset_empty_hint)
@@ -339,7 +392,7 @@ class MetadataPanel(QWidget):
         layout.addWidget(self._notes_label)
         self._notes_edit = QTextEdit()
         self._notes_edit.setPlaceholderText(ui.METADATA_PANEL_NOTES_PLACEHOLDER)
-        self._notes_edit.setFixedHeight(80)
+        self._notes_edit.setFixedHeight(ui.METADATA_PANEL_NOTES_EDIT_HEIGHT)
         layout.addWidget(self._notes_edit)
 
         # 封面预览 + 按钮（封面路径 ElideMiddle 省略显示）
@@ -370,7 +423,8 @@ class MetadataPanel(QWidget):
         cover_button_row.addStretch(1)
         layout.addLayout(cover_button_row)
 
-        layout.addStretch(1)
+        # 注意：这里不再 addStretch —— 预选标签区（Expanding）需要吸收面板剩余空间，
+        # METADATA_PANEL_PRESET_SCROLL_HEIGHT 才作为实际高度上限生效。
 
         # 保存按钮（右下）
         save_row = QHBoxLayout()
@@ -430,7 +484,7 @@ class MetadataPanel(QWidget):
         """清空面板（无内容单元选中时）。"""
         self._current_unit = None
         self._current_tags = []
-        self._original_tag_ids = set()
+        self._preset_collapsed = set()
 
         self._hint_label.setVisible(True)
         self._title_edit.clear()
@@ -439,15 +493,28 @@ class MetadataPanel(QWidget):
         self._created_value.setText("")
         self._source_url_edit.clear()
         self._notes_edit.clear()
-        self._tag_list.clear()
+        self._tag_flow.clear()
+        self._chip_buttons = []
         self._tag_input.clear()
-        self._tags_empty_hint.setVisible(True)
-        self._preset_list.clear()
+        self._recent_flow_layout.clear()
+        self._recent_widget.setVisible(False)
+        self._recent_title.setVisible(False)
+        self._clear_preset_groups()
         self._preset_empty_hint.setVisible(False)
         self._cover_value.setText(ui.METADATA_PANEL_COVER_NONE)
         self._cover_preview.set_original_pixmap(None)  # 清空图片
 
         self._set_form_enabled(False)
+
+    def _clear_preset_groups(self) -> None:
+        """清空预选分组内容（删除全部子 widget）。"""
+        while self._preset_layout.count() > 0:
+            item = self._preset_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._preset_groups = {}
+        self._preset_buttons = []
 
     def current_unit(self) -> ContentUnit | None:
         """返回当前加载的 ContentUnit（供测试）。"""
@@ -489,23 +556,70 @@ class MetadataPanel(QWidget):
         return [t.name for t in self._current_tags]
 
     def preset_tag_names(self) -> list[str]:
-        """返回当前预选列表中的标签名（供测试）。"""
-        names: list[str] = []
-        for i in range(self._preset_list.count()):
-            item = self._preset_list.item(i)
-            tag = item.data(_ROLE_TAG)
-            if tag is not None:
-                names.append(tag.name)
-        return names
+        """返回当前预选区域中的标签名（供测试）。"""
+        return [b.text() for b in self._preset_buttons]
 
     def click_preset_tag(self, tag_name: str) -> None:
-        """程序化点击指定名称的预选标签（添加到 chip，供测试）。"""
-        for i in range(self._preset_list.count()):
-            item = self._preset_list.item(i)
-            tag = item.data(_ROLE_TAG)
-            if tag is not None and tag.name == tag_name:
-                self._on_preset_tag_clicked(item)
+        """程序化点击指定名称的预选标签（即时添加，供测试）。"""
+        for btn in self._preset_buttons:
+            if btn.text() == tag_name:
+                btn.click()
                 return
+
+    def preset_group_names(self) -> list[str]:
+        """返回当前预选区域的分组名（供测试）。"""
+        names: list[str] = []
+        for i in range(self._preset_layout.count()):
+            item = self._preset_layout.itemAt(i)
+            widget = item.widget() if item is not None else None
+            if isinstance(widget, QPushButton) and widget.isCheckable():
+                names.append(widget.text().lstrip("▸▾ ").strip())
+        return names
+
+    def click_preset_group(self, category_name: str) -> None:
+        """程序化点击指定分类的分组标题按钮（折叠/展开，供测试）。"""
+        for i in range(self._preset_layout.count()):
+            item = self._preset_layout.itemAt(i)
+            widget = item.widget() if item is not None else None
+            if (
+                isinstance(widget, QPushButton)
+                and widget.isCheckable()
+                and widget.text().lstrip("▸▾ ").strip() == category_name
+            ):
+                widget.click()
+                return
+
+    def is_preset_group_collapsed(self, category_id: str) -> bool:
+        """返回指定分类分组是否处于折叠状态（供测试）。"""
+        return category_id in self._preset_collapsed
+
+    def recent_tag_names(self) -> list[str]:
+        """返回当前最近使用标签按钮文本（供测试）。"""
+        names: list[str] = []
+        for i in range(self._recent_flow_layout.count()):
+            item = self._recent_flow_layout.itemAt(i)
+            widget = item.widget() if item is not None else None
+            if isinstance(widget, QPushButton):
+                names.append(widget.text())
+        return names
+
+    def click_recent_tag(self, tag_name: str) -> None:
+        """程序化点击指定名称的最近标签按钮（即时添加，供测试）。"""
+        for i in range(self._recent_flow_layout.count()):
+            item = self._recent_flow_layout.itemAt(i)
+            widget = item.widget() if item is not None else None
+            if isinstance(widget, QPushButton) and widget.text() == tag_name:
+                widget.click()
+                return
+
+    def is_recent_tag_enabled(self, tag_name: str) -> bool:
+        """返回指定最近标签按钮是否可点击（已在 chip 时禁用，供测试）。"""
+        for i in range(self._recent_flow_layout.count()):
+            item = self._recent_flow_layout.itemAt(i)
+            widget = item.widget() if item is not None else None
+            if isinstance(widget, QPushButton) and widget.text() == tag_name:
+                return widget.isEnabled()
+        return False
 
     def is_save_button_enabled(self) -> bool:
         return self._save_button.isEnabled()
@@ -532,11 +646,9 @@ class MetadataPanel(QWidget):
 
     def click_tag_chip(self, tag_name: str) -> None:
         """程序化点击指定名称的 chip（移除，供测试）。"""
-        for i in range(self._tag_list.count()):
-            item = self._tag_list.item(i)
-            tag = item.data(_ROLE_TAG)
-            if tag is not None and tag.name == tag_name:
-                self._on_tag_clicked(item)
+        for tag, btn in self._chip_buttons:
+            if tag.name == tag_name:
+                btn.click()
                 return
 
     # --- 内部实现 ---
@@ -549,7 +661,8 @@ class MetadataPanel(QWidget):
             self._notes_edit,
             self._tag_input,
             self._tag_list,
-            self._preset_list,
+            self._recent_widget,
+            self._preset_scroll,
             self._pick_cover_button,
             self._clear_cover_button,
             self._save_button,
@@ -559,46 +672,39 @@ class MetadataPanel(QWidget):
     def _load_tags_for_unit(self, unit_id: str) -> None:
         """从 TagService 加载当前 unit 的所有标签，填充 chip 列表。"""
         self._current_tags = []
-        self._original_tag_ids = set()
-        self._tag_list.clear()
+        self._tag_flow.clear()
+        self._chip_buttons = []
         try:
             grouped = self._tag_service.list_tags_of_content_unit(unit_id)
         except ApplicationError as e:
             logger.warning("加载内容单元标签失败：%s", e)
-            self._tags_empty_hint.setVisible(True)
-            self._tags_empty_hint.setText(ui.METADATA_PANEL_EMPTY_TAGS_HINT)
             return
 
         for _category, tags in grouped:
             for tag in tags:
                 self._append_tag_chip(tag)
                 self._current_tags.append(tag)
-                self._original_tag_ids.add(tag.id)
 
-        self._refresh_tags_empty_hint()
-
-    def _refresh_tags_empty_hint(self) -> None:
-        """根据当前 chip 列表更新空状态提示可见性。"""
-        empty = len(self._current_tags) == 0
-        self._tags_empty_hint.setVisible(empty)
+        self._refresh_recent_list()
 
     def _append_tag_chip(self, tag: Tag) -> None:
-        """添加一个 chip 到列表。"""
-        item = QListWidgetItem(f"{tag.name} ×")
-        item.setData(_ROLE_TAG, tag)
-        item.setToolTip(ui.METADATA_PANEL_TAG_REMOVED.format(name=tag.name))
-        self._tag_list.addItem(item)
+        """添加一个 chip 按钮（与「最近使用/已有标签」按钮样式一致，浅灰描边）。"""
+        btn = QPushButton(f"{tag.name} ×", self._tag_list)
+        btn.setStyleSheet(ui.METADATA_TAG_BUTTON_STYLE.format(bg=self._region_bg))
+        btn.setToolTip(ui.METADATA_PANEL_TAG_REMOVED.format(name=tag.name))
+        btn.clicked.connect(lambda checked=False, t=tag: self._apply_tag_toggle(t, attach=False))
+        self._tag_flow.addWidget(btn)
+        self._chip_buttons.append((tag, btn))
 
     def _remove_tag_chip(self, tag: Tag) -> None:
         """从 chip 列表移除指定 Tag。"""
-        for i in range(self._tag_list.count()):
-            item = self._tag_list.item(i)
-            data = item.data(_ROLE_TAG)
-            if data is not None and data.id == tag.id:
-                self._tag_list.takeItem(i)
+        for i, (t, btn) in enumerate(self._chip_buttons):
+            if t.id == tag.id:
+                self._tag_flow.takeAt(i)
+                btn.deleteLater()
+                del self._chip_buttons[i]
                 break
         self._current_tags = [t for t in self._current_tags if t.id != tag.id]
-        self._refresh_tags_empty_hint()
         # chip 移除后该标签重新出现在预选列表中
         self._refresh_preset_list()
 
@@ -661,66 +767,157 @@ class MetadataPanel(QWidget):
                 ui.METADATA_PANEL_TAG_NOT_FOUND.format(name=name),
             )
             return
-        # 添加到 chip
-        self._append_tag_chip(exact)
-        self._current_tags.append(exact)
-        self._refresh_tags_empty_hint()
-        # chip 添加后从预选列表中移除（避免重复显示）
-        self._refresh_preset_list()
+        # 操作便捷性4：添加到 chip 并即时保存
+        self._apply_tag_toggle(exact, attach=True)
         self._tag_input.clear()
 
-    def _on_tag_clicked(self, item: QListWidgetItem) -> None:
-        """chip 单击 → 移除。"""
-        tag = item.data(_ROLE_TAG)
-        if tag is None:
-            return
-        self._remove_tag_chip(tag)
-
-    def _on_preset_tag_clicked(self, item: QListWidgetItem) -> None:
-        """预选标签单击 → 添加到 chip 列表。
-
-        与输入框回车添加等效，但不重复检查（预选列表本身已排除 chip 中的标签）。
-        """
-        tag = item.data(_ROLE_TAG)
-        if tag is None:
-            return
-        if self._current_unit is None:
-            return
-        # 防御性重复检查（理论上不会触发）
-        for t in self._current_tags:
-            if t.id == tag.id:
-                return
-        self._append_tag_chip(tag)
-        self._current_tags.append(tag)
-        self._refresh_tags_empty_hint()
-        # 添加后从预选列表中移除
-        self._refresh_preset_list()
-
     def _refresh_preset_list(self) -> None:
-        """刷新预选标签列表：显示所有已有标签，排除已在 chip 列表中的。
+        """刷新预选标签区域：按分类垂直分组（UI合理性8），排除已在 chip 中的。
 
+        - 分组标题按钮（可折叠，▾/▸ 指示，默认展开）：点击折叠/展开该组。
+        - 组内标签为 FlowLayout 按钮，按名称排序（同分类相邻，UI合理性7），
+          点击 → 即时保存（操作便捷性4）。
         加载时机：load_unit 时 / chip 增删后 / clear_panel 时。
         """
-        self._preset_list.clear()
+        self._clear_preset_groups()
         if self._current_unit is None:
             self._preset_empty_hint.setVisible(False)
             return
         try:
-            all_tags = self._tag_service.list_all_tags()
+            grouped = self._tag_service.list_categories_with_tags()
         except ApplicationError as e:
             logger.warning("加载预选标签列表失败：%s", e)
             self._preset_empty_hint.setVisible(True)
             return
         current_ids = {t.id for t in self._current_tags}
-        for tag in all_tags:
-            if tag.id in current_ids:
+        total_shown = 0
+        for category, tags in grouped:
+            available = sorted(
+                (t for t in tags if t.id not in current_ids),
+                key=lambda t: t.name.lower(),
+            )
+            if not available:
                 continue
-            item = QListWidgetItem(tag.name)
-            item.setData(_ROLE_TAG, tag)
-            item.setToolTip(ui.METADATA_PANEL_PRESET_TAGS_LABEL)
-            self._preset_list.addItem(item)
+            collapsed = category.id in self._preset_collapsed
+            # 分组标题按钮（可折叠）
+            header = QPushButton(
+                f"{'▸' if collapsed else '▾'} {category.name}", self._preset_content
+            )
+            header.setCheckable(True)
+            header.setChecked(not collapsed)
+            header.setFlat(True)
+            header.setStyleSheet(
+                "QPushButton { text-align: left; font-weight: bold; border: none; }"
+            )
+            header.toggled.connect(
+                lambda checked, cid=category.id: self._toggle_preset_group(cid, checked)
+            )
+            self._preset_layout.addWidget(header)
+            # 组内标签按钮（FlowLayout）
+            flow = QWidget(self._preset_content)
+            flow_layout = FlowLayout(flow)
+            for tag in available:
+                btn = QPushButton(tag.name, flow)
+                btn.setStyleSheet(ui.METADATA_TAG_BUTTON_STYLE.format(bg=self._region_bg))
+                btn.clicked.connect(lambda checked=False, t=tag: self._apply_tag_toggle(t, True))
+                flow_layout.addWidget(btn)
+                self._preset_buttons.append(btn)
+                total_shown += 1
+            flow.setVisible(not collapsed)
+            self._preset_layout.addWidget(flow)
+            self._preset_groups[category.id] = flow
+        self._preset_layout.addStretch(1)
         # 无可用标签时显示空提示
-        self._preset_empty_hint.setVisible(self._preset_list.count() == 0)
+        self._preset_empty_hint.setVisible(total_shown == 0)
+
+    def _toggle_preset_group(self, category_id: str, checked: bool) -> None:
+        """折叠/展开预选分组（UI合理性8：分类标签折叠）。"""
+        if checked:
+            self._preset_collapsed.discard(category_id)
+        else:
+            self._preset_collapsed.add(category_id)
+        flow = self._preset_groups.get(category_id)
+        if flow is not None:
+            flow.setVisible(checked)
+        # 更新分组标题按钮指示符（sender 为标题按钮）
+        btn = self.sender()
+        if isinstance(btn, QPushButton) and btn.text():
+            name = btn.text().lstrip("▸▾ ").strip()
+            btn.setText(f"{'▾' if checked else '▸'} {name}")
+
+    def _refresh_recent_list(self) -> None:
+        """刷新最近使用标签区域（UI合理性8）。无记录/无 unit 时整体隐藏。"""
+        self._recent_flow_layout.clear()
+        if self._current_unit is None or self._recent_tags is None:
+            self._recent_widget.setVisible(False)
+            self._recent_title.setVisible(False)
+            return
+        tag_ids = self._recent_tags.list_recent()
+        if not tag_ids:
+            self._recent_widget.setVisible(False)
+            self._recent_title.setVisible(False)
+            return
+        # 映射 id → Tag（list_categories_with_tags 一次获取全部）
+        id_to_tag: dict[str, Tag] = {}
+        try:
+            for _category, tags in self._tag_service.list_categories_with_tags():
+                for t in tags:
+                    id_to_tag[t.id] = t
+        except ApplicationError:
+            self._recent_widget.setVisible(False)
+            self._recent_title.setVisible(False)
+            return
+        current_ids = {t.id for t in self._current_tags}
+        shown = 0
+        for tag_id in tag_ids:
+            tag = id_to_tag.get(tag_id)
+            if tag is None:
+                continue  # 标签已删除，跳过
+            btn = QPushButton(tag.name, self._recent_widget)
+            btn.setStyleSheet(ui.METADATA_TAG_BUTTON_STYLE.format(bg=self._region_bg))
+            if tag.id in current_ids:
+                btn.setEnabled(False)  # 已在 chip：灰显不可点
+            btn.clicked.connect(lambda checked=False, t=tag: self._apply_tag_toggle(t, True))
+            self._recent_flow_layout.addWidget(btn)
+            shown += 1
+        self._recent_widget.setVisible(shown > 0)
+        self._recent_title.setVisible(shown > 0)
+
+    def _apply_tag_toggle(self, tag: Tag, attach: bool) -> None:
+        """即时保存标签变更（操作便捷性4，2026-08-02）。
+
+        立即执行 attach/detach + 提交回调，再更新本地 chip/预选/最近状态；
+        写库失败时不改本地状态并提示。
+        """
+        if self._current_unit is None:
+            return
+        unit_id = self._current_unit.id
+        try:
+            if attach:
+                self._tag_service.attach_tag_to_unit(unit_id, tag.id)
+            else:
+                self._tag_service.detach_tag_from_unit(unit_id, tag.id)
+        except (ApplicationError, RepositoryError, sqlite3.Error) as e:
+            logger.warning("标签即时保存失败：%s", e)
+            self._show_error(ui.METADATA_PANEL_SAVE_FAILED, str(e))
+            return
+
+        # 更新本地状态
+        if attach:
+            self._append_tag_chip(tag)
+            self._current_tags.append(tag)
+            self._refresh_preset_list()
+            if self._recent_tags is not None:
+                self._recent_tags.record(tag.id)
+        else:
+            self._remove_tag_chip(tag)
+
+        # 提交 + 通知调用方（刷新中栏/状态）
+        if self._commit_callback is not None:
+            self._commit_callback()
+        self._refresh_recent_list()
+        if self._on_tags_saved is not None:
+            self._on_tags_saved()
 
     def _on_pick_cover_clicked(self) -> None:
         """点击「设置封面」→ 请求 MainWindow 打开 CoverPickerDialog。"""
@@ -739,15 +936,15 @@ class MetadataPanel(QWidget):
 
         步骤：
         1. 调用 ContentService.update_metadata 更新 title/source_url/notes/cover_path。
-        2. 计算标签 diff：original_ids 与 current_ids 比较，分别 attach/detach。
-        3. 发射 on_saved(unit) 信号通知 MainWindow 提交事务 + 刷新中栏。
+        2. 发射 on_saved(unit) 信号通知 MainWindow 提交事务 + 刷新中栏。
+
+        操作便捷性4（2026-08-02）：标签已改为即时保存（chip 增删立即 attach/detach），
+        「保存」按钮不再处理标签 diff，仅负责元数据字段。
 
         异常处理（Stage 4.5 M18 修复）：
         - InvalidMetadataError / CoverImageNotFoundError → 弹 QMessageBox 提示。
-        - TagNotFoundError / ContentUnitNotFoundError → 标签关联失败时发射
-          on_save_failed 信号通知 MainWindow rollback 事务（避免 metadata 已写入
-          但标签关联失败的"部分成功"状态被意外提交），不发射 on_saved。
-        - 其他 ApplicationError → 同上。
+        - 其他 ApplicationError → 发射 on_save_failed 通知 MainWindow rollback
+          （避免元数据部分成功状态被意外提交），不发射 on_saved。
         """
         if self._current_unit is None:
             return
@@ -768,32 +965,16 @@ class MetadataPanel(QWidget):
                 cover_path=cover_path_value,
             )
 
-            # 2. 标签 diff
-            current_ids = {t.id for t in self._current_tags}
-            to_add = current_ids - self._original_tag_ids
-            to_remove = self._original_tag_ids - current_ids
-
-            # M18 修复：标签 attach/detach 失败不再静默吞异常，而是抛出
-            # 让外层 except 捕获后发射 on_save_failed 通知 MainWindow rollback。
-            for tag_id in to_add:
-                self._tag_service.attach_tag_to_unit(unit.id, tag_id)
-
-            for tag_id in to_remove:
-                self._tag_service.detach_tag_from_unit(unit.id, tag_id)
-
-            # 3. 更新内部状态
+            # 2. 更新内部状态（标签已即时保存）
             self._current_unit = updated_unit
-            self._original_tag_ids = current_ids
 
-            # 4. 发射信号
+            # 3. 发射信号
             self.on_saved.emit(updated_unit)
 
         except (InvalidMetadataError, CoverImageNotFoundError) as e:
             # 元数据校验失败：update_metadata 未写入，无需 rollback
             self._show_error(ui.METADATA_PANEL_SAVE_FAILED, str(e))
         except ApplicationError as e:
-            # 标签关联失败（TagNotFoundError 等）：metadata 已写入但标签失败，
-            # 发射 on_save_failed 通知 MainWindow rollback，避免部分成功状态残留。
             logger.warning("保存失败（将通知 MainWindow rollback）：%s", e)
             self._show_error(ui.METADATA_PANEL_SAVE_FAILED, str(e))
             self.on_save_failed.emit(str(e))

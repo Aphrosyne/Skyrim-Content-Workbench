@@ -76,6 +76,7 @@ MENU_UNMARK_CONTENT_UNIT = "取消内容单元标记"
 MENU_BATCH_MARK_CONTENT_UNIT = "批量标记为内容单元"
 MENU_BATCH_UNMARK_CONTENT_UNIT = "批量取消内容单元标记"
 MENU_BATCH_TAG = "批量打标签"
+MENU_ADD_RECENT_TAG = "添加最近标签"
 # UX 重构 Phase 1 Task 2（B2-2）：移除 MENU_ADD_TO_ASSEMBLY，Task 4 由「添加到钉住文件夹」替代
 MENU_QUICK_SET_COVER = "快速设置封面"
 MENU_QUICK_SET_COVER_NO_IMAGE = "该目录无可用图片"
@@ -294,6 +295,8 @@ METADATA_PANEL_TAG_INPUT_HINT = "输入标签名后回车添加，前缀自动�
 METADATA_PANEL_TAG_INPUT_PLACEHOLDER = "输入标签名（回车添加）…"
 METADATA_PANEL_PRESET_TAGS_LABEL = "已有标签（点击快速添加）"
 METADATA_PANEL_PRESET_TAGS_EMPTY_HINT = "（暂无可用标签，可在标签管理中创建）"
+METADATA_PANEL_RECENT_TAGS_LABEL = "最近使用："
+METADATA_PANEL_RECENT_TAGS_EMPTY_HINT = "（暂无最近使用的标签）"
 METADATA_PANEL_NO_UNIT_HINT = "请在文件列表选中一个内容单元查看元数据。"
 METADATA_PANEL_SAVE_OK = "元数据已保存"
 METADATA_PANEL_SAVE_FAILED = "保存失败"
@@ -305,10 +308,30 @@ METADATA_PANEL_NOTES_PLACEHOLDER = "备注…"
 METADATA_PANEL_TAGS_LABEL = "标签"
 METADATA_PANEL_COVER_LABEL = "封面"
 METADATA_PANEL_COVER_PREVIEW_PLACEHOLDER = "（无预览）"
-METADATA_PANEL_EMPTY_TAGS_HINT = "（无标签）"
 METADATA_PANEL_INVALID_TAG_NAME = "标签名称不能为空或仅含空白。"
 METADATA_PANEL_DUPLICATE_TAG = "标签「{name}」已添加。"
 METADATA_PANEL_TAG_REMOVED = "已移除标签「{name}」"
+METADATA_PANEL_TAG_LIST_HEIGHT = 28  # 标签 chip 区单行高度（可手动调整）
+METADATA_PANEL_PRESET_SCROLL_HEIGHT = 240  # 已有标签区高度（可手动调整）
+METADATA_PANEL_NOTES_EDIT_HEIGHT = 60  # 备注编辑框高度（可手动调整）
+
+# 元数据/装配面板统一区域样式模板（Task 8 主题化前的最小统一）。
+# 背景用 {bg} 占位：运行时取系统 palette Base 色（与左栏受管理根目录列表 / 目录树
+# 内部矩形、输入框一致的颜色）。
+# 圆角：Qt 的 border-radius 仅在声明边框时才对背景生效，因此用与背景同色的
+# 1px 边框（视觉无边框线）使圆角正常渲染。
+PANEL_REGION_OBJECT_NAME = "scwPanelRegion"
+PANEL_REGION_STYLE_TEMPLATE = (
+    "QWidget#{obj} {{ background: {bg}; border: 1px solid {bg}; border-radius: 4px; }}"
+    "QScrollArea#{obj} > QWidget > QWidget {{ background: transparent; }}"
+)
+# 区块小标题（「最近使用」「已有标签」等）：独立成行、无背景、字号稍小
+PANEL_SECTION_TITLE_STYLE = "font-size: 11px; color: #888;"
+# 标签按钮本身：背景跟随容器 {bg}（与区块同色），浅灰边框区分，避免白底白字
+METADATA_TAG_BUTTON_STYLE = (
+    "QPushButton {{ background: {bg}; border: 1px solid #c0c0c0; "
+    "border-radius: 4px; padding: 2px 8px; }}"
+)
 
 # BatchTagDialog 批量打标签对话框（Stage 4 Task 2）
 BATCH_TAG_DIALOG_TITLE = "批量打标签"
@@ -462,9 +485,9 @@ ZOOM_PRESET_SIZES = [96, 128, 160, 192, 224, 256]
 ZOOM_SLIDER_DEFAULT = 160
 
 # 右栏封面预览（Task 1b 修正：统一加载原图，宽度跟随右栏自适应）
-COVER_PREVIEW_DEFAULT_WIDTH = 256  # 初始宽度（resize 后跟随右栏）
-COVER_PREVIEW_MAX_HEIGHT = 512  # 最大高度（避免超长图占据整个右栏）
-COVER_PREVIEW_PLACEHOLDER_HEIGHT = 64  # 无图时占位高度（显示边框）
+COVER_PREVIEW_DEFAULT_WIDTH = 128  # 初始宽度（resize 后跟随右栏）
+COVER_PREVIEW_MAX_HEIGHT = 300  # 最大高度（避免超长图占据整个右栏）
+COVER_PREVIEW_PLACEHOLDER_HEIGHT = 96  # 无图时占位高度（显示边框）
 
 # CardListModel 卡片名称 ToolTip 中内容单元标记文本
 # Stage 5 Task 7 收尾：status 仅 organized/unmarked 两态，unmarked 不显示标记。

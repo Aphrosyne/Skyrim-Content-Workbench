@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import sqlite3
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -90,6 +91,7 @@ from app.metadata_panel import MetadataPanel
 from app.metadata_view import MetadataView
 from app.path_display import make_display_path_from_service
 from app.recent_move_targets import RecentMoveTargets
+from app.recent_tags import RecentTags
 from app.scan_controller import ScanController
 from app.tag_filter import TagFilterBar
 from app.tag_manager_dialog import TagManagerDialog
@@ -100,6 +102,7 @@ from application.clipboard_service import ClipboardService
 from application.content_service import ContentService
 from application.content_unit_creation_service import ContentUnitCreationService
 from application.errors import (
+    ApplicationError,
     ConflictError,
     CrossDriveError,
     FileOperationError,
@@ -116,6 +119,7 @@ from application.tag_service import TagService
 from application.undo_service import UndoService
 from domain.models import ContentUnit, FileEntry, ManagedRoot
 from infrastructure.path_utils import make_path_key
+from infrastructure.repositories.errors import RepositoryError
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +376,8 @@ class MainWindow(QMainWindow):
         self._qsettings = QSettings(QSETTINGS_ORGANIZATION, QSETTINGS_APPLICATION)
         # 操作便捷性3（2026-08-02）：最近移动目标（右键子菜单 / Ctrl+Q / 对话框快捷区）
         self._recent_move_targets = RecentMoveTargets(self._qsettings)
+        # UI合理性8（2026-08-02）：最近使用标签（面板最近区 / 右键「添加最近标签」）
+        self._recent_tags = RecentTags(self._qsettings)
         self._current_view_index: int = VIEW_INDEX_LIST  # 默认列表视图
         self._card_icon_size: int = ui.ZOOM_SLIDER_DEFAULT
 
@@ -803,7 +809,13 @@ class MainWindow(QMainWindow):
         # Stage 4 Task 2：MetadataPanel 编辑表单（仅当注入 TagService 时启用）
         if self._tag_service is not None:
             self._metadata_panel = MetadataPanel(
-                self._content_service, self._tag_service, parent=self._metadata_group
+                self._content_service,
+                self._tag_service,
+                # 操作便捷性4：标签即时保存（chip 增删立即提交）
+                commit_callback=self._transaction_scope.commit,
+                # UI合理性8：最近使用标签区域
+                recent_tags=self._recent_tags,
+                parent=self._metadata_group,
             )
             # UX 重构 Phase 2 Task 5 修复：注入 managed_root_service 用于路径简化显示
             self._metadata_panel.set_managed_root_service(self._service)
@@ -829,9 +841,9 @@ class MainWindow(QMainWindow):
             self._right_splitter.addWidget(self._assembly_panel)
             # 初始拉伸比例：元数据 3 : 装配 2（C1 决策）
             # setSizes 强制初始像素比例，stretchFactor 维持拉伸比例
-            self._right_splitter.setSizes([450, 300])
-            self._right_splitter.setStretchFactor(0, 3)
-            self._right_splitter.setStretchFactor(1, 2)
+            self._right_splitter.setSizes([625, 125])
+            self._right_splitter.setStretchFactor(0, 5)
+            self._right_splitter.setStretchFactor(1, 1)
         else:
             self._assembly_panel = None  # type: ignore[assignment]
 
@@ -1738,6 +1750,13 @@ class MainWindow(QMainWindow):
 
         # 操作便捷性3：在「移动到...」后插入「移动到最近目录」子菜单
         self._insert_recent_move_submenu(menu, [Path(e.path) for e in entries])
+        # UI合理性8：内容单元右键 → 「添加最近标签 ▸」子菜单
+        if (
+            len(entries) == 1
+            and entries[0].content_unit is not None
+            and self._tag_service is not None
+        ):
+            self._insert_recent_tag_submenu(menu, entries[0].content_unit.id)
 
         chosen = menu.exec(active_view.viewport().mapToGlobal(pos))
         if chosen is None:
@@ -3310,6 +3329,55 @@ class MainWindow(QMainWindow):
                 else:
                     menu.addMenu(submenu)
                 break
+
+    def _insert_recent_tag_submenu(self, menu, unit_id: str) -> None:
+        """在右键菜单追加「添加最近标签 ▸」子菜单（UI合理性8）。
+
+        列出最近使用标签，点击直接 attach + 提交，避免打开完整标签面板。
+        无最近标签或 TagService 未注入时不插入。
+        """
+        if self._tag_service is None or self._recent_tags is None:
+            return
+        tag_ids = self._recent_tags.list_recent()
+        if not tag_ids:
+            return
+        # id → name 映射（list_categories_with_tags 一次获取全部）
+        id_to_name: dict[str, str] = {}
+        try:
+            for _category, tags in self._tag_service.list_categories_with_tags():
+                for t in tags:
+                    id_to_name[t.id] = t.name
+        except ApplicationError:
+            return
+        submenu = QMenu(ui.MENU_ADD_RECENT_TAG, menu)
+        for tag_id in tag_ids:
+            name = id_to_name.get(tag_id)
+            if name is None:
+                continue  # 标签已删除，跳过
+            act = submenu.addAction(name)
+            act.triggered.connect(
+                lambda checked=False, tid=tag_id: self._on_add_recent_tag(unit_id, tid)
+            )
+        menu.addMenu(submenu)
+
+    def _on_add_recent_tag(self, unit_id: str, tag_id: str) -> None:
+        """右键「添加最近标签」点击：立即 attach + 提交（操作便捷性4）。"""
+        if self._tag_service is None:
+            return
+        try:
+            self._tag_service.attach_tag_to_unit(unit_id, tag_id)
+        except (ApplicationError, RepositoryError, sqlite3.Error) as e:
+            self._handle_service_error(e, ui.METADATA_PANEL_SAVE_FAILED, rollback=False)
+            return
+        self._commit()
+        self._recent_tags.record(tag_id)
+        # 元数据面板正显示该 unit 时同步刷新标签状态
+        if self._metadata_panel is not None:
+            current = self._metadata_panel.current_unit()
+            if current is not None and current.id == unit_id:
+                unit = self._content_service.get_by_id(unit_id)
+                if unit is not None:
+                    self._metadata_view.load_unit(unit)
 
     def _open_move_to_dialog(self, src_paths: list[Path], default_expand: Path | None) -> None:
         """打开「移动到...」对话框并处理结果。

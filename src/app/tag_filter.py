@@ -152,7 +152,9 @@ class TagFilterBar(QWidget):
         outer.addWidget(self._hint_label)
 
         # 分类按钮行（横排，可换行）
-        self._category_row = QFrame()
+        # 显式传 parent：避免无 parent QFrame 成为顶级窗口导致启动闪窗
+        # （与 UX 重构 Phase 1 Task 4 修复 3 同根因，2026-08-02）
+        self._category_row = QFrame(self)
         self._category_row.setObjectName("categoryRow")
         self._category_layout = QHBoxLayout(self._category_row)
         self._category_layout.setContentsMargins(0, 0, 0, 0)
@@ -161,7 +163,7 @@ class TagFilterBar(QWidget):
         outer.addWidget(self._category_row)
 
         # 标签按钮行（展开分类时填充）
-        self._tag_row = QFrame()
+        self._tag_row = QFrame(self)
         self._tag_row.setObjectName("tagRow")
         self._tag_row.setVisible(False)
         self._tag_layout = QHBoxLayout(self._tag_row)

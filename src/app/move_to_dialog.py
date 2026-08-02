@@ -101,7 +101,7 @@ class MoveToDialog(QDialog):
             recent_label = QLabel(ui.MOVE_TO_DIALOG_RECENT_LABEL)
             recent_row.addWidget(recent_label)
             for target in self._recent_targets:
-                btn = QPushButton(Path(target).name)
+                btn = QPushButton(Path(target).name, self)
                 btn.setToolTip(target)
                 btn.clicked.connect(lambda checked=False, t=target: self._on_recent_clicked(t))
                 recent_row.addWidget(btn)

@@ -26,6 +26,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListView,
@@ -44,7 +45,7 @@ from domain.models import ContentUnit, FileEntry
 logger = logging.getLogger(__name__)
 
 
-class AssemblyPanel(QWidget):
+class AssemblyPanel(QFrame):
     """装配面板（文件夹透视器）：透视任意文件夹内容，支持右键重命名预览图。
 
     信号回调（由 MainWindow 注入）：
@@ -98,8 +99,17 @@ class AssemblyPanel(QWidget):
         self.setAcceptDrops(True)
 
     def _setup_ui(self) -> None:
+        # 装配面板与左栏「受管理根目录 / 目录树」同构（UI合理性8 布局修复）：
+        # 最外层 1px 浅色细边框（#c0c0c0，视觉白色）→ 外层背景透明显示窗体
+        # 底色（近黑）→ 内部文件列表放在灰色圆角矩形（palette Base）中。
+        self.setObjectName("scwAssemblyPanel")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet(
+            "QFrame#scwAssemblyPanel { background: transparent; "
+            "border: 1px solid #c0c0c0; border-radius: 4px; }"
+        )
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(11, 4, 11, 11)
 
         # 标题栏（UX 重构 Task 2：移除关闭按钮；Task 3：新增 📌 钉住按钮）
         title_bar = QHBoxLayout()
@@ -120,8 +130,21 @@ class AssemblyPanel(QWidget):
         self._hint_label.setStyleSheet("color: #666;")
         layout.addWidget(self._hint_label)
 
-        # 文件列表（仅显示，不接收拖拽）
+        # 文件列表（仅显示，不接收拖拽）：放入灰色圆角矩形容器
+        self._list_frame = QFrame(self)
+        self._list_frame.setObjectName(ui.PANEL_REGION_OBJECT_NAME)
+        self._list_frame.setFrameShape(QFrame.Shape.NoFrame)
+        from PySide6.QtGui import QPalette  # noqa: PLC0415
+
+        bg = self.palette().color(QPalette.ColorRole.Base).name()
+        self._list_frame.setStyleSheet(
+            f"QFrame {{ background: {bg}; border: 1px solid {bg}; border-radius: 4px; }}"
+        )
+        list_layout = QVBoxLayout(self._list_frame)
+        list_layout.setContentsMargins(0, 0, 0, 0)
         self._list_view = QListView()
+        # 列表背景透明，显示容器深灰背景（避免内部白色块）
+        self._list_view.setStyleSheet("QListView { background: transparent; }")
         self._list_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._list_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -130,7 +153,8 @@ class AssemblyPanel(QWidget):
         self._list_model = FileListModel(single_column=True)
         self._list_view.setModel(self._list_model)
         self._list_view.customContextMenuRequested.connect(self._on_context_menu)
-        layout.addWidget(self._list_view)
+        list_layout.addWidget(self._list_view)
+        layout.addWidget(self._list_frame, stretch=1)
 
     # --- 公共接口 ---
 

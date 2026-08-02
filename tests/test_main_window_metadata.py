@@ -23,9 +23,12 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QSettings, Qt  # noqa: E402
+from PySide6.QtWidgets import QMenu  # noqa: E402
 
+from app import ui_constants as ui  # noqa: E402
 from app.main_window import MainWindow  # noqa: E402
+from app.recent_tags import RecentTags  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
 from application.folder_tree_service import FolderTreeService  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
@@ -534,6 +537,52 @@ def test_batch_tag_menu_not_appears_for_single_selection(qapp, main_window_with_
         mw_module.QMenu = original_menu  # noqa: SLF001
 
     assert "批量打标签" not in menu_items
+
+
+def test_insert_recent_tag_submenu(qapp, main_window_with_tags, tmp_path):
+    """UI合理性8：右键「添加最近标签 ▸」子菜单按最近顺序列出标签。"""
+    window, _, _, tag_service = main_window_with_tags
+    # 隔离最近标签（避免污染真实 QSettings）
+    window._recent_tags = RecentTags(  # noqa: SLF001
+        QSettings(str(tmp_path / "recent_tags.ini"), QSettings.Format.IniFormat)
+    )
+    cat = tag_service.create_category("分类A", color_hue=10)
+    tag = tag_service.create_tag("测试标签A", cat.id)
+    window._recent_tags.record(tag.id)  # noqa: SLF001
+
+    menu = QMenu()
+    window._insert_recent_tag_submenu(menu, "unit-id")  # noqa: SLF001
+
+    actions = menu.actions()
+    assert len(actions) == 1
+    submenu = actions[0].menu()
+    assert submenu is not None
+    assert submenu.title() == ui.MENU_ADD_RECENT_TAG
+    assert [a.text() for a in submenu.actions()] == ["测试标签A"]
+
+
+def test_on_add_recent_tag_attaches_and_records(qapp, main_window_with_tags, tmp_path):
+    """UI合理性8：右键「添加最近标签」点击 → 立即 attach + 提交 + 记录最近。"""
+    window, conn, root_dir, tag_service = main_window_with_tags
+    window._recent_tags = RecentTags(  # noqa: SLF001
+        QSettings(str(tmp_path / "recent_tags.ini"), QSettings.Format.IniFormat)
+    )
+    cat = tag_service.create_category("分类B", color_hue=20)
+    tag = tag_service.create_tag("测试标签B", cat.id)
+
+    unit = window._content_service.get_by_path(  # noqa: SLF001
+        str(root_dir / "护甲" / "寒霜之心.7z")
+    )
+    assert unit is not None
+
+    window._on_add_recent_tag(unit.id, tag.id)  # noqa: SLF001
+
+    rows = conn.execute(
+        "SELECT COUNT(*) FROM content_unit_tag WHERE content_unit_id = ? AND tag_id = ?",
+        (unit.id, tag.id),
+    ).fetchone()
+    assert rows[0] == 1
+    assert window._recent_tags.list_recent() == [tag.id]  # noqa: SLF001
 
 
 def test_batch_tag_action_commits_and_attaches(qapp, main_window_with_tags, monkeypatch):

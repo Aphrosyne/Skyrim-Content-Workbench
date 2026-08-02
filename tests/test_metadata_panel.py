@@ -23,7 +23,10 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import QSettings  # noqa: E402
+
 from app.metadata_panel import MetadataPanel  # noqa: E402
+from app.recent_tags import RecentTags  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
 from application.errors import InvalidMetadataError  # noqa: E402
 from application.tag_service import TagService  # noqa: E402
@@ -595,23 +598,18 @@ def test_add_chinese_tag_chip(qapp, unit_with_tags):
     assert tag2.name in panel.tag_chips()
 
 
-# === Stage 4.5 M18：标签 attach 失败路径测试 ===
+# === 操作便捷性4：标签即时保存失败路径（原 M18 保存期失败测试改写） ===
 
 
-def test_save_tag_attach_failure_emits_on_save_failed(qapp, unit_with_tags, monkeypatch):
-    """标签 attach 抛 TagNotFoundError → 发射 on_save_failed，不发射 on_saved。
-
-    M18 修复：标签关联失败时，metadata 已写入但标签关联失败，应通知
-    MainWindow rollback 事务（避免"部分成功"状态被意外提交）。
-    """
+def test_immediate_tag_attach_failure_shows_error_and_keeps_state(
+    qapp, unit_with_tags, monkeypatch
+):
+    """即时添加标签 attach 抛错 → 提示错误，chip 不添加，on_saved/on_save_failed 不发射。"""
     from application.errors import TagNotFoundError
 
-    content_service, tag_service, conn, _, unit, _, _, _, tag2 = unit_with_tags
+    content_service, tag_service, _, _, unit, _, _, _, tag2 = unit_with_tags
     panel = MetadataPanel(content_service, tag_service)
     panel.load_unit(unit)
-    # 添加 tag2 chip（让 to_add 非空，触发 attach_tag_to_unit 调用）
-    panel.add_tag_via_input(tag2.name)
-    assert tag2.name in panel.tag_chips()
 
     # 模拟 attach_tag_to_unit 抛 TagNotFoundError
     def _raise_tag_not_found(*args, **kwargs):
@@ -629,31 +627,24 @@ def test_save_tag_attach_failure_emits_on_save_failed(qapp, unit_with_tags, monk
     panel.on_saved.connect(lambda u: saved.append(u))
     panel.on_save_failed.connect(lambda msg: failed.append(msg))
 
-    panel.click_save_button()
+    panel.add_tag_via_input(tag2.name)
 
-    # on_saved 不应发射
-    assert saved == []
-    # on_save_failed 应发射，包含错误消息
-    assert len(failed) == 1
-    assert "标签不存在" in failed[0]
-    # 用户应看到错误提示
+    # 错误提示出现
     assert len(warning_calls) == 1
+    # chip 不添加（本地状态未变）
+    assert tag2.name not in panel.tag_chips()
+    # on_saved / on_save_failed 均不发射（即时路径不经过保存按钮）
+    assert saved == []
+    assert failed == []
 
 
-def test_save_tag_attach_failure_does_not_persist(qapp, unit_with_tags, monkeypatch):
-    """标签 attach 失败 → on_save_failed 通知 MainWindow rollback → metadata 未持久化。
-
-    验证事务一致性：MainWindow 收到 on_save_failed 后调用 rollback，
-    update_metadata 的写入应被回滚（title 未变更）。
-    """
+def test_immediate_tag_attach_failure_does_not_attach(qapp, unit_with_tags, monkeypatch):
+    """即时添加标签 attach 失败 → 数据库无该关联写入。"""
     from application.errors import TagNotFoundError
 
-    content_service, tag_service, conn, content_repo, unit, _, _, _, tag2 = unit_with_tags
+    content_service, tag_service, conn, _, unit, _, _, _, tag2 = unit_with_tags
     panel = MetadataPanel(content_service, tag_service)
     panel.load_unit(unit)
-    panel.add_tag_via_input(tag2.name)
-    # 修改 title（触发 update_metadata 写入）
-    panel._title_edit.setText("新标题-应被回滚")  # noqa: SLF001
 
     # 模拟 attach_tag_to_unit 抛 TagNotFoundError
     def _raise_tag_not_found(*args, **kwargs):
@@ -662,14 +653,134 @@ def test_save_tag_attach_failure_does_not_persist(qapp, unit_with_tags, monkeypa
     monkeypatch.setattr(tag_service, "attach_tag_to_unit", _raise_tag_not_found)
     monkeypatch.setattr("app.metadata_panel.QMessageBox.information", lambda *a, **kw: None)
 
-    # 模拟 MainWindow 的 on_save_failed 回调：调用 conn.rollback()
-    panel.on_save_failed.connect(lambda msg: conn.rollback())
+    panel.add_tag_via_input(tag2.name)
 
-    panel.click_save_button()
+    # 数据库无该标签关联（即时保存失败不写库）
+    rows = conn.execute(
+        "SELECT COUNT(*) FROM content_unit_tag WHERE content_unit_id = ? AND tag_id = ?",
+        (unit.id, tag2.id),
+    ).fetchone()
+    assert rows[0] == 0
 
-    # 验证 metadata 未持久化（被 rollback）
-    # 重新从数据库读取 unit
-    persisted_unit = content_repo.get_by_id(unit.id)
-    assert persisted_unit is not None
-    # title 应保持原值（未被修改为"新标题-应被回滚"）
-    assert persisted_unit.title != "新标题-应被回滚"
+
+# === UI合理性8 / 操作便捷性4：分组预选 / 最近标签 / 即时保存（2026-08-02） ===
+
+
+def _make_recent_tags(tmp_path: Path, tag_ids: list[str]) -> RecentTags:
+    """构造指向临时 ini 的 RecentTags 并预置记录。"""
+    recent = RecentTags(QSettings(str(tmp_path / "tags.ini"), QSettings.Format.IniFormat))
+    for tag_id in tag_ids:
+        recent.record(tag_id)
+    return recent
+
+
+def test_preset_list_grouped_by_category(qapp, unit_with_tags):
+    """UI合理性8：预选标签按分类分组显示（分组头 + 组内标签）。"""
+    content_service, tag_service, _, _, unit, cat1, cat2, tag1, tag2 = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+
+    # 分组头存在（服装护甲组为空——tag1 已关联，该组不显示；状态组显示 tag2）
+    assert panel.preset_group_names() == [cat2.name]
+    # 组内标签按名称显示；已关联的 tag1 不显示
+    assert panel.preset_tag_names() == [tag2.name]
+
+
+def test_preset_group_collapse_toggle(qapp, unit_with_tags):
+    """UI合理性8：点击分组头折叠/展开组内标签。"""
+    content_service, tag_service, _, _, unit, cat1, cat2, tag1, tag2 = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+
+    # 初始展开
+    assert not panel.is_preset_group_collapsed(cat2.id)
+    flow = panel._preset_groups[cat2.id]  # noqa: SLF001
+    assert not flow.isHidden()
+
+    panel.click_preset_group(cat2.name)
+    assert panel.is_preset_group_collapsed(cat2.id)
+    assert flow.isHidden()
+
+    panel.click_preset_group(cat2.name)
+    assert not panel.is_preset_group_collapsed(cat2.id)
+    assert not flow.isHidden()
+
+
+def test_immediate_tag_add_persists_and_commits(qapp, unit_with_tags, tmp_path):
+    """操作便捷性4：点击预选标签立即写库并触发提交回调。"""
+    content_service, tag_service, conn, _, unit, cat1, cat2, tag1, tag2 = unit_with_tags
+    commits: list[str] = []
+    panel = MetadataPanel(
+        content_service,
+        tag_service,
+        commit_callback=lambda: commits.append("commit"),
+    )
+    panel.load_unit(unit)
+
+    panel.click_preset_tag(tag2.name)
+
+    rows = conn.execute(
+        "SELECT COUNT(*) FROM content_unit_tag WHERE content_unit_id = ? AND tag_id = ?",
+        (unit.id, tag2.id),
+    ).fetchone()
+    assert rows[0] == 1
+    assert commits == ["commit"]
+    assert tag2.name in panel.tag_chips()
+
+
+def test_immediate_tag_remove_persists(qapp, unit_with_tags):
+    """操作便捷性4：点击 chip 立即 detach 并写库。"""
+    content_service, tag_service, conn, _, unit, cat1, cat2, tag1, tag2 = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+
+    panel.click_tag_chip(tag1.name)
+
+    rows = conn.execute(
+        "SELECT COUNT(*) FROM content_unit_tag WHERE content_unit_id = ? AND tag_id = ?",
+        (unit.id, tag1.id),
+    ).fetchone()
+    assert rows[0] == 0
+    assert tag1.name not in panel.tag_chips()
+
+
+def test_recent_tags_area_shows_and_adds(qapp, unit_with_tags, tmp_path):
+    """UI合理性8：最近标签区域显示并可点击即时添加。"""
+    content_service, tag_service, conn, _, unit, cat1, cat2, tag1, tag2 = unit_with_tags
+    recent = _make_recent_tags(tmp_path, [tag2.id])
+    panel = MetadataPanel(content_service, tag_service, recent_tags=recent)
+    panel.load_unit(unit)
+
+    assert panel.recent_tag_names() == [tag2.name]
+
+    panel.click_recent_tag(tag2.name)
+
+    rows = conn.execute(
+        "SELECT COUNT(*) FROM content_unit_tag WHERE content_unit_id = ? AND tag_id = ?",
+        (unit.id, tag2.id),
+    ).fetchone()
+    assert rows[0] == 1
+    assert tag2.name in panel.tag_chips()
+
+
+def test_recent_tag_already_in_chip_disabled(qapp, unit_with_tags, tmp_path):
+    """UI合理性8：已在 chip 的最近标签灰显不可点。"""
+    content_service, tag_service, _, _, unit, cat1, cat2, tag1, tag2 = unit_with_tags
+    recent = _make_recent_tags(tmp_path, [tag1.id])
+    panel = MetadataPanel(content_service, tag_service, recent_tags=recent)
+    panel.load_unit(unit)
+
+    assert tag1.name in panel.recent_tag_names()
+    assert not panel.is_recent_tag_enabled(tag1.name)
+
+
+def test_immediate_tag_add_records_recent(qapp, unit_with_tags, tmp_path):
+    """操作便捷性4：即时添加标签后记录到最近标签。"""
+    content_service, tag_service, _, _, unit, cat1, cat2, tag1, tag2 = unit_with_tags
+    recent = _make_recent_tags(tmp_path, [])
+    panel = MetadataPanel(content_service, tag_service, recent_tags=recent)
+    panel.load_unit(unit)
+
+    panel.click_preset_tag(tag2.name)
+
+    assert recent.list_recent() == [tag2.id]
