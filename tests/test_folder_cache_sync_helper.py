@@ -151,6 +151,64 @@ def test_on_folder_moved_no_old_record(helper, db_connection, tmp_path):
     assert repo.get_by_path(str(new_folder)) is not None
 
 
+def test_on_folder_moved_migrates_subtree(db_connection, tmp_path):
+    """on_folder_moved → 整棵子树迁移（Bug紧急修复2：带子目录不再 FK 失败）。"""
+    counter = {"n": 0}
+
+    def fake_uuid() -> str:
+        counter["n"] += 1
+        return f"fc-move-{counter['n']}"
+
+    helper = FolderCacheSyncHelper(
+        FolderCacheRepository(db_connection),
+        now_provider=lambda: "2026-07-28T00:00:00Z",
+        uuid_provider=fake_uuid,
+    )
+    old_parent = tmp_path / "OldDir"
+    old_parent.mkdir()
+    new_parent = tmp_path / "NewDir"
+    new_parent.mkdir()
+
+    old_folder = old_parent / "MyMod"
+    old_folder.mkdir()
+    old_sub = old_folder / "sub"
+    old_sub.mkdir()
+    old_sub2 = old_sub / "deep"
+    old_sub2.mkdir()
+    new_folder = new_parent / "MyMod"
+    new_folder.mkdir()
+    new_sub = new_folder / "sub"
+    new_sub.mkdir()
+    new_sub2 = new_sub / "deep"
+    new_sub2.mkdir()
+
+    # 缓存：OldDir / NewDir / MyMod / sub / deep（三层）
+    old_parent_fc = _seed_folder_cache(db_connection, str(old_parent))
+    _seed_folder_cache(db_connection, str(new_parent))
+    root_fc = _seed_folder_cache(db_connection, str(old_folder), parent_id=old_parent_fc.id)
+    sub_fc = _seed_folder_cache(db_connection, str(old_sub), parent_id=root_fc.id)
+    _seed_folder_cache(db_connection, str(old_sub2), parent_id=sub_fc.id)
+
+    # 不应抛 FOREIGN KEY 异常
+    helper.on_folder_moved(old_folder, new_folder, new_parent)
+
+    repo = FolderCacheRepository(db_connection)
+    # 旧子树已删除
+    assert repo.get_by_path(str(old_folder)) is None
+    assert repo.get_by_path(str(old_sub)) is None
+    assert repo.get_by_path(str(old_sub2)) is None
+    # 新子树完整且父链正确（根 → sub → deep）
+    new_root = repo.get_by_path(str(new_folder))
+    assert new_root is not None
+    assert new_root.parent_id == f"seed-{new_parent}"
+    new_sub_row = repo.get_by_path(str(new_sub))
+    assert new_sub_row is not None
+    assert new_sub_row.parent_id == new_root.id
+    new_sub2_row = repo.get_by_path(str(new_sub2))
+    assert new_sub2_row is not None
+    assert new_sub2_row.parent_id == new_sub_row.id
+
+
 # === on_folder_deleted ===
 
 

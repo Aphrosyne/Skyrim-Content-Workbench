@@ -542,3 +542,107 @@ class TestPersistScanResultUoW:
         cu_repo = ContentUnitRepository(db_connection)
         assert len(fc_repo.list_all()) > 0
         assert len(cu_repo.list_all()) == 2
+
+
+class TestStaleContentUnitCleanup:
+    """数据库问题1：扫描清理文件已不存在的 content_unit 行。"""
+
+    def _row_paths(self, db_connection) -> list[str]:
+        return [
+            r["path"]
+            for r in db_connection.execute("SELECT path FROM content_unit ORDER BY path").fetchall()
+        ]
+
+    def test_scan_removes_stale_row_under_root(
+        self, scan_service, managed_root_service, mod_tree, db_connection
+    ) -> None:
+        root = managed_root_service.add_root(mod_tree)
+        scan_service.scan_root(root.id, incremental=False)
+        stale = mod_tree / "护甲" / "寒霜之心.7z"
+        assert str(stale) in self._row_paths(db_connection)
+
+        # 删除压缩包（模拟外部重命名/删除后旧路径失效）
+        stale.unlink()
+        scan_service.scan_root(root.id, incremental=False)
+
+        paths = self._row_paths(db_connection)
+        assert str(stale) not in paths
+        # 其他压缩包仍保留
+        assert any(p.endswith("DragonSword.rar") for p in paths)
+
+    def test_scan_removes_stale_row_and_cascades_tags(
+        self, scan_service, managed_root_service, mod_tree, db_connection
+    ) -> None:
+        root = managed_root_service.add_root(mod_tree)
+        scan_service.scan_root(root.id, incremental=False)
+        stale = mod_tree / "护甲" / "寒霜之心.7z"
+        cu_id = db_connection.execute(
+            "SELECT id FROM content_unit WHERE path = ?", (str(stale),)
+        ).fetchone()["id"]
+
+        # 给失效行挂一个标签，验证级联清理（schema 无 ON DELETE CASCADE）
+        db_connection.execute(
+            "INSERT INTO tag_category (id, name, color_hue) VALUES ('cat1', '分类', 0)"
+        )
+        db_connection.execute(
+            "INSERT INTO tag (id, name, category_id) VALUES ('tag1', '标签', 'cat1')"
+        )
+        db_connection.execute(
+            "INSERT INTO content_unit_tag (content_unit_id, tag_id) VALUES (?, 'tag1')",
+            (cu_id,),
+        )
+        db_connection.commit()
+
+        stale.unlink()
+        scan_service.scan_root(root.id, incremental=False)
+
+        remaining = db_connection.execute(
+            "SELECT COUNT(*) AS n FROM content_unit_tag WHERE content_unit_id = ?",
+            (cu_id,),
+        ).fetchone()["n"]
+        assert remaining == 0
+        assert (
+            db_connection.execute(
+                "SELECT COUNT(*) AS n FROM content_unit WHERE id = ?", (cu_id,)
+            ).fetchone()["n"]
+            == 0
+        )
+
+    def test_scan_does_not_clean_other_roots(
+        self, scan_service, managed_root_service, mod_tree, tmp_path, db_connection
+    ) -> None:
+        root1 = managed_root_service.add_root(mod_tree)
+        root2_dir = tmp_path / "root2"
+        root2_dir.mkdir()
+        archive2 = root2_dir / "Other.7z"
+        archive2.write_bytes(b"x")
+        root2 = managed_root_service.add_root(root2_dir)
+        scan_service.scan_root(root1.id, incremental=False)
+        scan_service.scan_root(root2.id, incremental=False)
+        assert str(archive2) in self._row_paths(db_connection)
+        archive2.unlink()
+
+        # 只扫描 root1：root2 的失效行不应被清理
+        scan_service.scan_root(root1.id, incremental=False)
+        assert str(archive2) in self._row_paths(db_connection)
+
+        # 扫描 root2：失效行被清理
+        scan_service.scan_root(root2.id, incremental=False)
+        assert str(archive2) not in self._row_paths(db_connection)
+
+    def test_scan_skips_cleanup_when_root_missing(
+        self, scan_service, managed_root_service, mod_tree, db_connection
+    ) -> None:
+        root = managed_root_service.add_root(mod_tree)
+        scan_service.scan_root(root.id, incremental=False)
+        stale = mod_tree / "护甲" / "寒霜之心.7z"
+        assert str(stale) in self._row_paths(db_connection)
+
+        # 根目录整体消失（模拟移动硬盘/网络盘掉线）：跳过清理，不误删元数据
+        import shutil
+
+        shutil.rmtree(mod_tree)
+        summary = scan_service.scan_root(root.id, incremental=False)
+
+        assert summary.has_errors
+        assert str(stale) in self._row_paths(db_connection)

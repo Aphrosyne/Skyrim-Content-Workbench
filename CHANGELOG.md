@@ -8,6 +8,34 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.50.1] - 2026-08-02
+
+数据一致性与移动流程修复（数据库问题1 / BugFix1 / Bug紧急修复2）。
+
+**修复**
+
+- **重命名/移动后的数据库残留（数据库问题1）**：
+  - 文件重命名/移动不再产生重复内容单元：`FileOperationService` 文件分支原地
+    更新 content_unit 行（path/path_key + 默认标题跟随，用户自定义标题保留）；
+    目标位于已标记文件夹内时按 spec §5.4 取消该文件标记（删除行）
+  - 扫描时清理当前 root 下文件已不存在的 content_unit 行（级联
+    content_unit_tag / thumbnail_cache；root 本身不存在时跳过，防误删）——
+    既有脏库在下次扫描后自愈
+  - 新增 `ContentUnitRepository.get_by_path_key`（归一化路径查询）
+- **批量移动报"移动失败"但内容实际已移动（Bug紧急修复2）**：
+  - 根因：`FolderCacheSyncHelper.on_folder_moved` 只删单行，移动带子目录缓存的
+    目录时触发 FOREIGN KEY constraint failed，DB 回滚后旧路径 content_unit 行
+    被扫描清理误删（丢失内容单元标记）
+  - 修复：`on_folder_moved` 改为整棵子树迁移（新路径行父先子后插入、前缀重写、
+    父链重建；旧行先子后父删除），目录树移动后即时反映完整子树
+- **Ctrl+Q 目录树不刷新（BugFix1）**：Ctrl+Q 改为目录树聚焦时移动树选中节点
+  （新增 `_tree_selected_path`，与 Ctrl+M 树版本对称），否则移动中栏选中；
+  移动后统一刷新目录树
+
+**测试**：相关测试 207 项通过（数据库问题1 回归 / 扫描 / 文件操作 / folder_cache
+同步 / 移动到与快捷键等 9 个测试文件）；ruff check + format 全绿。
+（按用户要求本轮仅跑相关子集，未跑全量。）
+
 ## [0.50.0] - 2026-08-02
 
 标签系统体验优化 + 元数据/装配面板样式修复（UI合理性8 / UI合理性7 / 操作便捷性4）。

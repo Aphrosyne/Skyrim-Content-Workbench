@@ -108,7 +108,13 @@ class FolderCacheSyncHelper:
             raise FileOperationError(f"写入 folder_cache 失败：{e}") from e
 
     def on_folder_moved(self, old_path: Path, new_path: Path, target_dir: Path) -> None:
-        """文件夹移动后同步：删除旧节点 + 插入新节点 + 更新父目录 mtime。
+        """文件夹移动后同步：迁移整棵缓存子树 + 更新父目录 mtime。
+
+        Bug紧急修复2（2026-08-02）：原实现只"删除旧单行 + 插入新单行"，移动带
+        子目录缓存（folder_cache.parent_id 引用）的文件夹时删除父行触发
+        FOREIGN KEY 约束失败，导致"磁盘已移动但数据库未同步"，随后扫描清理
+        会误删旧路径 content_unit 行（丢失内容单元标记）。现改为整棵子树迁移：
+        新路径行按父先子后插入（路径前缀重写、父关系重建），旧行按先子后父删除。
 
         多步写操作（TD-L18 策略：任一步失败立即抛异常，由上层 rollback 保证
         事务一致性，TD-H8 既有策略）。
@@ -122,13 +128,10 @@ class FolderCacheSyncHelper:
             FileOperationError: folder_cache 同步任一步失败。
         """
         try:
-            # 1. 删除旧路径的 folder_cache 记录
-            self._delete_by_path(old_path)
+            # 1. 迁移整棵子树（新行插入 + 旧行先子后父删除）
+            self._move_folder_subtree(old_path, new_path, target_dir)
 
-            # 2. 在目标目录下插入新路径的 folder_cache 记录
-            self._create_for_new_path(new_path, target_dir)
-
-            # 3. 更新目标目录的 last_scanned_mtime
+            # 2. 更新目标目录的 last_scanned_mtime
             self._update_parent_mtime(target_dir)
         except (RepositoryError, sqlite3.Error, OSError) as e:
             raise FileOperationError(f"同步 folder_cache 失败：{e}") from e
@@ -220,23 +223,65 @@ class FolderCacheSyncHelper:
                 self._repo.delete(fc.id)
                 return
 
-    def _create_for_new_path(self, new_folder_path: Path, target_dir: Path) -> None:
-        """为新路径插入 folder_cache 记录。"""
-        new_path_key = make_path_key(str(new_folder_path))
-        for fc in self._repo.list_all():
-            if make_path_key(fc.path) == new_path_key:
-                return  # 已存在，不重复插入
+    def _move_folder_subtree(self, old_path: Path, new_path: Path, target_dir: Path) -> None:
+        """迁移 old_path 下整棵 folder_cache 子树到 new_path（Bug紧急修复2）。
 
-        parent_id = self._resolve_parent_id_by_path(str(target_dir))
-        mtime = _safe_mtime(new_folder_path)
-        folder = FolderCache(
-            id=self._new_uuid(),
-            path=str(new_folder_path),
-            parent_id=parent_id,
-            last_scanned_mtime=mtime,
-            created_at=self._now(),
-        )
-        self._repo.create(folder)
+        - 收集 old_path（含自身）及所有子节点的缓存行
+        - 按路径深度升序（父先子后）插入新路径行：路径前缀 old→new 重写，
+          根节点 parent_id 改为 target_dir 的缓存 id，子节点 parent_id 映射到
+          新建父行的新 id
+        - 按路径深度降序（先子后父）删除旧行，避免 FOREIGN KEY 约束冲突
+
+        旧路径无记录时仍插入新路径根节点（保持原行为，目录树即时可见）。
+        """
+        old_key = make_path_key(str(old_path))
+        sep = os.sep
+        old_prefix = old_key.rstrip(sep) + sep
+        rows = [
+            fc
+            for fc in self._repo.list_all()
+            if make_path_key(fc.path) == old_key or make_path_key(fc.path).startswith(old_prefix)
+        ]
+        if not rows:
+            # 旧路径无缓存记录：仅插入新路径根节点
+            new_fc = FolderCache(
+                id=self._new_uuid(),
+                path=str(new_path),
+                parent_id=self._resolve_parent_id_by_path(str(target_dir)),
+                last_scanned_mtime=_safe_mtime(new_path),
+                created_at=self._now(),
+            )
+            self._repo.create(new_fc)
+            return
+
+        # 父先子后插入新行（父节点 id 先映射，子节点才能引用）
+        rows.sort(key=lambda fc: len(fc.path))
+        old_to_new: dict[str, str] = {}
+        for fc in rows:
+            if make_path_key(fc.path) == old_key:
+                new_fc_path = new_path
+                parent_id = self._resolve_parent_id_by_path(str(target_dir))
+            else:
+                try:
+                    rel = Path(os.path.relpath(fc.path, old_path))
+                except (ValueError, OSError):
+                    # 大小写/分隔符差异：用归一化后缀回退
+                    rel = Path(make_path_key(fc.path)[len(old_key) :].lstrip(sep))
+                new_fc_path = new_path / rel
+                parent_id = old_to_new.get(fc.parent_id)  # type: ignore[arg-type]
+            new_fc = FolderCache(
+                id=self._new_uuid(),
+                path=str(new_fc_path),
+                parent_id=parent_id,
+                last_scanned_mtime=_safe_mtime(new_fc_path),
+                created_at=self._now(),
+            )
+            created = self._repo.create(new_fc)
+            old_to_new[fc.id] = created.id
+
+        # 先子后父删除旧行（避免 FK 约束冲突）
+        for fc in sorted(rows, key=lambda fc: len(fc.path), reverse=True):
+            self._repo.delete(fc.id)
 
     def _update_parent_mtime(self, target_dir: Path) -> None:
         """更新目标目录的 last_scanned_mtime。"""

@@ -88,6 +88,19 @@ class ContentUnitRepository:
             return None
         return self._row_to_model(row)
 
+    def get_by_path_key(self, path_key: str) -> ContentUnit | None:
+        """按归一化 path_key 查询（唯一约束）；不存在返回 None。"""
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM content_unit WHERE path_key = ?",
+                (path_key,),
+            ).fetchone()
+        except sqlite3.Error as e:
+            raise RepositoryError(f"无法按 path_key 查询 ContentUnit：{e}") from e
+        if row is None:
+            return None
+        return self._row_to_model(row)
+
     def list_by_path_prefix_normalized(self, prefix: str) -> list[ContentUnit]:
         """返回 path 等于 prefix 或位于 prefix 子树下的 ContentUnit（含 prefix 自身）。
 

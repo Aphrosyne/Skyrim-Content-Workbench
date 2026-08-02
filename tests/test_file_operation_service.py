@@ -399,7 +399,8 @@ def _seed_content_unit(repo: ContentUnitRepository, unit_id: str, path: str) -> 
     unit = ContentUnit(
         id=unit_id,
         path=path,
-        title=path.rsplit("/", 1)[-1],
+        # 与扫描默认行为一致（title = 文件名）；Path.name 兼容 Windows 反斜杠路径
+        title=Path(path).name,
         content_type="mod",
         created_at="2026-07-28T00:00:00Z",
         updated_at="2026-07-28T00:00:00Z",
@@ -550,6 +551,100 @@ class TestMoveDirectoryAutoSync:
         updated_unrelated = content_unit_repo.get_by_id(unit_unrelated.id)
         assert updated_unrelated is not None
         assert updated_unrelated.path == str(old_root / "Other")
+
+    def test_move_directory_with_cached_subtree_succeeds(self, tmp_path: Path) -> None:
+        """Bug紧急修复2：移动带子目录缓存的目录不再 FK 失败，子树完整迁移。"""
+        db_path = tmp_path / "test.db"
+        init_db(db_path)
+        conn = get_connection(db_path)
+        conn.row_factory = sqlite3.Row
+        counter = {"n": 0}
+
+        def fake_uuid() -> str:
+            counter["n"] += 1
+            return f"uuid-move-{counter['n']}"
+
+        folder_cache_repo = FolderCacheRepository(conn)
+        content_unit_repo = ContentUnitRepository(conn)
+        svc = FileOperationService(
+            OperationHistoryRepository(conn),
+            folder_cache_helper=FolderCacheSyncHelper(folder_cache_repo),
+            content_unit_repo=content_unit_repo,
+            now_provider=lambda: "2026-07-28T00:00:00Z",
+            uuid_provider=fake_uuid,
+        )
+
+        old_parent = tmp_path / "OldDir"
+        old_parent.mkdir()
+        new_parent = tmp_path / "NewDir"
+        new_parent.mkdir()
+        src = old_parent / "MyMod"
+        src.mkdir()
+        sub = src / "sub"
+        sub.mkdir()
+        (sub / "file.7z").write_bytes(b"data")
+
+        from domain.models import FolderCache
+
+        old_parent_fc = folder_cache_repo.create(
+            FolderCache(
+                id="fc-op",
+                path=str(old_parent),
+                parent_id=None,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+        new_parent_fc = folder_cache_repo.create(
+            FolderCache(
+                id="fc-np",
+                path=str(new_parent),
+                parent_id=None,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+        src_fc = folder_cache_repo.create(
+            FolderCache(
+                id="fc-src",
+                path=str(src),
+                parent_id=old_parent_fc.id,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+        folder_cache_repo.create(
+            FolderCache(
+                id="fc-sub",
+                path=str(sub),
+                parent_id=src_fc.id,
+                last_scanned_mtime=1000.0,
+                created_at="2026-07-28T00:00:00Z",
+            )
+        )
+        unit = _seed_content_unit(content_unit_repo, "cu-mod", str(src))
+        conn.commit()
+
+        dst = new_parent / "MyMod"
+        # 原实现此处抛 FOREIGN KEY constraint failed（Bug紧急修复2）
+        svc.move(src, dst)
+        conn.commit()
+
+        # 旧子树删除
+        assert folder_cache_repo.get_by_path(str(src)) is None
+        assert folder_cache_repo.get_by_path(str(sub)) is None
+        # 新子树完整且父链正确
+        new_root = folder_cache_repo.get_by_path(str(dst))
+        assert new_root is not None
+        assert new_root.parent_id == new_parent_fc.id
+        new_sub = folder_cache_repo.get_by_path(str(dst / "sub"))
+        assert new_sub is not None
+        assert new_sub.parent_id == new_root.id
+        # ContentUnit.path 前缀重写
+        updated = content_unit_repo.get_by_id(unit.id)
+        assert updated is not None
+        assert make_path_key(updated.path) == make_path_key(str(dst))
+        conn.close()
 
 
 class TestMoveFileAutoSync:
@@ -898,6 +993,134 @@ class TestRenameWithoutSync:
         assert folder_cache_repo.list_all() == []
 
         conn.close()
+
+
+class TestFileContentUnitSync:
+    """数据库问题1：文件重命名/移动原地更新 content_unit 行（path + 默认标题跟随）。"""
+
+    def test_rename_file_updates_content_unit_path_and_default_title(
+        self, service_with_sync, tmp_path: Path
+    ) -> None:
+        svc, conn, _, content_unit_repo = service_with_sync
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        src = parent / "AAA.7z"
+        src.write_bytes(b"data")
+        _seed_content_unit(content_unit_repo, "cu-file", str(src))
+        conn.commit()
+
+        svc.rename(src, "BAA.7z")
+        conn.commit()
+
+        rows = conn.execute("SELECT path, path_key, title FROM content_unit").fetchall()
+        assert len(rows) == 1
+        assert make_path_key(rows[0]["path"]) == make_path_key(str(parent / "BAA.7z"))
+        assert rows[0]["title"] == "BAA.7z"
+
+    def test_rename_file_preserves_custom_title(self, service_with_sync, tmp_path: Path) -> None:
+        svc, conn, _, content_unit_repo = service_with_sync
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        src = parent / "AAA.7z"
+        src.write_bytes(b"data")
+        unit = _seed_content_unit(content_unit_repo, "cu-file", str(src))
+        # 模拟用户手动改过标题
+        content_unit_repo.update(
+            ContentUnit(
+                id=unit.id,
+                path=unit.path,
+                title="自定义标题",
+                content_type=unit.content_type,
+                source_url=unit.source_url,
+                cover_path=unit.cover_path,
+                notes=unit.notes,
+                created_at=unit.created_at,
+                updated_at=unit.updated_at,
+            )
+        )
+        conn.commit()
+
+        svc.rename(src, "BAA.7z")
+        conn.commit()
+
+        rows = conn.execute("SELECT title FROM content_unit").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["title"] == "自定义标题"
+
+    def test_rename_file_without_content_unit_noop(self, service_with_sync, tmp_path: Path) -> None:
+        svc, conn, _, content_unit_repo = service_with_sync
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        src = parent / "plain.txt"
+        src.write_bytes(b"data")
+
+        svc.rename(src, "new.txt")
+        conn.commit()
+
+        assert content_unit_repo.list_all() == []
+
+    def test_move_file_updates_content_unit_path(self, service_with_sync, tmp_path: Path) -> None:
+        svc, conn, _, content_unit_repo = service_with_sync
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        dst_dir = tmp_path / "dst"
+        dst_dir.mkdir()
+        src = src_dir / "AAA.7z"
+        src.write_bytes(b"data")
+        _seed_content_unit(content_unit_repo, "cu-file", str(src))
+        conn.commit()
+
+        svc.move(src, dst_dir / "AAA.7z")
+        conn.commit()
+
+        rows = conn.execute("SELECT path, title FROM content_unit").fetchall()
+        assert len(rows) == 1
+        assert make_path_key(rows[0]["path"]) == make_path_key(str(dst_dir / "AAA.7z"))
+        assert rows[0]["title"] == "AAA.7z"  # 文件名未变，标题不变
+
+    def test_move_file_with_new_name_updates_default_title(
+        self, service_with_sync, tmp_path: Path
+    ) -> None:
+        svc, conn, _, content_unit_repo = service_with_sync
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        dst_dir = tmp_path / "dst"
+        dst_dir.mkdir()
+        src = src_dir / "AAA.7z"
+        src.write_bytes(b"data")
+        _seed_content_unit(content_unit_repo, "cu-file", str(src))
+        conn.commit()
+
+        svc.move(src, dst_dir / "BAA.7z")
+        conn.commit()
+
+        rows = conn.execute("SELECT path, title FROM content_unit").fetchall()
+        assert len(rows) == 1
+        assert make_path_key(rows[0]["path"]) == make_path_key(str(dst_dir / "BAA.7z"))
+        assert rows[0]["title"] == "BAA.7z"
+
+    def test_move_file_into_marked_folder_removes_unit(
+        self, service_with_sync, tmp_path: Path
+    ) -> None:
+        """目标位于已标记文件夹内（spec §5.4 父子不可同时标记）→ 删除该行。"""
+        svc, conn, _, content_unit_repo = service_with_sync
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        marked = tmp_path / "marked"
+        marked.mkdir()
+        src = src_dir / "AAA.7z"
+        src.write_bytes(b"data")
+        unit = _seed_content_unit(content_unit_repo, "cu-file", str(src))
+        # 目标文件夹本身已是 ContentUnit
+        _seed_content_unit(content_unit_repo, "cu-folder", str(marked))
+        conn.commit()
+
+        svc.move(src, marked / "AAA.7z")
+        conn.commit()
+
+        # 文件行被删除（进入已标记文件夹 = 标记取消），文件夹行保留
+        assert content_unit_repo.get_by_id(unit.id) is None
+        assert content_unit_repo.get_by_id("cu-folder") is not None
 
 
 # === Stage 5 Task 3a：delete_to_recycle_bin ===

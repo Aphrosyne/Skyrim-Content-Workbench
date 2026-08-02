@@ -3244,17 +3244,42 @@ class MainWindow(QMainWindow):
         self._on_move_to(entries)
 
     def _on_shortcut_move_to_latest(self) -> None:
-        """Ctrl+Q：中栏选中条目 → 直接移动到最近目标（操作便捷性3）。"""
-        entries = self._get_selected_entries()
-        if not entries:
-            self.statusBar().showMessage(ui.SHORTCUT_MOVE_TO_NO_SELECTION, 2000)
-            return
+        """Ctrl+Q：目录树/中栏选中条目 → 直接移动到最近目标（操作便捷性3）。
+
+        BugFix1（2026-08-02）：目录树获得焦点时优先移动树选中节点（与 Ctrl+M
+        的树版本行为对称），否则移动中栏选中条目；移动后统一 _refresh_tree。
+        """
+        src_paths: list[Path] = []
+        if self._tree_view.hasFocus():
+            tree_path = self._tree_selected_path()
+            if tree_path is None:
+                self.statusBar().showMessage(ui.SHORTCUT_MOVE_TO_NO_SELECTION, 2000)
+                return
+            src_paths = [tree_path]
+        else:
+            entries = self._get_selected_entries()
+            if not entries:
+                self.statusBar().showMessage(ui.SHORTCUT_MOVE_TO_NO_SELECTION, 2000)
+                return
+            src_paths = [Path(e.path) for e in entries]
         latest = self._recent_move_targets.latest()
         if latest is None:
             self.statusBar().showMessage(ui.SHORTCUT_MOVE_TO_LATEST_NO_TARGET, 3000)
             return
-        src_paths = [Path(e.path) for e in entries]
         self._perform_move_to(src_paths, Path(latest))
+
+    def _tree_selected_path(self) -> Path | None:
+        """返回目录树当前选中节点的路径；无选中返回 None。"""
+        sm = self._tree_view.selectionModel()
+        if sm is None:
+            return None
+        indexes = sm.selectedIndexes()
+        if not indexes:
+            return None
+        node = self._tree_model.node_at(indexes[0])
+        if node is None:
+            return None
+        return Path(node.real_path)
 
     def _on_shortcut_move_to_tree(self) -> None:
         """Ctrl+M 目录树：触发移动到对话框。"""

@@ -602,6 +602,64 @@ def test_ctrl_q_moves_to_latest(qapp, move_to_env, tmp_path: Path) -> None:
     assert (target / "file1.7z").exists()
 
 
+def test_ctrl_q_tree_moves_selected_directory(qapp, move_to_env, tmp_path: Path) -> None:
+    """Ctrl+Q 目录树聚焦时 → 移动树选中节点并刷新目录树（BugFix1）。"""
+    window, conn, root_dir, _, _ = move_to_env
+    _isolate_recent_targets(window, tmp_path)
+    target = root_dir / "Target"
+    window._recent_move_targets.record(str(target))  # noqa: SLF001
+    window.show()
+    window.activateWindow()
+    _select_stash(qapp, window)
+    window._tree_view.setFocus()  # noqa: SLF001
+    qapp.processEvents()
+    assert window._tree_view.hasFocus()  # noqa: SLF001
+
+    window._on_shortcut_move_to_latest()  # noqa: SLF001
+    qapp.processEvents()
+
+    # Stash 目录移动到 Target 下
+    assert (target / "Stash").is_dir()
+    assert (target / "Stash" / "file1.7z").is_file()
+    assert not (root_dir / "Stash").exists()
+    # folder_cache（目录树数据源）已同步：旧路径行删除、新路径行存在
+    stale = conn.execute(
+        "SELECT COUNT(*) AS n FROM folder_cache WHERE path = ?",
+        (str(root_dir / "Stash"),),
+    ).fetchone()["n"]
+    assert stale == 0
+    moved = conn.execute(
+        "SELECT COUNT(*) AS n FROM folder_cache WHERE path = ?",
+        (str(target / "Stash"),),
+    ).fetchone()["n"]
+    assert moved == 1
+
+
+def test_ctrl_q_uses_middle_selection_when_tree_not_focused(
+    qapp, move_to_env, tmp_path: Path
+) -> None:
+    """目录树未聚焦时 Ctrl+Q → 移动中栏选中条目（树选中忽略）。"""
+    window, _, root_dir, _, _ = move_to_env
+    _isolate_recent_targets(window, tmp_path)
+    target = root_dir / "Target"
+    window._recent_move_targets.record(str(target))  # noqa: SLF001
+    window.show()
+    window.activateWindow()
+    _select_stash(qapp, window)
+    _select_entry(qapp, window, "file1.7z")
+    window._content_view.setFocus()  # noqa: SLF001
+    qapp.processEvents()
+    assert not window._tree_view.hasFocus()  # noqa: SLF001
+
+    window._on_shortcut_move_to_latest()  # noqa: SLF001
+    qapp.processEvents()
+
+    # 移动的是中栏文件，树节点 Stash 未被移动
+    assert not (root_dir / "Stash" / "file1.7z").exists()
+    assert (target / "file1.7z").exists()
+    assert (root_dir / "Stash").is_dir()
+
+
 def test_recent_submenu_inserted_after_move_to(qapp, move_to_env, tmp_path: Path) -> None:
     """右键菜单在「移动到...」后插入「移动到最近目录」子菜单。"""
     window, _, root_dir, _, _ = move_to_env

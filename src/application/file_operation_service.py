@@ -321,7 +321,8 @@ class FileOperationService:
         """移动后同步 folder_cache + ContentUnit.path。
 
         - 目录移动：on_folder_moved（删除旧 + 插入新 + 更新父 mtime）+ ContentUnit.path 前缀重写
-        - 文件移动：update_folder_mtime（源/目标父目录 mtime 更新，best-effort）
+        - 文件移动：update_folder_mtime（源/目标父目录 mtime 更新，best-effort）+
+          更新该文件对应的 ContentUnit 行（path/path_key + 默认标题跟随，数据库问题1）
 
         同步失败抛 FileOperationError，由上层 UoW 回滚 DB 写操作。
         文件已移动无法回滚，由调用方处理。
@@ -350,6 +351,10 @@ class FileOperationService:
                 self._folder_cache_helper.update_folder_mtime(dst.parent)
                 if make_path_key(src.parent) != make_path_key(dst.parent):
                     self._folder_cache_helper.update_folder_mtime(src.parent)
+            # 数据库问题1（2026-08-02）：文件移动后原地更新 ContentUnit 行，
+            # 避免扫描时旧路径行残留 + 新路径新增一行导致搜索重复
+            if self._content_unit_repo is not None:
+                self._update_content_unit_path_for_file(src, dst)
 
     def _update_content_unit_paths_on_move(self, src: Path, dst: Path) -> None:
         """移动目录后，更新所有路径前缀匹配的 ContentUnit.path。
@@ -406,6 +411,68 @@ class FileOperationService:
                 raise FileOperationError(
                     f"更新 ContentUnit 路径失败：unit_id={unit.id} err={e}"
                 ) from e
+
+    def _update_content_unit_path_for_file(self, src: Path, dst: Path) -> None:
+        """文件重命名/移动后，原地更新该文件对应的 ContentUnit 行（数据库问题1）。
+
+        文件重命名/移动不会产生新的 ContentUnit 行，而是改写旧行：
+        - path / path_key 更新为新路径（仓储 update 自动重算 path_key）
+        - title 若仍是扫描时的默认文件名（== 旧文件名，说明用户未手动修改），
+          跟随更新为新文件名；用户改过的标题保留
+        - 若目标位于已标记文件夹内（spec §5.4：父子不可同时标记），改为删除该行，
+          与扫描侧 _has_ancestor_content_unit 的跳过逻辑保持一致
+
+        src 对应行不存在（文件未标记 / 位于已标记文件夹内）时为空操作。
+
+        Raises:
+            FileOperationError: 查询或更新失败。
+        """
+        try:
+            unit = self._content_unit_repo.get_by_path_key(make_path_key(src))
+        except (RepositoryError, sqlite3.Error) as e:
+            raise FileOperationError(f"查询 ContentUnit 失败：{src} err={e}") from e
+        if unit is None:
+            return
+
+        # spec §5.4 不变量：内容单元不能位于另一个内容单元内部。
+        # 移入/重命名到已标记文件夹内 → 该文件的标记取消（删除行）
+        if self._has_marked_folder_ancestor(dst):
+            try:
+                self._content_unit_repo.delete(unit.id)
+            except (RepositoryError, sqlite3.Error) as e:
+                raise FileOperationError(
+                    f"删除进入已标记文件夹的 ContentUnit 失败：unit_id={unit.id} err={e}"
+                ) from e
+            return
+
+        title = dst.name if unit.title == src.name else unit.title
+        updated = ContentUnit(
+            id=unit.id,
+            path=str(dst),
+            title=title,
+            content_type=unit.content_type,
+            source_url=unit.source_url,
+            cover_path=unit.cover_path,
+            notes=unit.notes,
+            created_at=unit.created_at,
+            updated_at=unit.updated_at,
+        )
+        try:
+            self._content_unit_repo.update(updated)
+        except (RepositoryError, sqlite3.Error) as e:
+            raise FileOperationError(f"更新 ContentUnit 路径失败：unit_id={unit.id} err={e}") from e
+
+    def _has_marked_folder_ancestor(self, path: Path) -> bool:
+        """判断 path 的任一祖先目录是否已是 ContentUnit（spec §5.4 不变量）。"""
+        p = path.parent
+        while p != p.parent:
+            try:
+                if self._content_unit_repo.get_by_path_key(make_path_key(p)) is not None:
+                    return True
+            except (RepositoryError, sqlite3.Error) as e:
+                raise FileOperationError(f"查询 ContentUnit 失败：{p} err={e}") from e
+            p = p.parent
+        return False
 
     # === Stage 5 Task 3a：rename + delete_to_recycle_bin ===
 
@@ -513,7 +580,8 @@ class FileOperationService:
         """重命名后同步 folder_cache + ContentUnit.path（复用 move 的同步逻辑）。
 
         - 目录重命名：on_folder_moved（删除旧 + 插入新 + 更新父 mtime）+ ContentUnit.path 前缀重写
-        - 文件重命名：update_folder_mtime（父目录 mtime 更新，best-effort）
+        - 文件重命名：update_folder_mtime（父目录 mtime 更新，best-effort）+
+          更新该文件对应的 ContentUnit 行（path/path_key + 默认标题跟随，数据库问题1）
 
         与 _sync_on_move 的差异：父目录相同，无需更新源父目录 mtime。
         """
@@ -538,6 +606,10 @@ class FileOperationService:
             if self._folder_cache_helper is not None:
                 # rename 父目录相同，只更新一次
                 self._folder_cache_helper.update_folder_mtime(dst.parent)
+            # 数据库问题1（2026-08-02）：文件重命名后原地更新 ContentUnit 行，
+            # 避免扫描时旧路径行残留 + 新路径新增一行导致搜索重复
+            if self._content_unit_repo is not None:
+                self._update_content_unit_path_for_file(src, dst)
 
     def delete_to_recycle_bin(self, paths: list[Path]) -> tuple[list[OperationHistory], list[str]]:
         """将多个文件/目录移至 Windows 回收站。
