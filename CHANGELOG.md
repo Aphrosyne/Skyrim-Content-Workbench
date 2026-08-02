@@ -8,6 +8,17 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.48.1] - 2026-08-02
+
+紧急修复：标签管理菜单无法打开（`AttributeError: 'MainWindow' object has no attribute '_commit_callback'`）。
+
+- **原因**：UX 重构 Task 7 Commit 1 将 `_commit` / `_rollback` 回调迁入
+  `TransactionScope` 时，遗漏了 `_on_tag_manager_clicked` 对 `TagManagerDialog`
+  的 commit / rollback 回调注入，仍引用已移除的 `self._commit_callback` / `self._rollback_callback`。
+- **修复**：`TagManagerDialog` 构造改为注入 `self._transaction_scope.commit` /
+  `self._transaction_scope.rollback`（`main_window.py`），事务边界统一走 TransactionScope。
+- **测试**：全量 1283 passed, 4 skipped；ruff check + format 全绿。
+
 ## [0.48.0] - 2026-08-01
 
 UX 重构 Phase 2 Task 7：MainWindow 拆分（Commit 1 控制器拆分 + Commit 2 技术债与 FileListView 统一）。

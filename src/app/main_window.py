@@ -2665,7 +2665,7 @@ class MainWindow(QMainWindow):
 
         - 仅当注入了 tag_service 时响应（按钮可见性已通过 __init__ 控制，
           此处为防御性二次校验）。
-        - Dialog 持有 MainWindow 的 commit / rollback 引用，每次增删改操作
+        - Dialog 持有 TransactionScope 的 commit / rollback 引用，每次增删改操作
           后立即提交（事务边界由 Dialog 内部控制）。
         - Dialog 关闭后无需刷新目录树（标签不影响文件系统）。
         """
@@ -2673,8 +2673,8 @@ class MainWindow(QMainWindow):
             return
         dialog = TagManagerDialog(
             self._tag_service,
-            commit_callback=self._commit_callback,
-            rollback_callback=self._rollback_callback,
+            commit_callback=self._transaction_scope.commit,
+            rollback_callback=self._transaction_scope.rollback,
             parent=self,
         )
         dialog.exec()
