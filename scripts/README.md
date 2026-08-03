@@ -68,10 +68,30 @@ python scripts/clean.py --verbose
 - 用户 Mod 文件不受影响
 - 项目外的任何文件不受影响
 
+## clear_legacy_titles.py — 遗留别名清除脚本（UI合理性13）
+
+清除 content_unit 中 title ≠ 文件名（basename）的遗留别名行（title → NULL），
+用于 title 列停用后的历史数据清理。
+
+### 用法
+
+```bash
+python scripts/clear_legacy_titles.py            # 仅预览（dry-run，不修改）
+python scripts/clear_legacy_titles.py --apply    # 实际清除
+python scripts/clear_legacy_titles.py --db PATH  # 指定数据库（测试用）
+```
+
+### 约束
+
+- 只修改 content_unit.title，不触碰文件系统、不删除记录。
+- 幂等：重复执行结果一致。
+- 数据库路径默认由 `app.app_paths` 解析（SCW_DATA_DIR > 项目 data/ > LOCALAPPDATA 回退）。
+
 ### 测试
 
 ```bash
 python -m pytest tests/test_clean.py -v
+python -m pytest tests/test_clear_legacy_titles.py -v
 ```
 
 测试覆盖：
