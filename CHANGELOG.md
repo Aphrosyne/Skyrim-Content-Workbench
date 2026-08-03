@@ -8,7 +8,9 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
-- **内容单元标记可配置（UI合理性21，v0.50.12）**：
+## [0.50.12] - 2026-08-04
+
+**内容单元标记可配置（UI合理性21）**：
   - 新增 `ContentUnitMarkerConfig`（QSettings 键 `marker/*`）：行首徽章字符/开关、
     色条颜色/开关；`reserved_width` 按启用组合自动派生
     （仅色条 5 / 仅图标 18 / 双启用 23）；"至少启用一个"校验
@@ -23,7 +25,9 @@
   [content_unit_delegate.py](src/app/content_unit_delegate.py) /
   [main_menu_bar.py](src/app/main_menu_bar.py) / [main_window.py](src/app/main_window.py)）
 
-- **内容单元标记改版：行首 🔗 徽章 + 左侧色条（UI合理性13，v0.50.11）**：
+## [0.50.11] - 2026-08-04
+
+**内容单元标记改版：行首 🔗 徽章 + 左侧色条（UI合理性13）**：
   - 名称前 `--` 文本标记改为**行首位图徽章**：🔗 不再拼进 DisplayRole 文本
     （emoji 字体回退抬高行高度量——实测 "armor" 15.23px vs "🔗 armor" 15.98px，
     垂直居中导致文字下移约 1px），改为名称列 delegate 在预留区绘制缓存位图
@@ -36,7 +40,9 @@
   [file_list_model.py](src/app/file_list_model.py) /
   [ui_constants.py](src/app/ui_constants.py) / [main_window.py](src/app/main_window.py)）
 
-- **列表封面区分/筛选 + 导航记忆 + 标签反选（UI合理性5 / 操作便捷性5 / 操作便捷性7 / UI合理性16，v0.50.10）**：
+## [0.50.10] - 2026-08-04
+
+**列表封面区分/筛选 + 导航记忆 + 标签反选（UI合理性5 / 操作便捷性5 / 操作便捷性7 / UI合理性16）**：
   - UI合理性5：文件夹类内容单元有封面 → 列表视图复用现有 256 封面缓存缩放到 64×64
     作为图标（只读查询，不产生新缓存、无圆角）；无缓存回退标准文件夹图标
   - 操作便捷性5：「只看有封面」切换按钮（中栏标题栏，按下筛选、不持久化），
@@ -58,7 +64,9 @@
   [content_filter.py](src/app/content_filter.py) /
   [selection_memory.py](src/app/selection_memory.py)）
 
-- **分类颜色统一 + 批量打标签重构（BugFix2 / UI合理性12，v0.50.9）**：
+## [0.50.9] - 2026-08-03
+
+**分类颜色统一 + 批量打标签重构（BugFix2 / UI合理性12）**：
   - BugFix2：新增共享颜色 helper `tag_colors`（hue → QColor / 样式表 hex / 色块图标），
     选色改为**预选色表**（24 色相块，点击即选，所见即所得）替换 QColorDialog——
     修复"快速颜色与实际颜色不一致"根因（原仅存 hue + 固定 S/L 重建）；
@@ -84,7 +92,9 @@
   [tag_filter.py](src/app/tag_filter.py) /
   [tag_manager_dialog.py](src/app/tag_manager_dialog.py)）
 
-- **分割线状态持久化/重置 + 顶部菜单栏（UI合理性2/3，v0.50.8）**：
+## [0.50.8] - 2026-08-03
+
+**分割线状态持久化/重置 + 顶部菜单栏（UI合理性2/3）**：
   - 分割线（主三栏 / 右栏 / 操作历史列宽）保存/恢复/重置抽成独立 helper
     `SplitterStateHelper`（QSettings 持久化，键 `layout/*`），MainWindow 仅接线，
     首次 showEvent 恢复（避免窗口未布局时 setSizes 被零宽缩放清零）
@@ -100,7 +110,18 @@
   [operation_history_dialog.py](src/app/operation_history_dialog.py) /
   [ui_constants.py](src/app/ui_constants.py)）
 
-- **元数据面板图片直接预览（操作合理性2，v0.50.7）**：中栏单选图片文件时，
+**移除未使用的 contain 缩略图渲染模式（清理）**：生成器与应用侧不再支持
+  `mode="contain"`（宽高比缩放 + 透明填充 + 圆角）——该模式自卡片缩略图缓存
+  接入（UI合理性17）起已无任何调用方与测试依赖；`generate_thumbnail` /
+  `ThumbnailService.generate` 统一为方形居中裁剪，删除圆角/透明填充辅助代码
+  与对应测试
+  （[thumbnail_generator.py](src/infrastructure/thumbnail_generator.py) /
+  [thumbnail_service.py](src/application/thumbnail_service.py) /
+  [test_thumbnail_generator.py](tests/test_thumbnail_generator.py)）
+
+## [0.50.7] - 2026-08-03
+
+**元数据面板图片直接预览（操作合理性2）**：中栏单选图片文件时，
   右栏元数据面板直接显示原图预览（无缓存、不写数据库，复用封面预览的
   原图加载路径）：
   - 未标记图片文件 → 面板切换为「图片预览」视图（标题/文件名/路径 + 原图，
@@ -118,7 +139,9 @@
   [main_window.py](src/app/main_window.py) /
   [content_service.py](src/application/content_service.py)）
 
-- **title 停用 + 重命名栏（UI合理性13）**：保留 content_unit.title 列但停止使用，
+## [0.50.6] - 2026-08-03
+
+**title 停用 + 重命名栏（UI合理性14）**：保留 content_unit.title 列但停止使用，
   UI 去掉标题输入框，创建/搜索/重命名不再读写 title；原标题栏改为「重命名」栏位
   （显示真实文件名，回车直接重命名，不走元数据「保存」按钮）：
   - MetadataPanel 重命名栏回车 → `rename_requested` 信号 → MainWindow 执行
@@ -137,12 +160,14 @@
   - schema 不动（CURRENT_SCHEMA_VERSION 仍 13）；删除 title 列的 schema 升级
     另立 issue（待数据导出/导入机制就绪）
 
-- **内容单元标记前置缩写（UI合理性12）**：列表视图标记由名称后的 ` [内容单元]` 改为
+## [0.50.5] - 2026-08-03
+
+**内容单元标记前置缩写（UI合理性13）**：列表视图标记由名称后的 ` [内容单元]` 改为
   名称前的 `--`（双短横线，验收反馈逐次调整），长文件名截断时标记不再被遮挡；
   卡片视图保持 Q6:B 决策不变（名称不含标记，ToolTip 承载状态）
   （[ui_constants.py](src/app/ui_constants.py) / [file_list_model.py](src/app/file_list_model.py)）
 
-- **卡片视图启用 256px 缩略图缓存（UI合理性16）**：恢复 ThumbnailCoordinator
+**卡片视图启用 256px 缩略图缓存（UI合理性17）**：恢复 ThumbnailCoordinator
   生成链路到卡片视图（Stage 5 Task 1b 曾改为直接加载原图，多内容下全尺寸解码
   导致卡顿）：
   - 生成器新增 `mode="cover"` 方形居中裁剪模式（生成器默认 contain 不变），
@@ -154,14 +179,6 @@
     布局抖动），后台生成完成后按行刷新（[card_list_model.py](src/app/card_list_model.py)）
   - MainWindow 恢复 `_card_thumbnail_provider` 接线（256 档），缓存失效/GC 复用
     既有 Service 链路（[main_window.py](src/app/main_window.py)）
-
-- **移除未使用的 contain 缩略图渲染模式（清理）**：生成器与应用侧不再支持
-  `mode="contain"`（宽高比缩放 + 透明填充 + 圆角）——该模式自 UI合理性16 起
-  已无任何调用方与测试依赖；`generate_thumbnail` / `ThumbnailService.generate`
-  统一为方形居中裁剪，删除圆角/透明填充辅助代码与对应测试
-  （[thumbnail_generator.py](src/infrastructure/thumbnail_generator.py) /
-  [thumbnail_service.py](src/application/thumbnail_service.py) /
-  [test_thumbnail_generator.py](tests/test_thumbnail_generator.py)）
 
 ## [0.50.4] - 2026-08-03
 
