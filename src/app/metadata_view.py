@@ -77,6 +77,15 @@ class MetadataView(QObject):
             self._panel.setVisible(True)
             self._panel.load_unit(unit)
 
+    def show_image_preview(self, path: Path) -> None:
+        """未标记图片文件 → 面板进入图片预览模式（操作合理性2，2026-08-03）。
+
+        直接显示原图，不做缓存、不写数据库；无面板时为空操作。
+        """
+        if self._panel is not None:
+            self._panel.setVisible(True)
+            self._panel.show_image_preview(str(path))
+
     # --- 内部：面板信号处理 ---
 
     def _on_saved(self, updated_unit: ContentUnit) -> None:

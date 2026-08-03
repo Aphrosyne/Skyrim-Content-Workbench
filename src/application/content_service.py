@@ -508,6 +508,14 @@ class ContentService:
         candidates.sort(key=lambda p: (p.name.lower(), p.name))
         return candidates
 
+    def is_image_file(self, path: str | Path) -> bool:
+        """按扩展名判断是否为支持的图片文件（供 UI 图片预览判断，不访问文件内容）。
+
+        扩展名集合与封面候选一致（_COVER_IMAGE_EXTENSIONS，同
+        thumbnail_generator.SUPPORTED_EXTENSIONS）。
+        """
+        return Path(path).suffix.lower() in _COVER_IMAGE_EXTENSIONS
+
     def quick_set_cover(self, unit_id: str) -> bool:
         """快速设置封面（Stage 5 Task 1）。
 

@@ -1237,8 +1237,14 @@ class MainWindow(QMainWindow):
             self._set_metadata_text(ui.METADATA_NOT_SELECTED)
             self._bind_assembly_folder(Path(entry.path))
         else:
-            # 非内容单元文件：清空元数据 + 解绑装配面板
-            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+            # 非内容单元文件
+            # 操作合理性2（2026-08-03）：图片文件 → 元数据面板直接预览原图
+            # （无缓存、不写数据库）；其他文件 → 清空元数据（显示提示文本）。
+            if self._metadata_panel is not None and self._content_service.is_image_file(entry.path):
+                self._metadata_label.setVisible(False)
+                self._metadata_view.show_image_preview(Path(entry.path))
+            else:
+                self._set_metadata_text(ui.METADATA_NOT_SELECTED)
             self._bind_assembly_panel(None)
 
     def _on_content_header_clicked(self, column: int) -> None:  # noqa: N802 (Qt 命名)

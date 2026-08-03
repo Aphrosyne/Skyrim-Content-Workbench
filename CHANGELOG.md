@@ -8,6 +8,24 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+- **元数据面板图片直接预览（操作合理性2，v0.50.7）**：中栏单选图片文件时，
+  右栏元数据面板直接显示原图预览（无缓存、不写数据库，复用封面预览的
+  原图加载路径）：
+  - 未标记图片文件 → 面板切换为「图片预览」视图（标题/文件名/路径 + 原图，
+    隐藏编辑表单）；损坏/不支持图片显示占位边框，不崩溃
+  - 已标记图片文件单元无封面 → 封面预览区直接显示文件本身；手动设置封面后
+    封面优先（行为不变）
+  - 图片识别复用 `ContentService.is_image_file`（扩展名集合与封面候选一致，
+    未新增重复列表）
+  - 布局：面板底部 stretch 吸收剩余空间，元素（含图片预览）自动靠顶，消除
+    元素间空行；已有标签区默认高度恢复为常量值 240，并在其下方新增鼠标
+    拖动条（60~240 可调、内部滚动，`_PresetScrollArea` 可变 sizeHint，
+    空间不足时仍可压缩到下限）
+  （[metadata_panel.py](src/app/metadata_panel.py) /
+  [metadata_view.py](src/app/metadata_view.py) /
+  [main_window.py](src/app/main_window.py) /
+  [content_service.py](src/application/content_service.py)）
+
 - **title 停用 + 重命名栏（UI合理性13）**：保留 content_unit.title 列但停止使用，
   UI 去掉标题输入框，创建/搜索/重命名不再读写 title；原标题栏改为「重命名」栏位
   （显示真实文件名，回车直接重命名，不走元数据「保存」按钮）：

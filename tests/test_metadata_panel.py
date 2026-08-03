@@ -23,8 +23,10 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QSettings  # noqa: E402
+from PySide6.QtCore import QSettings, Qt  # noqa: E402
+from PySide6.QtWidgets import QVBoxLayout  # noqa: E402
 
+from app import ui_constants as ui  # noqa: E402
 from app.metadata_panel import MetadataPanel  # noqa: E402
 from app.recent_tags import RecentTags  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
@@ -944,3 +946,168 @@ def test_immediate_tag_add_records_recent(qapp, unit_with_tags, tmp_path):
     panel.click_preset_tag(tag2.name)
 
     assert recent.list_recent() == [tag2.id]
+
+
+# === 操作合理性2：图片直接预览（元数据面板） ===
+
+
+def _make_real_image(path: Path, size: tuple[int, int] = (64, 40)) -> Path:
+    """生成一张真实可解码的 PNG（供图片预览 / 封面优先测试）。"""
+    from PIL import Image as PILImage
+
+    img = PILImage.new("RGB", size, (200, 60, 60))
+    img.save(path)
+    return path
+
+
+def test_show_image_preview_displays_original(qapp, services, tmp_path):
+    """未标记图片 → 预览模式显示原图、文件名/路径，隐藏编辑表单。"""
+    content_service, tag_service, _, _ = services
+    img = _make_real_image(tmp_path / "截图.png")
+    panel = MetadataPanel(content_service, tag_service)
+
+    panel.show_image_preview(str(img))
+
+    assert panel.is_image_preview_visible()
+    assert panel.current_unit() is None
+    assert panel.preview_name_text() == "截图.png"
+    assert panel.preview_path_text() == str(img)
+    assert panel.preview_image_pixmap() is not None
+    assert not panel.is_form_enabled()
+    # 编辑表单已隐藏
+    assert panel._rename_edit.isHidden()  # noqa: SLF001
+    assert panel._save_button.isHidden()  # noqa: SLF001
+
+
+def test_show_image_preview_invalid_image_shows_placeholder(qapp, services, tmp_path):
+    """损坏/无法解码的图片 → 预览模式激活但显示占位边框（不崩溃）。"""
+    content_service, tag_service, _, _ = services
+    img = tmp_path / "broken.jpg"
+    img.write_bytes(b"\x00" * 50)
+    panel = MetadataPanel(content_service, tag_service)
+
+    panel.show_image_preview(str(img))
+
+    assert panel.is_image_preview_visible()
+    assert panel.preview_image_pixmap() is None
+
+
+def test_clear_panel_exits_image_preview(qapp, services, tmp_path):
+    """clear_panel → 退出预览模式，恢复表单与占位提示。"""
+    content_service, tag_service, _, _ = services
+    img = _make_real_image(tmp_path / "a.png")
+    panel = MetadataPanel(content_service, tag_service)
+    panel.show_image_preview(str(img))
+    assert panel.is_image_preview_visible()
+
+    panel.clear_panel()
+
+    assert not panel.is_image_preview_visible()
+    assert not panel._rename_edit.isHidden()  # noqa: SLF001
+    assert not panel._hint_label.isHidden()  # noqa: SLF001
+
+
+def test_load_unit_exits_image_preview(qapp, unit_with_tags):
+    """从预览模式切回内容单元 → 退出预览并正常加载表单。"""
+    content_service, tag_service, _, _, unit, _, _, _, _ = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.show_image_preview(str(Path(unit.path)))
+
+    panel.load_unit(unit)
+
+    assert not panel.is_image_preview_visible()
+    assert panel.current_unit() is not None
+    assert panel.is_form_enabled()
+    assert not panel._rename_edit.isHidden()  # noqa: SLF001
+
+
+def test_marked_image_unit_without_cover_previews_file_itself(qapp, services, tmp_path):
+    """已标记图片文件单元无封面 → 封面预览区直接显示文件本身原图。"""
+    content_service, tag_service, conn, _ = services
+    img = _make_real_image(tmp_path / "截图.png", (64, 40))
+    unit = content_service.mark_as_content_unit(img)
+    conn.commit()
+    assert unit.cover_path is None
+
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+
+    pixmap = panel.cover_preview_pixmap()
+    assert pixmap is not None
+    assert (pixmap.width(), pixmap.height()) == (64, 40)
+    assert panel.cover_path_text() == ""  # 无封面：cover_path_text 约定返回空串
+
+
+def test_marked_folder_unit_cover_takes_priority(qapp, services, tmp_path):
+    """封面优先：文件夹单元设置了封面时，预览区显示封面而非单元本身。"""
+    content_service, tag_service, conn, _ = services
+    folder = tmp_path / "Mod"
+    folder.mkdir()
+    _make_real_image(folder / "a.png", (64, 40))
+    _make_real_image(folder / "b.png", (40, 64))
+    unit = content_service.mark_as_content_unit(folder)
+    conn.commit()
+    assert unit.cover_path == "a.png"  # 自动封面取按名排序第一张
+
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+
+    pixmap = panel.cover_preview_pixmap()
+    assert pixmap is not None
+    assert pixmap.width() > pixmap.height()  # 横图 a.png，封面优先
+    assert panel.cover_path_text() == "a.png"
+
+
+def test_panel_layout_packs_to_top(qapp, services):
+    """面板布局底部保留竖直 stretch：剩余高度由伸缩项吸收，元素自动靠顶。
+
+    操作合理性2 验收反馈（2026-08-03）：此前无底部 stretch，Qt 把多余高度
+    按比例分摊到各控件，导致表单/图片预览出现大量空行。
+    """
+    content_service, tag_service, _, _ = services
+    panel = MetadataPanel(content_service, tag_service)
+    layout = panel.layout()
+    assert isinstance(layout, QVBoxLayout)
+    last_item = layout.itemAt(layout.count() - 1)
+    assert last_item is not None and last_item.spacerItem() is not None
+    assert (last_item.spacerItem().expandingDirections() & Qt.Orientation.Vertical) != 0
+
+
+def test_preset_area_default_height_matches_constant(qapp, services):
+    """已有标签区默认高度恢复为常量值（不因底部 stretch 被绕过）。"""
+    content_service, tag_service, _, _ = services
+    panel = MetadataPanel(content_service, tag_service)
+
+    assert (
+        panel._preset_scroll.sizeHint().height()  # noqa: SLF001
+        == ui.METADATA_PANEL_PRESET_SCROLL_HEIGHT
+    )
+
+
+def test_preset_area_height_draggable_and_clamped(qapp, services):
+    """已有标签区高度可拖动调整，并受 MIN/MAX 截断。"""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+
+    content_service, tag_service, _, _ = services
+    panel = MetadataPanel(content_service, tag_service)
+    scroll = panel._preset_scroll  # noqa: SLF001
+    handle = panel._preset_resize_handle  # noqa: SLF001
+
+    # 程序化路径：截断到范围
+    scroll.set_preferred_height(999)
+    assert scroll.sizeHint().height() == ui.METADATA_PANEL_PRESET_SCROLL_HEIGHT
+    scroll.set_preferred_height(1)
+    assert scroll.sizeHint().height() == ui.METADATA_PANEL_PRESET_SCROLL_MIN_HEIGHT
+
+    # 鼠标拖拽：按下 → 上移 120px → 释放
+    scroll.set_preferred_height(ui.METADATA_PANEL_PRESET_SCROLL_HEIGHT)
+    scroll.resize(200, ui.METADATA_PANEL_PRESET_SCROLL_HEIGHT)
+    QTest.mousePress(
+        handle, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(10, 3)
+    )
+    QTest.mouseMove(handle, QPoint(10, 3 - 120))
+    QTest.mouseRelease(
+        handle, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(10, 3 - 120)
+    )
+    assert scroll.sizeHint().height() == ui.METADATA_PANEL_PRESET_SCROLL_HEIGHT - 120

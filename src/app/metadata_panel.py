@@ -52,7 +52,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QFontMetrics, QPainter, QPalette, QPixmap
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCompleter,
     QFrame,
@@ -204,6 +204,79 @@ class _ResizableImageLabel(QWidget):
         painter.drawPixmap(x, y, scaled)
 
 
+class _PresetScrollArea(QScrollArea):
+    """已有标签区滚动区：高度可拖动调整（操作合理性2 验收反馈，2026-08-03）。
+
+    通过可变的 sizeHint 表达用户拖拽后的高度（默认 METADATA_PANEL_PRESET_SCROLL_HEIGHT），
+    布局空间充足时按该高度显示、富余空间由面板底部 stretch 吸收；
+    窗口变小时仍可按 minimumHeight 压缩，避免固定高度导致小窗口表单溢出裁剪。
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._preferred_height: int = ui.METADATA_PANEL_PRESET_SCROLL_HEIGHT
+
+    def set_preferred_height(self, height: int) -> None:
+        """设置拖拽/程序化高度（按 MIN/MAX 常量截断）并通知布局重算。"""
+        clamped = max(
+            ui.METADATA_PANEL_PRESET_SCROLL_MIN_HEIGHT,
+            min(ui.METADATA_PANEL_PRESET_SCROLL_HEIGHT, int(height)),
+        )
+        self._preferred_height = clamped
+        self.updateGeometry()
+
+    def sizeHint(self) -> QSize:  # noqa: N802 (Qt 命名)
+        hint = super().sizeHint()
+        hint.setHeight(self._preferred_height)
+        return hint
+
+
+class _DragResizeHandle(QWidget):
+    """竖直拖动条：拖动调整目标控件高度（操作合理性2 验收反馈，2026-08-03）。"""
+
+    def __init__(
+        self,
+        target: _PresetScrollArea,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._target = target
+        self._press_y: float | None = None
+        self._start_height = 0
+        self.setFixedHeight(6)
+        self.setCursor(Qt.CursorShape.SizeVerCursor)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        """绘制一条居中浅色分隔线作为拖动提示。"""
+        super().paintEvent(event)
+        painter = QPainter(self)
+        y = self.height() // 2
+        painter.setPen(QPen(QColor("#bbbbbb"), 1))
+        painter.drawLine(8, y, self.width() - 8, y)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_y = event.globalPosition().y()
+            self._start_height = self._target.height()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if self._press_y is None:
+            return
+        delta = round(event.globalPosition().y() - self._press_y)
+        self._target.set_preferred_height(self._start_height + delta)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if self._press_y is not None:
+            self._press_y = None
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class MetadataPanel(QWidget):
     """元数据编辑面板。
 
@@ -255,6 +328,8 @@ class MetadataPanel(QWidget):
         self._preset_buttons: list[QPushButton] = []
         # UX 重构 Phase 2 Task 5 修复：受管理根目录服务，用于路径简化显示
         self._managed_root_service = None
+        # 图片预览模式（操作合理性2）：当前预览的图片文件路径（None = 非预览模式）
+        self._preview_only_path: Path | None = None
 
         self._setup_ui()
 
@@ -280,6 +355,27 @@ class MetadataPanel(QWidget):
         self._hint_label.setWordWrap(True)
         layout.addWidget(self._hint_label)
 
+        # 图片预览模式（操作合理性2，2026-08-03）：未标记图片文件直接显示原图。
+        # 仅显示标题 / 文件名 / 路径与图片，隐藏整个编辑表单；不做缓存、不写数据库。
+        self._preview_widget = QWidget()
+        preview_layout = QVBoxLayout(self._preview_widget)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        self._preview_title = QLabel(ui.METADATA_PANEL_IMAGE_PREVIEW_TITLE)
+        self._preview_title.setStyleSheet(ui.PANEL_SECTION_TITLE_STYLE)
+        preview_layout.addWidget(self._preview_title)
+        self._preview_name = QLabel("")
+        self._preview_name.setStyleSheet("font-weight: bold;")
+        self._preview_name.setWordWrap(True)
+        preview_layout.addWidget(self._preview_name)
+        self._preview_path = _ElidedLabel()
+        self._preview_path.setStyleSheet("color: #555;")
+        preview_layout.addWidget(self._preview_path)
+        self._preview_image = _ResizableImageLabel()
+        self._preview_image.setStyleSheet("border: 1px solid #ccc; background: #fafafa;")
+        preview_layout.addWidget(self._preview_image)
+        self._preview_widget.setVisible(False)
+        layout.addWidget(self._preview_widget)
+
         # === 表单字段 ===
 
         # 重命名栏（UI合理性13：显示真实文件名，回车触发重命名请求）
@@ -300,12 +396,14 @@ class MetadataPanel(QWidget):
 
         # 类型 + 创建时间（一行两列）
         meta_row = QHBoxLayout()
-        meta_row.addWidget(QLabel(ui.METADATA_TYPE_LABEL))
+        self._type_label = QLabel(ui.METADATA_TYPE_LABEL)
+        meta_row.addWidget(self._type_label)
         self._type_value = QLabel("")
         self._type_value.setStyleSheet("color: #555;")
         meta_row.addWidget(self._type_value, stretch=1)
         meta_row.addSpacing(12)
-        meta_row.addWidget(QLabel(ui.METADATA_CREATED_AT_LABEL))
+        self._created_label = QLabel(ui.METADATA_CREATED_AT_LABEL)
+        meta_row.addWidget(self._created_label)
         self._created_value = QLabel("")
         self._created_value.setStyleSheet("color: #555;")
         meta_row.addWidget(self._created_value, stretch=2)
@@ -369,17 +467,18 @@ class MetadataPanel(QWidget):
         self._preset_label = QLabel(ui.METADATA_PANEL_PRESET_TAGS_LABEL)
         self._preset_label.setStyleSheet(ui.PANEL_SECTION_TITLE_STYLE)
         layout.addWidget(self._preset_label)
-        self._preset_scroll = QScrollArea(self)
+        self._preset_scroll = _PresetScrollArea(self)
         self._preset_scroll.setWidgetResizable(True)
         # 统一区域样式（面板级 QSS 提供背景；NoFrame 避免默认边框）
         self._preset_scroll.setObjectName(ui.PANEL_REGION_OBJECT_NAME)
         self._preset_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        # 高度可压缩（60~120，Expanding 优先被压缩）：窗口较小时先压缩本区，
-        # 保住来源 URL / 备注不被遮挡。
-        self._preset_scroll.setMinimumHeight(60)
+        # 高度可压缩（MIN~MAX，Preferred 优先被压缩）：窗口较小时先压缩本区，
+        # 保住来源 URL / 备注不被遮挡；富余空间由面板底部 stretch 吸收。
+        # 高度可在 60~240 之间拖动调整（操作合理性2 验收反馈，2026-08-03）。
+        self._preset_scroll.setMinimumHeight(ui.METADATA_PANEL_PRESET_SCROLL_MIN_HEIGHT)
         self._preset_scroll.setMaximumHeight(ui.METADATA_PANEL_PRESET_SCROLL_HEIGHT)
         self._preset_scroll.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
         self._preset_content = QWidget(self._preset_scroll)
         self._preset_layout = QVBoxLayout(self._preset_content)
@@ -387,6 +486,9 @@ class MetadataPanel(QWidget):
         self._preset_layout.setSpacing(2)
         self._preset_scroll.setWidget(self._preset_content)
         layout.addWidget(self._preset_scroll)
+        # 高度拖动条（操作合理性2 验收反馈，2026-08-03）
+        self._preset_resize_handle = _DragResizeHandle(self._preset_scroll)
+        layout.addWidget(self._preset_resize_handle)
         self._preset_empty_hint = QLabel(ui.METADATA_PANEL_PRESET_TAGS_EMPTY_HINT)
         self._preset_empty_hint.setStyleSheet("color: #999;")
         layout.addWidget(self._preset_empty_hint)
@@ -408,7 +510,8 @@ class MetadataPanel(QWidget):
 
         # 封面预览 + 按钮（封面路径 ElideMiddle 省略显示）
         cover_row = QHBoxLayout()
-        cover_row.addWidget(QLabel(ui.METADATA_PANEL_COVER_LABEL))
+        self._cover_label = QLabel(ui.METADATA_PANEL_COVER_LABEL)
+        cover_row.addWidget(self._cover_label)
         self._cover_value = _ElidedLabel()
         self._cover_value.setStyleSheet("color: #555;")
         self._cover_value.setText(ui.METADATA_PANEL_COVER_NONE)
@@ -434,9 +537,6 @@ class MetadataPanel(QWidget):
         cover_button_row.addStretch(1)
         layout.addLayout(cover_button_row)
 
-        # 注意：这里不再 addStretch —— 预选标签区（Expanding）需要吸收面板剩余空间，
-        # METADATA_PANEL_PRESET_SCROLL_HEIGHT 才作为实际高度上限生效。
-
         # 保存按钮（右下）
         save_row = QHBoxLayout()
         save_row.addStretch(1)
@@ -444,6 +544,11 @@ class MetadataPanel(QWidget):
         self._save_button.clicked.connect(self._on_save_clicked)
         save_row.addWidget(self._save_button)
         layout.addLayout(save_row)
+
+        # 操作合理性2 验收反馈（2026-08-03）：底部 stretch 吸收面板剩余空间，
+        # 元素（含图片预览模式）自动靠顶，避免 Qt 把多余高度按比例分摊到各控件
+        # 导致文字/元素之间出现空行。已有标签区高度通过拖动条调整（MIN~MAX，内部滚动）。
+        layout.addStretch(1)
 
         # 初始禁用表单（未加载 unit 时）
         self._set_form_enabled(False)
@@ -459,6 +564,11 @@ class MetadataPanel(QWidget):
         if unit is None:
             self.clear_panel()
             return
+
+        # 退出图片预览模式（操作合理性2）
+        self._preview_widget.setVisible(False)
+        self._preview_only_path = None
+        self._set_form_visible(True)
 
         self._current_unit = unit
         self._hint_label.setVisible(False)
@@ -516,6 +626,11 @@ class MetadataPanel(QWidget):
         self._preset_empty_hint.setVisible(False)
         self._cover_value.setText(ui.METADATA_PANEL_COVER_NONE)
         self._cover_preview.set_original_pixmap(None)  # 清空图片
+        # 退出图片预览模式（操作合理性2）
+        self._preview_only_path = None
+        self._preview_widget.setVisible(False)
+        self._preview_image.set_original_pixmap(None)
+        self._set_form_visible(True)
 
         self._set_form_enabled(False)
 
@@ -591,6 +706,28 @@ class MetadataPanel(QWidget):
         if self._commit_callback is not None:
             self._commit_callback()
         self.on_cover_saved.emit(updated)
+
+    def show_image_preview(self, path: str) -> None:
+        """未标记图片文件：面板切换为图片预览模式（操作合理性2，2026-08-03）。
+
+        直接加载原图（QPixmap，UI 层一次性显示），不做缓存、不写数据库；
+        隐藏整个编辑表单，仅显示标题 / 文件名 / 路径与图片。
+        加载失败（损坏/不支持）时显示占位边框，不弹错误。
+        """
+        self.clear_panel()
+        self._hint_label.setVisible(False)
+        self._set_form_visible(False)
+        self._preview_only_path = Path(path)
+        self._preview_name.setText(self._preview_only_path.name)
+        display_path = (
+            make_display_path_from_service(str(path), self._managed_root_service)
+            if self._managed_root_service is not None
+            else str(path)
+        )
+        self._preview_path.setText(display_path)
+        pixmap = QPixmap(str(self._preview_only_path))
+        self._preview_image.set_original_pixmap(None if pixmap.isNull() else pixmap)
+        self._preview_widget.setVisible(True)
 
     # --- 测试辅助接口 ---
 
@@ -703,6 +840,28 @@ class MetadataPanel(QWidget):
         """返回表单是否处于可编辑状态（已加载 unit 时为 True）。"""
         return self._rename_edit.isEnabled()
 
+    # --- 图片预览测试辅助接口（操作合理性2） ---
+
+    def is_image_preview_visible(self) -> bool:
+        """返回面板是否处于图片预览模式（供测试）。"""
+        return not self._preview_widget.isHidden()
+
+    def preview_name_text(self) -> str:
+        """返回图片预览模式下的文件名文本（供测试）。"""
+        return self._preview_name.text()
+
+    def preview_path_text(self) -> str:
+        """返回图片预览模式下的路径文本（供测试）。"""
+        return self._preview_path.fullText()
+
+    def preview_image_pixmap(self) -> QPixmap | None:
+        """返回图片预览当前 pixmap（None = 加载失败/未设置，供测试）。"""
+        return self._preview_image._pixmap  # noqa: SLF001
+
+    def cover_preview_pixmap(self) -> QPixmap | None:
+        """返回封面预览当前 pixmap（None = 加载失败/未设置，供测试）。"""
+        return self._cover_preview._pixmap  # noqa: SLF001
+
     def add_tag_via_input(self, tag_name: str) -> None:
         """程序化设置输入框并触发回车（供测试）。"""
         self._tag_input.setText(tag_name)
@@ -740,6 +899,39 @@ class MetadataPanel(QWidget):
             self._save_button,
         ):
             w.setEnabled(enabled)
+
+    def _set_form_visible(self, visible: bool) -> None:
+        """隐藏/恢复整个编辑表单（操作合理性2：图片预览模式只显示图片与名称/路径）。"""
+        for w in (
+            self._rename_label,
+            self._rename_edit,
+            self._path_label,
+            self._path_value,
+            self._type_label,
+            self._type_value,
+            self._created_label,
+            self._created_value,
+            self._tags_label,
+            self._tag_list,
+            self._tag_input,
+            self._recent_title,
+            self._recent_widget,
+            self._preset_label,
+            self._preset_scroll,
+            self._preset_resize_handle,
+            self._preset_empty_hint,
+            self._source_url_label,
+            self._source_url_edit,
+            self._notes_label,
+            self._notes_edit,
+            self._cover_label,
+            self._cover_value,
+            self._cover_preview,
+            self._pick_cover_button,
+            self._clear_cover_button,
+            self._save_button,
+        ):
+            w.setVisible(visible)
 
     def _load_tags_for_unit(self, unit_id: str) -> None:
         """从 TagService 加载当前 unit 的所有标签，填充 chip 列表。"""
@@ -786,22 +978,42 @@ class MetadataPanel(QWidget):
         """刷新封面预览（基于 current_unit.path + cover_path）。
 
         Task 1b 修正：统一加载原图，宽度跟随右栏自适应（_ResizableImageLabel）。
+        操作合理性2（2026-08-03）：封面优先；已标记图片文件单元无封面时
+        直接预览单元文件本身（原图、无缓存）。
         无图/加载失败 → set_original_pixmap(None)，控件显示占位边框。
         """
-        if self._current_unit is None or not cover_path:
+        if self._current_unit is None:
             self._cover_value.setText(ui.METADATA_PANEL_COVER_NONE)
             self._cover_preview.set_original_pixmap(None)
             return
 
-        # 显示相对路径
-        self._cover_value.setText(cover_path)
-        # 加载原图（_ResizableImageLabel 负责按宽度缩放绘制）
-        full_path = Path(self._current_unit.path) / cover_path
-        pixmap = QPixmap(str(full_path))
-        if pixmap.isNull():
-            self._cover_preview.set_original_pixmap(None)
+        # 封面优先：有 cover_path → 显示封面原图
+        if cover_path:
+            self._cover_value.setText(cover_path)
+            full_path = Path(self._current_unit.path) / cover_path
+            pixmap = QPixmap(str(full_path))
+            self._cover_preview.set_original_pixmap(None if pixmap.isNull() else pixmap)
             return
-        self._cover_preview.set_original_pixmap(pixmap)
+
+        # 无封面：单元本身为图片文件 → 直接预览原图（操作合理性2）
+        unit_path = Path(self._current_unit.path)
+        if not unit_path.is_dir() and self._is_supported_image(unit_path):
+            self._cover_value.setText(ui.METADATA_PANEL_COVER_NONE)
+            pixmap = QPixmap(str(unit_path))
+            self._cover_preview.set_original_pixmap(None if pixmap.isNull() else pixmap)
+            return
+
+        # 无封面且单元非图片文件：占位（无预览）
+        self._cover_value.setText(ui.METADATA_PANEL_COVER_NONE)
+        self._cover_preview.set_original_pixmap(None)
+
+    def _is_supported_image(self, path: Path) -> bool:
+        """按扩展名判断是否为支持的图片文件（复用 ContentService 扩展名集合）。"""
+        try:
+            return self._content_service.is_image_file(path)
+        except Exception:  # noqa: BLE001 - 预览判断不应阻断表单加载
+            logger.exception("图片文件判断失败：%s", path)
+            return False
 
     # --- 事件处理 ---
 

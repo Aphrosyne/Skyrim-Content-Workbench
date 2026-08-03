@@ -102,7 +102,8 @@ def _make_mod_tree_with_units(tmp_path: Path) -> Path:
         ├── 护甲/
         │   ├── 寒霜之心.7z   # 内容单元
         │   ├── preview1.jpg  # 非内容单元
-        │   └── preview2.png   # 非内容单元
+        │   ├── preview2.png   # 非内容单元
+        │   └── notes.txt      # 非内容单元（非图片）
         └── Weapons/
             └── DragonSword.rar  # 内容单元
     """
@@ -114,6 +115,7 @@ def _make_mod_tree_with_units(tmp_path: Path) -> Path:
     (armor / "寒霜之心.7z").write_bytes(b"\x00" * 100)
     (armor / "preview1.jpg").write_bytes(b"\x00" * 50)
     (armor / "preview2.png").write_bytes(b"\x00" * 50)
+    (armor / "notes.txt").write_bytes(b"hello")
 
     weapons = root / "Weapons"
     weapons.mkdir()
@@ -339,13 +341,53 @@ def test_single_click_non_content_unit_clears_panel(qapp, main_window_with_tags)
     panel = window.metadata_panel()
     assert panel is not None and panel.current_unit() is not None
 
-    # 再单击 preview1.jpg（非内容单元）
-    idx_preview = _find_entry_index(window, "preview1.jpg")
-    view.selectRow(idx_preview)
+    # 再单击 notes.txt（非内容单元、非图片）
+    idx_txt = _find_entry_index(window, "notes.txt")
+    view.selectRow(idx_txt)
     qapp.processEvents()
 
     assert panel.current_unit() is None
     assert not panel.is_form_enabled()
+
+
+def test_single_click_image_file_shows_preview(qapp, main_window_with_tags):
+    """操作合理性2：单击非内容单元图片文件 → 元数据面板进入图片预览模式。"""
+    window, _, _, _ = main_window_with_tags
+    _select_root(qapp, window)
+    _navigate_to_armor(qapp, window)
+
+    view = window._content_view  # noqa: SLF001
+    idx = _find_entry_index(window, "preview1.jpg")
+    view.selectRow(idx)
+    qapp.processEvents()
+
+    panel = window.metadata_panel()
+    assert panel is not None
+    assert panel.is_image_preview_visible()
+    assert panel.current_unit() is None
+    assert not panel.is_form_enabled()
+    assert panel.preview_name_text() == "preview1.jpg"
+
+
+def test_select_non_image_after_image_preview_resets(qapp, main_window_with_tags):
+    """操作合理性2：图片预览后再选中非图片文件 → 退出预览并清空面板。"""
+    window, _, _, _ = main_window_with_tags
+    _select_root(qapp, window)
+    _navigate_to_armor(qapp, window)
+
+    view = window._content_view  # noqa: SLF001
+    idx_img = _find_entry_index(window, "preview1.jpg")
+    view.selectRow(idx_img)
+    qapp.processEvents()
+    panel = window.metadata_panel()
+    assert panel.is_image_preview_visible()
+
+    idx_txt = _find_entry_index(window, "notes.txt")
+    view.selectRow(idx_txt)
+    qapp.processEvents()
+
+    assert not panel.is_image_preview_visible()
+    assert panel.current_unit() is None
 
 
 # === 保存元数据 ===
