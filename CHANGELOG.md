@@ -8,6 +8,22 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+- **分割线状态持久化/重置 + 顶部菜单栏（UI合理性2/3，v0.50.8）**：
+  - 分割线（主三栏 / 右栏 / 操作历史列宽）保存/恢复/重置抽成独立 helper
+    `SplitterStateHelper`（QSettings 持久化，键 `layout/*`），MainWindow 仅接线，
+    首次 showEvent 恢复（避免窗口未布局时 setSizes 被零宽缩放清零）
+  - 顶部菜单栏抽成独立 view `MainMenuBar`（「视图」：列表/卡片切换、重置布局、
+    快捷键设置占位；「工具」：标签管理/操作历史），MainWindow 只连接信号
+  - 默认比例：主栏 220/480/324（中栏加宽）；文件列表名称列 Stretch、
+    类型/大小/修改日期默认 60/80/150；操作历史列 Interactive 可拖动 +
+    默认 180/340/90 并持久化
+  - 「重置布局」恢复默认并清除操作历史列宽存档（模态对话框下次打开生效）
+  （[splitter_state.py](src/app/splitter_state.py) /
+  [main_menu_bar.py](src/app/main_menu_bar.py) /
+  [main_window.py](src/app/main_window.py) /
+  [operation_history_dialog.py](src/app/operation_history_dialog.py) /
+  [ui_constants.py](src/app/ui_constants.py)）
+
 - **元数据面板图片直接预览（操作合理性2，v0.50.7）**：中栏单选图片文件时，
   右栏元数据面板直接显示原图预览（无缓存、不写数据库，复用封面预览的
   原图加载路径）：

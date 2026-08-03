@@ -562,7 +562,7 @@ QSETTINGS_KEY_HEADER_OPERATION_HISTORY = "layout/header/operation_history"
 LAYOUT_MAIN_SPLITTER_DEFAULT_SIZES = (220, 480, 324)  # 左栏 / 中栏 / 右栏
 LAYOUT_RIGHT_SPLITTER_DEFAULT_SIZES = (625, 125)  # 元数据 / 装配面板（保持既有行为）
 LAYOUT_OPERATION_HISTORY_COLUMN_WIDTHS = (180, 340, 90)  # 时间 / 操作 / 状态
-FILE_LIST_COLUMN_WIDTHS = (0, 60, 90, 150)  # 名称(0=Stretch) / 类型 / 大小 / 修改日期
+FILE_LIST_COLUMN_WIDTHS = (0, 60, 80, 150)  # 名称(0=Stretch) / 类型 / 大小 / 修改日期
 
 # === 顶部菜单栏（UI合理性3，2026-08-03） ===
 MENU_BAR_VIEW = "视图"

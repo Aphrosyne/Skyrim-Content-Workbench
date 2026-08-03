@@ -80,6 +80,9 @@ from app.assembly_panel import AssemblyPanel
 from app.batch_tag_dialog import BatchTagDialog
 from app.card_list_model import CardListModel
 from app.file_list_model import (
+    COL_MODIFIED,
+    COL_SIZE,
+    COL_TYPE,
     SORT_MODIFIED,
     SORT_NAME,
     SORT_SIZE,
@@ -764,11 +767,16 @@ class MainWindow(QMainWindow):
         self._content_view.verticalHeader().setVisible(False)
         self._content_view.horizontalHeader().setHighlightSections(False)
         self._content_view.horizontalHeader().setStretchLastSection(False)
+        self._content_view.horizontalHeader().setSectionsClickable(True)
+        self._content_view.setModel(self._content_list_model)
+        # UI合理性2：setModel 会重置表头 resize 模式，须在 setModel 之后设置。
+        # 名称列 Stretch 吸收剩余宽度（这就是「名称列加宽」的机制）；
+        # 其余列按常量默认宽度（FILE_LIST_COLUMN_WIDTHS，用户可手动调整后重启生效）。
         self._content_view.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch
         )
-        self._content_view.horizontalHeader().setSectionsClickable(True)
-        self._content_view.setModel(self._content_list_model)
+        for col in (COL_TYPE, COL_SIZE, COL_MODIFIED):
+            self._content_view.setColumnWidth(col, ui.FILE_LIST_COLUMN_WIDTHS[col])
         self._content_view.doubleClicked.connect(self._on_entry_activated)
         self._content_view.customContextMenuRequested.connect(self._on_content_context_menu)
         self._content_view.horizontalHeader().sectionClicked.connect(
@@ -1643,10 +1651,12 @@ class MainWindow(QMainWindow):
 
     def _restore_splitter_state(self) -> None:
         """UI合理性2：恢复分割线尺寸（无存档时应用默认比例，接线级）。"""
-        # 主栏：保持无显式默认（Qt 按 sizeHint 分配，仅应用已有存档）；
-        # 右栏：恢复默认比例（625:125，保持既有行为，常量可调）。
+        # 主栏：默认 220/480/324（中栏加宽，解决名称列过窄）；
+        # 右栏：默认 625:125（保持既有行为）。默认值见 ui_constants，可手动调整。
         self._splitter_state.restore(
-            self._splitter, ui.QSETTINGS_KEY_SPLITTER_MAIN, default_sizes=None
+            self._splitter,
+            ui.QSETTINGS_KEY_SPLITTER_MAIN,
+            default_sizes=ui.LAYOUT_MAIN_SPLITTER_DEFAULT_SIZES,
         )
         self._splitter_state.restore(
             self._right_splitter,

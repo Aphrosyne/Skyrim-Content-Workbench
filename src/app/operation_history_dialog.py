@@ -34,12 +34,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QHBoxLayout,
-    QHeaderView,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -50,6 +49,7 @@ from PySide6.QtWidgets import (
 
 from app import ui_constants as ui
 from app.path_display import make_display_path_from_service
+from app.splitter_state import SplitterStateHelper
 from application.errors import (
     UndoAlreadyUndoneError,
     UndoError,
@@ -120,6 +120,7 @@ class OperationHistoryDialog(QDialog):
         undo_service: UndoService,
         parent: QWidget | None = None,
         limit: int = 100,
+        settings: QSettings | None = None,
     ) -> None:
         super().__init__(parent)
         self._undo_service = undo_service
@@ -127,6 +128,9 @@ class OperationHistoryDialog(QDialog):
         self._on_undone_callback: Callable[[], None] | None = None
         # UX 重构 Phase 2 Task 5：受管理根目录服务，用于路径简化显示
         self._managed_root_service = None
+        # UI合理性2：列宽持久化（测试可注入 ini 隔离实例）
+        self._settings = settings or QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+        self._splitter_state = SplitterStateHelper(self._settings)
 
         self.setWindowTitle(ui.OPERATION_HISTORY_DIALOG_TITLE)
         self.resize(700, 500)
@@ -154,11 +158,19 @@ class OperationHistoryDialog(QDialog):
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
-        # 列宽
+        # 列宽（UI合理性2）：Interactive 可拖动 + QSettings 持久化，
+        # 默认宽度见 LAYOUT_OPERATION_HISTORY_COLUMN_WIDTHS
         header = self._table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._splitter_state.restore_header(
+            header,
+            ui.QSETTINGS_KEY_HEADER_OPERATION_HISTORY,
+            ui.LAYOUT_OPERATION_HISTORY_COLUMN_WIDTHS,
+        )
+        header.sectionResized.connect(
+            lambda *_: self._splitter_state.save_header(
+                header, ui.QSETTINGS_KEY_HEADER_OPERATION_HISTORY
+            )
+        )
         layout.addWidget(self._table)
 
         # 底部按钮

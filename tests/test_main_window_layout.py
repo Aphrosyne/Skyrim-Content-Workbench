@@ -19,6 +19,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QSettings  # noqa: E402
 
 from app import ui_constants as ui  # noqa: E402
+from app.file_list_model import COL_MODIFIED, COL_SIZE, COL_TYPE  # noqa: E402
 from app.main_menu_bar import MainMenuBar  # noqa: E402
 from app.main_window import VIEW_INDEX_CARD, VIEW_INDEX_LIST, MainWindow  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
@@ -206,6 +207,31 @@ def test_menu_reset_layout_restores_defaults(qapp, tmp_path: Path) -> None:
         assert not settings.contains(ui.QSETTINGS_KEY_SPLITTER_RIGHT)
         assert not settings.contains(ui.QSETTINGS_KEY_HEADER_OPERATION_HISTORY)
         assert window.statusBar().currentMessage() == ui.LAYOUT_RESET_STATUS
+    finally:
+        window.close()
+
+
+def test_main_splitter_applies_defaults_on_first_show(qapp, tmp_path: Path) -> None:
+    """UI合理性2：无存档时首次显示按默认比例 220/480/324 分配（中栏最大）。"""
+    window = _build_window(tmp_path)
+    try:
+        window.show()
+        qapp.processEvents()
+
+        sizes = window._splitter.sizes()  # noqa: SLF001
+        assert sizes[1] > sizes[0] and sizes[1] > sizes[2]
+    finally:
+        window.close()
+
+
+def test_file_list_column_width_defaults_applied(qapp, tmp_path: Path) -> None:
+    """UI合理性2：名称列 Stretch；类型/大小/修改日期按常量默认宽度。"""
+    window = _build_window(tmp_path)
+    try:
+        header = window._content_view.horizontalHeader()  # noqa: SLF001
+        assert header.sectionResizeMode(0) == header.ResizeMode.Stretch
+        for col in (COL_TYPE, COL_SIZE, COL_MODIFIED):
+            assert header.sectionSize(col) == ui.FILE_LIST_COLUMN_WIDTHS[col]
     finally:
         window.close()
 
