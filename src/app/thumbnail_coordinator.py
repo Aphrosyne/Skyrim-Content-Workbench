@@ -27,8 +27,8 @@ import logging
 from collections import deque
 from pathlib import Path
 
-from PySide6.QtCore import QMutex, QObject, QThread, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QMutex, QObject, Qt, QThread, Signal
+from PySide6.QtGui import QIcon, QPixmap
 
 from app.thumbnail_worker import ThumbnailWorker
 from application.thumbnail_service import ThumbnailService
@@ -90,6 +90,45 @@ class ThumbnailCoordinator(QObject):
         # 未命中 → 投递队列（去重）
         self._enqueue(content_unit_id, source_path, size)
         return None
+
+    def get_cache_path(
+        self,
+        content_unit_id: str,
+        source_path: Path,
+        size: int = 256,
+    ) -> Path | None:
+        """只读查询缓存文件路径（不投递生成任务）。
+
+        供列表视图封面图标复用现有缓存（UI合理性5），
+        缓存未命中/失效返回 None，由调用方回退标准图标。
+        """
+        return self._service.get_cache(content_unit_id, source_path, size=size)
+
+    def get_cover_icon(
+        self,
+        content_unit_id: str,
+        source_path: Path,
+        size: int = 64,
+        cache_size: int = 256,
+    ) -> QIcon | None:
+        """列表视图封面图标（UI合理性5）：只读复用现有缓存并缩放到 size。
+
+        缓存未命中/加载失败返回 None，由调用方回退标准图标；
+        不投递生成任务（不产生新缓存）。
+        """
+        cache_path = self.get_cache_path(content_unit_id, source_path, size=cache_size)
+        if cache_path is None:
+            return None
+        pixmap = QPixmap(str(cache_path))
+        if pixmap.isNull():
+            return None
+        scaled = pixmap.scaled(
+            size,
+            size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        return QIcon(scaled)
 
     def invalidate(self, content_unit_id: str) -> None:
         """失效指定内容单元的所有档位缓存（封面清除/更换时调用）。"""

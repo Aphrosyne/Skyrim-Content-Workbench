@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from pathlib import Path
 
 from PySide6.QtCore import QAbstractTableModel, QMimeData, QModelIndex, Qt, QUrl
 from PySide6.QtGui import QBrush, QColor, QIcon, QPixmap
@@ -58,6 +59,9 @@ SORT_MODIFIED = "modified"
 
 # 缩略图 provider 签名：(content_unit_id, source_path) → QPixmap | None
 ThumbnailProvider = Callable[[str, str], QPixmap | None]
+# 封面图标 provider 签名：(content_unit_id, cover_source_path) → QIcon | None
+# （UI合理性5：只读复用现有封面缓存，不产生新缓存）
+CoverIconProvider = Callable[[str, str], QIcon | None]
 
 
 def _display_name(entry: FileEntry) -> str:
@@ -156,6 +160,9 @@ class FileListModel(QAbstractTableModel):
         self._thumbnail_provider: ThumbnailProvider | None = None
         # unit_id → QPixmap (None 表示不可用)
         self._thumbnail_cache: dict[str, QPixmap | None] = {}
+        # UI合理性5：封面图标 provider + QIcon 缓存（列表视图区分是否有封面）
+        self._cover_icon_provider: CoverIconProvider | None = None
+        self._cover_icon_cache: dict[str, QIcon | None] = {}
         # Stage 5 Task 3b：剪切状态路径集合（用于半透明渲染，Q12=A 50% 透明度）
         self._cut_paths: set[str] = set()
 
@@ -269,6 +276,8 @@ class FileListModel(QAbstractTableModel):
         self._apply_sort()
         # 清空缩略图缓存（新列表可能 unit_id 集合不同）
         self._thumbnail_cache.clear()
+        # 清空封面图标缓存（封面可能变化）
+        self._cover_icon_cache.clear()
         # Stage 5 Task 3b：切换目录后清空剪切高亮（Q8=A：剪贴板状态保留，视觉仅在原目录显示）
         self._cut_paths = set()
         self.endResetModel()
@@ -361,15 +370,35 @@ class FileListModel(QAbstractTableModel):
     def icon_for(self, entry: FileEntry) -> QIcon | None:
         """返回条目图标（Stage 5 Task 1b：列表视图改用 Qt 标准 icon）。
 
-        Task 1b 决策：列表视图移除封面缩略图（64×64 视觉价值有限），
-        改用 Qt 标准文件/文件夹图标。封面浏览由卡片视图承担。
+        UI合理性5：文件夹类内容单元有封面 → 复用现有封面缓存图（64×64）
+        作为图标以区分是否有封面；缓存不存在时不触发新缓存生成。
 
         优先级：
-        1. 文件夹 → Qt 文件夹图标
-        2. 文件 → Qt 文件图标
+        1. 文件夹内容单元有封面（且缓存可用）→ 封面图标
+        2. 文件夹 → Qt 文件夹图标
+        3. 文件 → Qt 文件图标
         """
         self._ensure_icons()
+        if (
+            entry.is_dir
+            and entry.content_unit is not None
+            and entry.content_unit.cover_path
+            and self._cover_icon_provider is not None
+        ):
+            cover_icon = self._query_cover_icon(entry.content_unit)
+            if cover_icon is not None:
+                return cover_icon
         return self._dir_icon if entry.is_dir else self._file_icon
+
+    def _query_cover_icon(self, unit) -> QIcon | None:
+        """查询并缓存封面图标（缺失缓存 → None，不投递生成任务）。"""
+        unit_id = unit.id
+        if unit_id in self._cover_icon_cache:
+            return self._cover_icon_cache[unit_id]
+        source_path = str(Path(unit.path) / unit.cover_path)
+        icon = self._cover_icon_provider(unit_id, source_path)  # type: ignore[misc]
+        self._cover_icon_cache[unit_id] = icon
+        return icon
 
     def _ensure_icons(self) -> None:
         """懒加载图标缓存。QApplication 未就绪时跳过，下次调用再尝试。"""
@@ -399,6 +428,11 @@ class FileListModel(QAbstractTableModel):
         self._thumbnail_provider = provider
         # 切换 provider 时清空缓存，强制重新查询
         self._thumbnail_cache.clear()
+
+    def set_cover_icon_provider(self, provider: CoverIconProvider | None) -> None:
+        """注入封面图标查询回调（UI合理性5，只读复用现有缓存，不产生新缓存）。"""
+        self._cover_icon_provider = provider
+        self._cover_icon_cache.clear()
 
     def notify_thumbnail_ready(self, content_unit_id: str) -> None:
         """缩略图后台生成完成后调用，触发对应行重绘。

@@ -94,6 +94,19 @@ def test_request_thumbnail_cache_hit_returns_pixmap(
     assert not pixmap.isNull()
 
 
+def test_get_cover_icon_returns_scaled_icon(coordinator, service, jpg_source):
+    """UI合理性5：缓存存在 → 返回 64×64 封面图标（只读，不投递生成）。"""
+    service.generate("u1", jpg_source, size=256)
+    icon = coordinator.get_cover_icon("u1", jpg_source, size=64)
+    assert icon is not None and not icon.isNull()
+
+
+def test_get_cover_icon_miss_returns_none_without_enqueue(coordinator, jpg_source):
+    """缓存未命中 → None，且不产生新缓存任务。"""
+    assert coordinator.get_cover_icon("u1", jpg_source) is None
+    assert coordinator.queue_size() == 0
+
+
 def test_duplicate_request_not_redispatched(coordinator, jpg_source, monkeypatch):
     """同一 (unit_id, size) 重复请求不重复投递（去重）。"""
     # 第一次请求：投递

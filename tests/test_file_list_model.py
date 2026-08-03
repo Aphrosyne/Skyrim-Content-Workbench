@@ -53,6 +53,7 @@ def _make_unit(
     unit_id: str = "u-1",
     path: str = "/mods/armor",
     title: str | None = None,
+    cover_path: str | None = None,
 ) -> ContentUnit:
     return ContentUnit(
         id=unit_id,
@@ -60,6 +61,7 @@ def _make_unit(
         created_at="2026-07-13T00:00:00Z",
         updated_at="2026-07-13T00:00:00Z",
         title=title,
+        cover_path=cover_path,
     )
 
 
@@ -518,3 +520,46 @@ class TestRowCount:
 
         model = FileListModel()
         assert model.columnCount(QModelIndex()) == 4
+
+
+# === UI合理性5：封面图标（复用现有缓存，不产生新缓存） ===
+
+
+def test_folder_content_unit_with_cover_uses_provider_icon(qapp) -> None:
+    """有封面的文件夹内容单元 → 使用 provider 返回的封面图标。"""
+    from pathlib import Path
+
+    from PySide6.QtGui import QIcon, QPixmap
+
+    model = FileListModel()
+    called: list[tuple[str, str]] = []
+
+    def provider(unit_id: str, source_path: str) -> QIcon | None:
+        called.append((unit_id, source_path))
+        return QIcon(QPixmap(16, 16))
+
+    model.set_cover_icon_provider(provider)
+    unit = _make_unit(cover_path="cover.jpg")
+    entry = _make_entry("armor", "/mods/armor", is_dir=True, content_unit=unit)
+
+    icon = model.icon_for(entry)
+    assert icon is not None and not icon.isNull()
+    assert called == [("u-1", str(Path("/mods/armor") / "cover.jpg"))]
+
+
+def test_folder_without_cover_does_not_use_provider(qapp) -> None:
+    """无封面/未标记/文件条目 → 不使用封面 provider，返回标准图标。"""
+    model = FileListModel()
+    called: list = []
+    model.set_cover_icon_provider(lambda uid, src: called.append((uid, src)) or None)
+
+    # 文件夹无封面
+    unit = _make_unit(cover_path=None)
+    icon1 = model.icon_for(_make_entry("armor", "/mods/armor", is_dir=True, content_unit=unit))
+    # 文件内容单元有封面（issue 限定文件夹类）
+    unit2 = _make_unit(unit_id="u-2", path="/mods/a.jpg", cover_path="cover.jpg")
+    icon2 = model.icon_for(_make_entry("a.jpg", "/mods/a.jpg", content_unit=unit2))
+
+    assert called == []
+    assert icon1 is not None
+    assert icon2 is not None
