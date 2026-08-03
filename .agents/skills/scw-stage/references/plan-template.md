@@ -20,7 +20,7 @@
 根据任务来源选择：
 - 任务来自当前权威路线图（阶段推进）→ 必读对应章节；权威路线图文件名以 AGENTS.md 的"开发依据"为准
   （当前为 docs/ux-redesign-roadmap.md；仓库另有 docs/roadmap.md 主路线图，两者独立，不要混淆）
-- 任务来自 workflow-test-issues.md 或其他独立问题 → roadmap 按需阅读，不默认读取
+- 任务来自 `docs/workflow-test-issues.md` 或其他独立问题 → roadmap 按需阅读，不默认读取
 
 按需阅读（根据任务相关性选择，不要默认全部读取）：
 - docs/spec.md

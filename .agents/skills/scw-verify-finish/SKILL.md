@@ -11,7 +11,7 @@ SCW 项目编码改动提交前的验证与收尾 SOP，供编码类任务收尾
 
 1. **验证**：按 [references/verify.md](references/verify.md) 运行 `ruff check`、`ruff format --check`、`pytest`。
 2. **失败处理**：任一验证失败先修复并重跑，不得带失败提交。
-3. **验收门**：给出改动摘要与测试结果，等待用户手动验收。
+3. **验收门**：按 [references/acceptance.md](references/acceptance.md) 的模板给出改动摘要与测试结果，等待用户手动验收。
    - 验收不通过：回到修改，循环直至通过。
    - 验收通过：继续。
 4. **提交**：按 [references/commit.md](references/commit.md) 检查改动范围、拆分 commit、填写信息并提交。
