@@ -49,8 +49,10 @@ def _click_button(bar: TagFilterBar, button) -> None:
 def _find_category_button(bar: TagFilterBar, category_name: str):
     """在分类按钮组中查找指定名称的按钮。"""
     for btn in bar._category_buttons.values():  # noqa: SLF001
-        # 去掉徽标后缀，匹配纯分类名
-        text = btn.text().split(" (")[0]
+        # 去掉徽标后缀（空格 + 数字），匹配纯分类名
+        text = btn.text()
+        if text.rsplit(" ", 1)[-1].isdigit():
+            text = text.rsplit(" ", 1)[0]
         if text == category_name:
             return btn
     return None
@@ -176,7 +178,7 @@ def test_click_new_category_collapses_old(qapp, tag_service_with_categories):
 
 
 def test_click_tag_toggles_selection(qapp, tag_service_with_categories):
-    """单击标签 → toggle 选中态。"""
+    """UI合理性16：标签三态循环 未选 → 已选 → 已排除 → 未选。"""
     service, cat_armor, _, tag_heavy, *_ = tag_service_with_categories
     bar = TagFilterBar(service)
     bar.refresh_categories()
@@ -190,11 +192,22 @@ def test_click_tag_toggles_selection(qapp, tag_service_with_categories):
     assert tag_heavy.id in bar.current_selected_tag_ids()
     assert bar.is_filter_active()
 
-    # 再次点击 → 取消
+    # 第二次点击 → 反选（排除）
     _click_button(bar, btn_tag)
     qapp.processEvents()
 
     assert tag_heavy.id not in bar.current_selected_tag_ids()
+    assert bar.current_excluded_tag_ids() == {tag_heavy.id}
+    assert bar.is_filter_active()  # 反选仍视为筛选激活
+    # 反选态按钮为删除线
+    assert btn_tag.font().strikeOut()
+
+    # 第三次点击 → 取消选择
+    _click_button(bar, btn_tag)
+    qapp.processEvents()
+
+    assert tag_heavy.id not in bar.current_selected_tag_ids()
+    assert bar.current_excluded_tag_ids() == set()
     assert not bar.is_filter_active()
 
 
@@ -318,7 +331,7 @@ def test_category_button_shows_selected_count_badge(qapp, tag_service_with_categ
 
     text = btn_cat.text()
     assert "服装护甲" in text
-    assert "(2)" in text
+    assert "服装护甲 2" in text
 
 
 # === refresh_categories ===
@@ -385,3 +398,91 @@ def test_empty_category_shows_hint(qapp, db_connection: sqlite3.Connection):
     # 标签行可见，但无标签按钮
     assert bar._tag_row.isVisible()  # noqa: SLF001
     assert not bar._tag_buttons  # noqa: SLF001
+
+
+# === UI合理性16：反选（三态）补充 ===
+
+
+def test_multiple_exclusions_coexist_and_emit_signal(qapp, tag_service_with_categories):
+    """多个反选标签并存，on_exclusion_changed 携带排除集合。"""
+    service, cat_armor, _, tag_heavy, tag_light, _ = tag_service_with_categories
+    bar = TagFilterBar(service)
+    bar.refresh_categories()
+
+    received: list[str] = []
+    bar.on_exclusion_changed.connect(received.append)
+
+    _click_button(bar, _find_category_button(bar, "服装护甲"))
+    heavy = _find_tag_button(bar, "重甲")
+    light = _find_tag_button(bar, "轻甲")
+    _click_button(bar, heavy)  # 已选
+    _click_button(bar, heavy)  # 反选 重甲
+    assert bar.current_excluded_tag_ids() == {tag_heavy.id}
+
+    _click_button(bar, light)  # 已选
+    _click_button(bar, light)  # 反选 轻甲（与重甲并存）
+    assert bar.current_excluded_tag_ids() == {tag_heavy.id, tag_light.id}
+    assert bar._tag_states[tag_heavy.id] == 2  # noqa: SLF001 重甲仍为反选
+    assert received[-1] == {tag_heavy.id, tag_light.id}
+
+
+def test_clear_selection_resets_exclusion(qapp, tag_service_with_categories):
+    """清除全部同时清除反选态。"""
+    service, cat_armor, _, tag_heavy, *_ = tag_service_with_categories
+    bar = TagFilterBar(service)
+    bar.refresh_categories()
+
+    _click_button(bar, _find_category_button(bar, "服装护甲"))
+    heavy = _find_tag_button(bar, "重甲")
+    _click_button(bar, heavy)
+    _click_button(bar, heavy)
+    assert bar.current_excluded_tag_ids() == {tag_heavy.id}
+
+    bar.clear_selection()
+
+    assert bar.current_excluded_tag_ids() == set()
+    assert not bar.is_filter_active()
+    assert not heavy.font().strikeOut()
+
+
+def test_tag_states_no_width_jump_and_uniform_border(qapp, tag_service_with_categories):
+    """三态样式尺寸统一（2px 边框、预留宽度）→ 状态切换不跳动；已选加粗、排除删除线。"""
+    service, cat_armor, _, tag_heavy, *_ = tag_service_with_categories
+    bar = TagFilterBar(service)
+    bar.refresh_categories()
+
+    _click_button(bar, _find_category_button(bar, "服装护甲"))
+    heavy = _find_tag_button(bar, "重甲")
+    reserved = heavy.minimumWidth()
+    assert reserved > 0
+    assert "border: 2px" in heavy.styleSheet()  # 未选
+
+    _click_button(bar, heavy)
+    assert heavy.text() == "重甲"  # 文字不变（无 ✓/− 前缀）
+    assert heavy.font().bold()
+    assert "border: 2px" in heavy.styleSheet()  # 已选
+    assert heavy.minimumWidth() == reserved  # 宽度不变
+    assert heavy.sizeHint().width() <= reserved  # 不撑破预留宽度
+
+    _click_button(bar, heavy)
+    assert "border: 2px" in heavy.styleSheet()  # 已排除
+    assert heavy.font().strikeOut()
+    assert heavy.minimumWidth() == reserved  # 宽度不变
+    assert heavy.sizeHint().width() <= reserved
+
+
+def test_category_badge_does_not_change_button_width(qapp, tag_service_with_categories):
+    """分类按钮预留徽标宽度：选中标签后徽标出现，按钮宽度不变（分类行不跳）。"""
+    service, cat_armor, _, tag_heavy, *_ = tag_service_with_categories
+    bar = TagFilterBar(service)
+    bar.refresh_categories()
+
+    btn_cat = _find_category_button(bar, "服装护甲")
+    reserved = btn_cat.minimumWidth()
+    assert reserved > 0
+
+    _click_button(bar, btn_cat)
+    _click_button(bar, _find_tag_button(bar, "重甲"))
+
+    assert btn_cat.minimumWidth() == reserved
+    assert btn_cat.sizeHint().width() <= reserved  # 徽标 " (1)" 不撑破预留宽度

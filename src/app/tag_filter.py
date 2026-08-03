@@ -30,8 +30,8 @@ import logging
 import warnings
 
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -42,7 +42,14 @@ from PySide6.QtWidgets import (
 )
 
 from app import ui_constants as ui
-from app.tag_colors import category_color_hex, text_color_hex
+from app.tag_colors import (
+    category_color_faded_hex,
+    category_color_hex,
+    category_color_vivid_hex,
+    text_color_faded_hex,
+    text_color_hex,
+    text_color_vivid_hex,
+)
 from application.tag_service import TagService
 from domain.models import Tag, TagCategory
 
@@ -60,32 +67,22 @@ def _disconnect_button(btn: QPushButton) -> None:
         pass
 
 
-# 选中态标签按钮样式：边框高亮（Q7 用户确认）
-# 显式设置 color 避免父主题继承导致白底白字
-_TAG_SELECTED_STYLE = """
-QPushButton {
-    border: 2px solid #1976d2;
-    background: #e3f2fd;
-    color: #1a1a1a;
-    padding: 2px 8px;
-    border-radius: 3px;
-}
-"""
+def _tag_button_style(bg: str, text: str, border: str) -> str:
+    """三态统一样式的标签按钮（2px 边框、同 padding/圆角 → 高度不跳动）。
 
-_TAG_FALLBACK_STYLE = """
-QPushButton {
-    border: 1px solid #ccc;
-    background: #fafafa;
-    color: #1a1a1a;
-    padding: 2px 8px;
-    border-radius: 3px;
-}
-QPushButton:hover {
-    border: 1px solid #1976d2;
-    background: #f0f7ff;
-    color: #1a1a1a;
-}
-"""
+    UI合理性16 验收反馈：原选中态样式与常规态 padding/边框不同，
+    导致点击选中时按钮高度变化、中栏上方内容跳动几像素。
+    """
+    return (
+        f"QPushButton {{ background: {bg}; color: {text}; "
+        f"border: 2px solid {border}; border-radius: 4px; padding: 2px 8px; }}"
+    )
+
+
+def _tag_fallback_style() -> str:
+    """未知分类色相的回退样式（灰底，2px 边框，与三态同尺寸）。"""
+    return _tag_button_style("#fafafa", "#1a1a1a", "#c0c0c0")
+
 
 # 分类按钮展开态样式
 _CATEGORY_EXPANDED_STYLE = """
@@ -126,9 +123,12 @@ class TagFilterBar(QWidget):
     信号：
         on_filter_changed(selected_tag_ids: set[str])：
             已选标签 ID 集合变化时发射。空集合表示「无筛选」。
+        on_exclusion_changed(excluded_tag_ids: set[str])：
+            反选（排除）标签 ID 集合变化时发射；空集合表示无排除。
     """
 
     on_filter_changed = Signal(set)
+    on_exclusion_changed = Signal(set)
 
     def __init__(self, tag_service: TagService, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -142,14 +142,15 @@ class TagFilterBar(QWidget):
         # BugFix2：分类色映射（tag_id → color_hue），供标签按钮填充着色
         self._tag_hues: dict[str, int] = {}
         self._selected_tag_ids: set[str] = set()
+        # UI合理性16：三态（0=未选 / 1=已选 / 2=已排除），反选可多个
+        self._tag_states: dict[str, int] = {}
+        self._excluded_tag_ids: set[str] = set()
         self._expanded_category_id: str | None = None
 
         # 分类按钮组（互斥展开）
         self._category_buttons: dict[str, QPushButton] = {}  # category_id → button
-        # 标签按钮组（多选）
+        # 标签按钮（三态，非 checkable，点击由 _cycle_tag 处理）
         self._tag_buttons: dict[str, QPushButton] = {}  # tag_id → button
-        self._tag_button_group = QButtonGroup(self)
-        self._tag_button_group.setExclusive(False)
 
         self._setup_ui()
 
@@ -221,6 +222,23 @@ class TagFilterBar(QWidget):
         if invalid:
             self._selected_tag_ids = self._selected_tag_ids & valid_tag_ids
             logger.info("刷新后剔除失效标签：%s", invalid)
+        invalid_excluded = self._excluded_tag_ids - valid_tag_ids
+        if invalid_excluded:
+            logger.info("刷新后剔除失效反选标签：%s", invalid_excluded)
+            self._excluded_tag_ids = self._excluded_tag_ids & valid_tag_ids
+
+        # 重建三态映射：已选 / 已排除 / 未选
+        self._tag_states = {
+            tag.id: (
+                2
+                if tag.id in self._excluded_tag_ids
+                else 1
+                if tag.id in self._selected_tag_ids
+                else 0
+            )
+            for _, tags in self._categories
+            for tag in tags
+        }
 
         # 重建分类按钮
         self._rebuild_category_buttons()
@@ -230,29 +248,39 @@ class TagFilterBar(QWidget):
         # 显隐：无分类时整体隐藏（由 MainWindow 控制 setVisible）
         self._update_visibility_state()
 
-        # 若剔除了失效标签，发射信号
+        # 若剔除了失效标签/反选标签，发射信号
         if invalid:
             self.on_filter_changed.emit(self._selected_tag_ids.copy())
+        if invalid_excluded:
+            self.on_exclusion_changed.emit(self._excluded_tag_ids.copy())
 
     def current_selected_tag_ids(self) -> set[str]:
         """返回当前已选标签 ID 集合的副本（供测试）。"""
         return self._selected_tag_ids.copy()
 
+    def current_excluded_tag_ids(self) -> set[str]:
+        """返回当前反选（排除）标签 ID 集合的副本（供测试）。"""
+        return self._excluded_tag_ids.copy()
+
     def is_filter_active(self) -> bool:
-        """返回筛选是否激活（已选标签数 > 0）。"""
-        return len(self._selected_tag_ids) > 0
+        """返回筛选是否激活（有已选或反选标签）。"""
+        return len(self._selected_tag_ids) > 0 or bool(self._excluded_tag_ids)
 
     def clear_selection(self) -> None:
         """清空所有已选标签并发射信号（不重建按钮）。"""
-        if not self._selected_tag_ids:
+        if not self._selected_tag_ids and not self._excluded_tag_ids:
             return
         self._selected_tag_ids.clear()
+        self._excluded_tag_ids.clear()
+        for tag_id in self._tag_states:
+            self._tag_states[tag_id] = 0
         # 更新所有标签按钮视觉态
         for tag_id, btn in self._tag_buttons.items():
             self._apply_tag_button_style(tag_id, btn)
         self._update_clear_button_state()
         self._refresh_category_badges()
         self.on_filter_changed.emit(set())
+        self.on_exclusion_changed.emit(set())
 
     def has_categories(self) -> bool:
         """返回是否存在任何标签分类（供 MainWindow 决定显隐）。"""
@@ -279,6 +307,10 @@ class TagFilterBar(QWidget):
                 lambda checked=False, cid=category.id: self._on_category_clicked(cid)
             )
             self._apply_category_button_style(category.id, btn)
+            # 预留加粗文字 + 徽标宽度，避免选中计数徽标导致分类行跳动
+            self._reserve_button_width(
+                btn, f"{category.name}{ui.TAG_FILTER_CATEGORY_BADGE_RESERVE}"
+            )
             self._category_buttons[category.id] = btn
             self._category_layout.insertWidget(self._category_layout.count() - 1, btn)
 
@@ -315,12 +347,12 @@ class TagFilterBar(QWidget):
 
         for tag in tags:
             btn = QPushButton(tag.name)
-            btn.setCheckable(True)
-            btn.setChecked(tag.id in self._selected_tag_ids)
-            btn.clicked.connect(lambda checked=False, tid=tag.id: self._on_tag_clicked(tid))
+            btn.setCheckable(False)
+            btn.clicked.connect(lambda checked=False, tid=tag.id: self._cycle_tag(tid))
             self._apply_tag_button_style(tag.id, btn)
+            # 预留加粗文字宽度，避免 加粗/删除线 状态切换导致标签行跳动
+            self._reserve_button_width(btn, tag.name)
             self._tag_buttons[tag.id] = btn
-            self._tag_button_group.addButton(btn)
             self._tag_layout.insertWidget(self._tag_layout.count() - 1, btn)
 
         self._tag_row.setVisible(True)
@@ -343,49 +375,87 @@ class TagFilterBar(QWidget):
         # 重建标签按钮行
         self._rebuild_tag_buttons_for_expanded()
 
-    def _on_tag_clicked(self, tag_id: str) -> None:
-        """标签按钮点击：toggle 选中状态，发射信号。"""
-        if tag_id in self._selected_tag_ids:
-            self._selected_tag_ids.discard(tag_id)
-        else:
+    def _cycle_tag(self, tag_id: str) -> None:
+        """标签按钮三态循环（UI合理性16）：
+        未选 → 已选 → 已排除（反选）→ 未选。
+        已排除可多个标签并存；再点一次即取消。
+        """
+        state = self._tag_states.get(tag_id, 0)
+        if state == 0:
+            self._tag_states[tag_id] = 1
             self._selected_tag_ids.add(tag_id)
+        elif state == 1:
+            # 已选 → 反选：移出正选集，加入排除集合
+            self._tag_states[tag_id] = 2
+            self._selected_tag_ids.discard(tag_id)
+            self._excluded_tag_ids.add(tag_id)
+        else:
+            # 已排除 → 取消
+            self._tag_states[tag_id] = 0
+            self._excluded_tag_ids.discard(tag_id)
 
-        # 更新该按钮视觉态
-        btn = self._tag_buttons.get(tag_id)
-        if btn is not None:
-            self._apply_tag_button_style(tag_id, btn)
+        # 更新全部按钮视觉态
+        for tid, btn in self._tag_buttons.items():
+            self._apply_tag_button_style(tid, btn)
 
-        # 更新清除按钮可用性
+        # 更新清除按钮可用性与分类徽标
         self._update_clear_button_state()
-        # 更新分类徽标
         self._refresh_category_badges()
 
         # 发射信号
         self.on_filter_changed.emit(self._selected_tag_ids.copy())
-
-    def _on_clear_clicked(self) -> None:
-        """清除全部按钮：清空已选并发射信号。"""
-        self.clear_selection()
-
-    # --- 内部：视觉态更新 ---
+        self.on_exclusion_changed.emit(self._excluded_tag_ids.copy())
 
     def _apply_tag_button_style(self, tag_id: str, btn: QPushButton) -> None:
-        """根据选中态应用标签按钮样式。"""
-        if tag_id in self._selected_tag_ids:
-            btn.setStyleSheet(_TAG_SELECTED_STYLE)
-            btn.setChecked(True)
+        """根据三态应用标签按钮样式（2px 边框，尺寸统一防跳动）。
+
+        - 未选：彩色圆角 + 亮度自适应黑/白字
+        - 已选：略微提饱和背景 + 白色描边环 + 加粗
+        - 已排除：降饱和/变淡背景 + 删除线
+        文字内容不变（不用 ✓/− 前缀），宽度由 _reserve_button_width 预留，状态切换不跳动。
+        """
+        state = self._tag_states.get(tag_id, 0)
+        hue = self._tag_hues.get(tag_id)
+
+        if state == 1:
+            bg = category_color_vivid_hex(hue) if hue is not None else "#b3d4fc"
+            text = text_color_vivid_hex(hue) if hue is not None else "#1a1a1a"
+            btn.setStyleSheet(_tag_button_style(bg, text, "#ffffff"))
+            font = btn.font()
+            font.setBold(True)
+            font.setStrikeOut(False)
+            btn.setFont(font)
+            btn.setToolTip("")
+        elif state == 2:
+            bg = category_color_faded_hex(hue) if hue is not None else "#e0e0e0"
+            text = text_color_faded_hex(hue) if hue is not None else "#1a1a1a"
+            btn.setStyleSheet(_tag_button_style(bg, text, bg))
+            btn.setToolTip(ui.TAG_FILTER_EXCLUDED_TOOLTIP)
+            font = btn.font()
+            font.setBold(False)
+            font.setStrikeOut(True)
+            btn.setFont(font)
         else:
-            hue = self._tag_hues.get(tag_id)
             if hue is not None:
-                # BugFix2 验收反馈：背景/边框统一分类色，文字色按亮度自动黑/白
                 btn.setStyleSheet(
-                    ui.TAG_BUTTON_FILLED_STYLE.format(
-                        color=category_color_hex(hue), text=text_color_hex(hue)
+                    _tag_button_style(
+                        category_color_hex(hue), text_color_hex(hue), category_color_hex(hue)
                     )
                 )
             else:
-                btn.setStyleSheet(_TAG_FALLBACK_STYLE)
-            btn.setChecked(False)
+                btn.setStyleSheet(_tag_fallback_style())
+            btn.setToolTip("")
+            font = btn.font()
+            font.setBold(False)
+            font.setStrikeOut(False)
+            btn.setFont(font)
+
+    def _reserve_button_width(self, btn: QPushButton, text: str) -> None:
+        """按加粗文字 + padding/边框预留按钮最小宽度（状态切换不改变按钮尺寸）。"""
+        font = btn.font()
+        font.setBold(True)
+        metrics = QFontMetrics(font)
+        btn.setMinimumWidth(metrics.horizontalAdvance(text) + 24)
 
     def _apply_category_button_style(self, category_id: str, btn: QPushButton) -> None:
         """根据展开态应用分类按钮样式。"""
@@ -395,8 +465,10 @@ class TagFilterBar(QWidget):
             btn.setStyleSheet(_CATEGORY_NORMAL_STYLE)
 
     def _update_clear_button_state(self) -> None:
-        """清除按钮在无已选时禁用。"""
-        self._clear_button.setEnabled(len(self._selected_tag_ids) > 0)
+        """清除按钮在无已选/反选时禁用。"""
+        self._clear_button.setEnabled(
+            len(self._selected_tag_ids) > 0 or bool(self._excluded_tag_ids)
+        )
 
     def _refresh_category_badges(self) -> None:
         """刷新所有分类按钮的徽标（已选数）。"""
@@ -418,6 +490,10 @@ class TagFilterBar(QWidget):
                 btn.setText(f"{category_name}{badge}")
             else:
                 btn.setText(category_name)
+
+    def _on_clear_clicked(self) -> None:
+        """清除全部按钮：清空已选并发射信号。"""
+        self.clear_selection()
 
     def _update_visibility_state(self) -> None:
         """无分类时隐藏控件本体。"""

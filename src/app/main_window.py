@@ -43,7 +43,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QPoint, QRect, QSettings, QSize, Qt
-from PySide6.QtGui import QFontMetrics, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QFontMetrics, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -78,6 +78,7 @@ from app.assembly_controller import AssemblyController
 from app.assembly_panel import AssemblyPanel
 from app.batch_tag_dialog import BatchTagDialog
 from app.card_list_model import CardListModel
+from app.content_filter import filter_entries
 from app.file_list_model import (
     COL_MODIFIED,
     COL_NAME,
@@ -97,6 +98,7 @@ from app.path_display import make_display_path_from_service
 from app.recent_move_targets import RecentMoveTargets
 from app.recent_tags import RecentTags
 from app.scan_controller import ScanController
+from app.selection_memory import SelectionMemory
 from app.splitter_state import SplitterStateHelper
 from app.tag_filter import TagFilterBar
 from app.tag_manager_dialog import TagManagerDialog
@@ -395,6 +397,8 @@ class MainWindow(QMainWindow):
         self._current_nav_path: str | None = None
         # 历史导航触发的切换标记，防止 _refresh_content_list 再次入栈导致循环
         self._navigating_from_history: bool = False
+        # 操作便捷性7：目录 → 最后一次选中路径列表（后退/前进时恢复）
+        self._selection_memory = SelectionMemory()
 
         self.setWindowTitle(ui.APP_TITLE)
         self.resize(ui.WINDOW_DEFAULT_WIDTH, ui.WINDOW_DEFAULT_HEIGHT)
@@ -444,6 +448,14 @@ class MainWindow(QMainWindow):
         )
         # 注入卡片缩略图 provider（缓存命中同步返回，未命中投递后台生成）
         self._card_list_model.set_thumbnail_provider(self._card_thumbnail_provider)
+        # UI合理性5：列表视图封面图标 provider（只读复用现有缓存，不产生新缓存）
+        self._content_list_model.set_cover_icon_provider(self._list_cover_icon_provider)
+
+    def _list_cover_icon_provider(self, content_unit_id: str, source_path: str) -> QIcon | None:
+        """列表视图封面图标：只读复用 256 档封面缓存，缩放到 64×64（UI合理性5）。"""
+        if self._thumbnail_coordinator is None:
+            return None
+        return self._thumbnail_coordinator.get_cover_icon(content_unit_id, Path(source_path))
 
     def _card_thumbnail_provider(
         self,
@@ -731,6 +743,13 @@ class MainWindow(QMainWindow):
         self._zoom_combo.currentIndexChanged.connect(self._on_zoom_combo_changed)
         view_switch_layout.addWidget(self._zoom_combo)
 
+        # 封面筛选（操作便捷性5，2026-08-03）：切换按钮，按下=只看有封面，不持久化
+        self._cover_filter_button = QPushButton(ui.COVER_FILTER_BUTTON)
+        self._cover_filter_button.setCheckable(True)
+        self._cover_filter_button.setToolTip(ui.COVER_FILTER_TOOLTIP)
+        self._cover_filter_button.toggled.connect(self._on_cover_filter_toggled)
+        view_switch_layout.addWidget(self._cover_filter_button)
+
         # UX 重构 Phase 2 Task 5（Q5=B）：刷新按钮（中栏标题栏）
         # 仅刷新当前目录 + 目录树对应节点，不触发全量扫描（Q6=A 同步刷新装配面板）
         self._refresh_button = QPushButton(ui.REFRESH_BUTTON)
@@ -745,6 +764,7 @@ class MainWindow(QMainWindow):
         if self._tag_service is not None:
             self._tag_filter_bar = TagFilterBar(self._tag_service)
             self._tag_filter_bar.on_filter_changed.connect(self._on_tag_filter_changed)
+            self._tag_filter_bar.on_exclusion_changed.connect(self._on_tag_exclusion_changed)
             self._tag_filter_bar.refresh_categories()
             content_layout.addWidget(self._tag_filter_bar)
         else:
@@ -1076,12 +1096,20 @@ class MainWindow(QMainWindow):
         entries = self._apply_tag_filter(entries)
         self._content_list_model.refresh(entries)
         if not entries:
-            if self._is_tag_filter_active():
+            if self._is_tag_filter_active() or self._cover_filter_button.isChecked():
                 self._content_empty_hint.setText(ui.TAG_FILTER_NO_RESULT_HINT)
             else:
                 self._content_empty_hint.setText(ui.CONTENT_LIST_EMPTY_HINT)
         else:
             self._content_empty_hint.setText("")
+        # 操作便捷性7：历史导航（后退/前进）恢复该目录记忆的选中
+        if self._navigating_from_history:
+            active_view = (
+                self._card_view
+                if self._current_view_index == VIEW_INDEX_CARD
+                else self._content_view
+            )
+            self._selection_memory.restore(dir_path, self._content_list_model, active_view)
         # Stage 5 Task 2：记录目录导航历史
         self._record_nav_history(dir_path)
 
@@ -1095,31 +1123,37 @@ class MainWindow(QMainWindow):
         return self._tag_filter_bar is not None and self._tag_filter_bar.is_filter_active()
 
     def _apply_tag_filter(self, entries: list) -> list:
-        """按当前 TagFilterBar 筛选状态过滤条目。
-
-        - 筛选未激活：原样返回。
-        - 筛选激活：仅保留 entry.content_unit is not None 且
-          entry.content_unit.id 在筛选结果集合中的条目（Q1: B）。
-        """
-        if not self._is_tag_filter_active():
-            return entries
+        """按标签/封面筛选过滤条目（委托 ContentFilter，MainWindow 仅接线）。"""
         if self._tag_filter_bar is None:
-            return entries
-
-        selected_tag_ids = self._tag_filter_bar.current_selected_tag_ids()
-        try:
-            allowed_unit_ids = self._tag_service.filter_unit_ids_by_category_and(
-                list(selected_tag_ids)
+            return filter_entries(
+                entries,
+                tag_service=self._tag_service,
+                selected_tag_ids=set(),
+                excluded_tag_ids=set(),
+                cover_only=self._cover_filter_button.isChecked(),
             )
-        except Exception:  # noqa: BLE001
-            logger.exception("标签筛选失败，回退到无筛选")
-            return entries
+        return filter_entries(
+            entries,
+            tag_service=self._tag_service,
+            selected_tag_ids=self._tag_filter_bar.current_selected_tag_ids(),
+            excluded_tag_ids=self._tag_filter_bar.current_excluded_tag_ids(),
+            cover_only=self._cover_filter_button.isChecked(),
+        )
 
-        return [
-            entry
-            for entry in entries
-            if entry.content_unit is not None and entry.content_unit.id in allowed_unit_ids
-        ]
+    def _on_cover_filter_toggled(self, _checked: bool) -> None:
+        """封面筛选切换：按下=只看有封面；不持久化。"""
+        self._refresh_filters_current_dir()
+
+    def _on_tag_exclusion_changed(self, _excluded_tag_ids: set) -> None:
+        """TagFilterBar 反选标签变化 → 重新刷新中栏（应用排除筛选）。"""
+        self._refresh_filters_current_dir()
+
+    def _refresh_filters_current_dir(self) -> None:
+        """刷新当前显示目录（标签/封面筛选变化时；优先当前导航目录，回退目录树选中）。"""
+        if self._current_nav_path is not None:
+            self._refresh_content_list(self._current_nav_path)
+        else:
+            self._refresh_content_list_for_current_mode()
 
     def _on_tag_filter_changed(self, selected_tag_ids: set[str]) -> None:
         """TagFilterBar 选中标签变化时重新刷新中栏（应用筛选）。
@@ -1129,7 +1163,7 @@ class MainWindow(QMainWindow):
         MetadataPanel 保持上一次加载的内容（不主动清空），避免干扰用户。
         - 仅中栏可见时响应（TagFilterBar 常驻中栏顶部）。
         """
-        self._refresh_content_list_for_current_mode()
+        self._refresh_filters_current_dir()
 
     def _refresh_tag_filter_bar(self) -> None:
         """刷新 TagFilterBar 的可选标签（标签管理对话框关闭后调用）。"""
@@ -1271,6 +1305,15 @@ class MainWindow(QMainWindow):
         indexes = sm.selectedRows()
         if not indexes:
             return
+        # 操作便捷性7：记忆当前目录的选中（后退/前进时恢复）。
+        # 仅在非空选中时记录，避免列表刷新/恢复过程中的空选中事件清空记忆。
+        if self._current_nav_path is not None:
+            paths: list[str] = []
+            for i in indexes:
+                e = active_model.entry_at(i.row())
+                if e is not None:
+                    paths.append(e.path)
+            self._selection_memory.record(self._current_nav_path, paths)
         # 多选：清空元数据 + 解绑装配面板
         if len(indexes) > 1:
             self._set_metadata_text(ui.METADATA_NOT_SELECTED)
@@ -1399,9 +1442,10 @@ class MainWindow(QMainWindow):
             self._nav_forward_stack.append(current)
         self._navigating_from_history = True
         try:
-            self._navigate_to_directory(target)
-            # _record_nav_history 被 navigating_from_history 跳过，需手动更新
+            # 先更新当前路径，使导航期间恢复选中触发的 selectionChanged
+            # 把记忆归属到正确目录（操作便捷性7）
             self._current_nav_path = target
+            self._navigate_to_directory(target)
         finally:
             self._navigating_from_history = False
         self._update_nav_buttons()
@@ -1416,9 +1460,9 @@ class MainWindow(QMainWindow):
             self._nav_back_stack.append(current)
         self._navigating_from_history = True
         try:
-            self._navigate_to_directory(target)
-            # _record_nav_history 被 navigating_from_history 跳过，需手动更新
+            # 同上：先更新当前路径，避免恢复选中时记忆错归属目录
             self._current_nav_path = target
+            self._navigate_to_directory(target)
         finally:
             self._navigating_from_history = False
         self._update_nav_buttons()

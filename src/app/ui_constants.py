@@ -486,12 +486,18 @@ def format_scan_summary(
 
 # TagFilterBar 标签筛选栏（Stage 4 Task 3）
 TAG_FILTER_BAR_TITLE = "标签筛选"
-TAG_FILTER_BAR_HINT = "点击分类展开标签，多选筛选。同分类为或，跨分类为与。"
+TAG_FILTER_BAR_HINT = "点击分类展开标签：单击选中，再点反选（排除），第三次取消。"
 TAG_FILTER_CLEAR_BUTTON = "清除全部"
+TAG_FILTER_EXCLUDED_TOOLTIP = "反选：筛选除该标签外的全部内容"
 TAG_FILTER_NO_CATEGORIES_HINT = "（暂无标签分类，请在标签管理中创建）"
 TAG_FILTER_CATEGORY_EMPTY_HINT = "（该分类下无标签）"
 TAG_FILTER_NO_RESULT_HINT = "没有找到匹配内容"
-TAG_FILTER_CATEGORY_BADGE = " ({count})"  # 折叠态下分类按钮显示的已选标签数徽标
+TAG_FILTER_CATEGORY_BADGE = " {count}"  # 折叠态下分类按钮显示的已选标签数徽标（无括号，防过宽）
+TAG_FILTER_CATEGORY_BADGE_RESERVE = " 99"  # 徽标宽度预留（空格 + 两位数字，防按钮宽度跳动）
+
+# 封面筛选（操作便捷性5，2026-08-03）：切换按钮，不持久化
+COVER_FILTER_BUTTON = "只看有封面"
+COVER_FILTER_TOOLTIP = "按下后仅显示已设置封面的内容单元"
 
 # 视图切换（Stage 5 Task 1）
 VIEW_SWITCH_GROUP_LABEL = "视图"

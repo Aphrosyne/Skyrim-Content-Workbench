@@ -357,3 +357,67 @@ def test_splitter_drag_saves_immediately(qapp, tmp_path: Path) -> None:
         assert settings.contains(ui.QSETTINGS_KEY_SPLITTER_MAIN)
     finally:
         window.close()
+
+
+def test_cover_filter_toggle(qapp, tmp_path: Path) -> None:
+    """操作便捷性5：封面筛选切换按钮（按下=只看有封面，不持久化）。"""
+    window = _build_window(tmp_path)
+    try:
+        # 标记 armor 为内容单元（自动封面 preview.jpg）
+        window._content_service.mark_as_content_unit(tmp_path / "mods" / "armor")  # noqa: SLF001
+        window._commit()
+        window._refresh_content_list(str(tmp_path / "mods"))  # noqa: SLF001
+        qapp.processEvents()
+        assert window.entry_count() == 2
+
+        window._cover_filter_button.setChecked(True)  # noqa: SLF001
+        qapp.processEvents()
+        assert window.entry_count() == 1
+        assert window.entry_at(0).name == "armor"
+
+        window._cover_filter_button.setChecked(False)  # noqa: SLF001
+        qapp.processEvents()
+        assert window.entry_count() == 2
+    finally:
+        window.close()
+
+
+def test_navigation_remembers_selection(qapp, tmp_path: Path) -> None:
+    """操作便捷性7：双击进入目录，后退/前进恢复选中内容。"""
+    window = _build_window(tmp_path)
+    window.show()
+    qapp.processEvents()
+    try:
+        window._refresh_content_list(str(tmp_path / "mods"))  # noqa: SLF001
+        qapp.processEvents()
+        row_armor = next(
+            r for r in range(window.entry_count()) if window.entry_at(r).name == "armor"
+        )
+        window._content_view.selectRow(row_armor)  # noqa: SLF001
+        qapp.processEvents()
+
+        window._on_entry_activated(window._content_list_model.index(row_armor, 0))  # noqa: SLF001
+        qapp.processEvents()
+        row_pic = next(
+            r for r in range(window.entry_count()) if window.entry_at(r).name == "preview.jpg"
+        )
+        window._content_view.selectRow(row_pic)  # noqa: SLF001
+        qapp.processEvents()
+
+        window._on_nav_back_clicked()  # noqa: SLF001
+        qapp.processEvents()
+        selected = [
+            window.entry_at(r.row()).name
+            for r in window._content_view.selectionModel().selectedRows()  # noqa: SLF001
+        ]
+        assert "armor" in selected
+
+        window._on_nav_forward_clicked()  # noqa: SLF001
+        qapp.processEvents()
+        selected2 = [
+            window.entry_at(r.row()).name
+            for r in window._content_view.selectionModel().selectedRows()  # noqa: SLF001
+        ]
+        assert "preview.jpg" in selected2
+    finally:
+        window.close()

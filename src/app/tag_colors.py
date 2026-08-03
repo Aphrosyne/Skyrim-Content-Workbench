@@ -12,11 +12,37 @@ from PySide6.QtGui import QColor, QPixmap
 # 分类颜色固定 S/L（Qt 0-255 范围），与既有显示一致
 _SATURATION = 200
 _LIGHTNESS = 120
+# 已选中态：略微提饱和（UI合理性16）
+_SELECTED_SATURATION = 255
+_SELECTED_LIGHTNESS = 130
+# 已排除态：降饱和/变淡但保留色相（UI合理性16）
+_FADED_SATURATION = 60
+_FADED_LIGHTNESS = 140
 
 
 def category_color(hue: int) -> QColor:
     """hue（0-360）→ 分类显示颜色（固定 S/L）。"""
     return QColor.fromHsl(hue % 360, _SATURATION, _LIGHTNESS)
+
+
+def category_color_vivid(hue: int) -> QColor:
+    """hue → 已选中态颜色（略微提饱和）。"""
+    return QColor.fromHsl(hue % 360, _SELECTED_SATURATION, _SELECTED_LIGHTNESS)
+
+
+def category_color_vivid_hex(hue: int) -> str:
+    """hue → 已选中态背景 hex。"""
+    return category_color_vivid(hue).name()
+
+
+def category_color_faded(hue: int) -> QColor:
+    """hue → 已排除态颜色（降饱和/变淡，保留色相）。"""
+    return QColor.fromHsl(hue % 360, _FADED_SATURATION, _FADED_LIGHTNESS)
+
+
+def category_color_faded_hex(hue: int) -> str:
+    """hue → 已排除态背景 hex。"""
+    return category_color_faded(hue).name()
 
 
 def category_color_hex(hue: int) -> str:
@@ -43,6 +69,31 @@ def text_color_for(hue: int) -> QColor:
 def text_color_hex(hue: int) -> str:
     """hue → 自动黑/白文字色的 hex。"""
     return text_color_for(hue).name()
+
+
+def _text_hex_for_color(color: QColor) -> str:
+    """按给定颜色的相对亮度自动选择黑/白文字色 hex。"""
+
+    def _linear(c: float) -> float:
+        c /= 255.0
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    luminance = (
+        0.2126 * _linear(color.red())
+        + 0.7152 * _linear(color.green())
+        + 0.0722 * _linear(color.blue())
+    )
+    return "#1a1a1a" if luminance > 0.5 else "#ffffff"
+
+
+def text_color_vivid_hex(hue: int) -> str:
+    """已选中态背景 → 自动黑/白文字色 hex。"""
+    return _text_hex_for_color(category_color_vivid(hue))
+
+
+def text_color_faded_hex(hue: int) -> str:
+    """已排除态背景 → 自动黑/白文字色 hex。"""
+    return _text_hex_for_color(category_color_faded(hue))
 
 
 def color_icon(hue: int, size: int = 16) -> QPixmap:

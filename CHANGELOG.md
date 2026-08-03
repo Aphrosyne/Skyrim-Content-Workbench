@@ -8,6 +8,28 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+- **列表封面区分/筛选 + 导航记忆 + 标签反选（UI合理性5 / 操作便捷性5 / 操作便捷性7 / UI合理性16，v0.50.10）**：
+  - UI合理性5：文件夹类内容单元有封面 → 列表视图复用现有 256 封面缓存缩放到 64×64
+    作为图标（只读查询，不产生新缓存、无圆角）；无缓存回退标准文件夹图标
+  - 操作便捷性5：「只看有封面」切换按钮（中栏标题栏，按下筛选、不持久化），
+    与标签筛选 AND 组合
+  - 操作便捷性7：双击进入目录后，后退/前进恢复该目录最后一次选中（含多选，
+    按路径匹配并滚动到首个恢复行）
+  - UI合理性16：标签筛选三态（未选 → 已选 ✓加粗+白色描边 → 已排除 −删除线+降饱和，
+    第三次取消）；三态样式统一 2px 边框 + 预留加粗宽度消除跳动（去 ✓/− 文字前缀）；
+    反选标签进入排除筛选（正选 AND 结果中剔除，可多个反选并存）；
+    分类徽标改为「分类名 N」并预留两位数字宽度
+  - 拆离：内容筛选组合逻辑抽为 `ContentFilter.filter_entries`（纯函数）；
+    选中记忆抽为 `SelectionMemory`（记录/按路径恢复/滚动）；
+    封面图标缩放下移 `ThumbnailCoordinator.get_cover_icon`；MainWindow 仅接线
+  （[file_list_model.py](src/app/file_list_model.py) /
+  [thumbnail_coordinator.py](src/app/thumbnail_coordinator.py) /
+  [main_window.py](src/app/main_window.py) /
+  [tag_filter.py](src/app/tag_filter.py) /
+  [tag_colors.py](src/app/tag_colors.py) /
+  [content_filter.py](src/app/content_filter.py) /
+  [selection_memory.py](src/app/selection_memory.py)）
+
 - **分类颜色统一 + 批量打标签重构（BugFix2 / UI合理性12，v0.50.9）**：
   - BugFix2：新增共享颜色 helper `tag_colors`（hue → QColor / 样式表 hex / 色块图标），
     选色改为**预选色表**（24 色相块，点击即选，所见即所得）替换 QColorDialog——
