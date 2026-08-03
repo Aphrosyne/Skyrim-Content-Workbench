@@ -585,10 +585,11 @@ ScanService.scan(managed_root)
 > ThumbnailService.generate → Pillow 只读加载源图并写入缓存 WebP。
 > 缓存命中时 UI 同步获得 QPixmap。
 >
-> **当前实际状态（2026-08-01 复核）**：磁盘缓存基础设施（生成/查询/GC）已实现，
-> 但 UI 未接入 Coordinator 请求链路——卡片视图与元数据面板直接以 QPixmap 加载原图
-> 并做内存缓存，`request_thumbnail` 无生产调用方（仅测试覆盖）。该差距登记为
-> TD-M37，待后续 Task 决定接入缓存链路或简化。
+> **当前实际状态（2026-08-03 复核）**：卡片视图已接入 Coordinator 请求链路
+> （UI合理性16）——MainWindow 注入 provider，按 256 档请求（覆盖全部缩放预设）；
+> 生成服务默认 cover 方形居中裁剪（无圆角/透明条），未命中显示固定尺寸占位
+> 图标、生成完成按行刷新。TD-M37 已修复；元数据面板仍直接加载原图（单图场景），
+> TD-L34（每任务新建 QThread）延后。
 
 ### 分层与职责
 
@@ -613,10 +614,11 @@ ScanService.scan(managed_root)
 - `app/thumbnail_coordinator.py`：调度器。管理 FIFO 队列 + 去重 set。
   - `request_thumbnail(unit_id, source_path, size=256)`：缓存命中同步返回 QPixmap，未命中
     入队后台生成
-  - `thumbnail_ready` 信号 → MainWindow → `FileListModel.notify_thumbnail_ready`
-    → 触发对应行 `dataChanged(DecorationRole)` 重绘
+  - `thumbnail_ready(unit_id, size)` 信号 → MainWindow → `CardListModel.notify_thumbnail_ready`
+    → 触发对应行 `dataChanged(DecorationRole)` 重绘（UI合理性16 已接通）
   - `shutdown()`：清空队列 + 等待当前 worker 退出（`closeEvent` 调用）
-  - **注**：当前 UI 无 `request_thumbnail` 调用方（TD-M37），信号仅由测试链路验证
+  - **注**：卡片视图经 MainWindow 注入的 provider 调用 `request_thumbnail`
+    （256 档，UI合理性16）；TD-M37 已修复（2026-08-03），TD-L34 延后
 
 ### 关键约束
 
@@ -627,9 +629,9 @@ ScanService.scan(managed_root)
 - 缓存有效性基于 `content_unit_id + size + source_size_bytes + source_modified_at + 文件存在`
 - 后台线程生成（QThread + 独立 SQLite 连接），不冻结 UI
 - 始终只读访问用户原图；不修改、不压缩、不覆盖
-- UI 层当前不经过缩略图缓存：FileListModel 使用 Qt 标准图标（Task 1a 决策），
-  CardListModel 与 MetadataPanel 直接 QPixmap 加载原图（内存缓存）。TD-M37 未解决前，
-  UI 不依赖磁盘缩略图缓存文件
+- UI 层缓存使用现状：卡片视图经 Coordinator 走磁盘缩略图缓存（256 档 cover，
+  UI合理性16，2026-08-03）；FileListModel 使用 Qt 标准图标（Task 1a 决策）；
+  元数据面板仍直接加载原图（单图场景，不在接入范围）
 
 ---
 

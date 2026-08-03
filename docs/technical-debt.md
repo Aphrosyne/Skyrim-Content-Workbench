@@ -747,16 +747,17 @@
   metadata_panel / folder_tree_model / assembly_service / domain.models 中
   遗留的"浏览/整理模式"注释。
 
-### TD-M37: 缩略图 Coordinator 生成链路未接入 UI
+### TD-M37: 缩略图 Coordinator 生成链路未接入 UI ✅ 已修复（UI合理性16，2026-08-03）
 
-- **位置**: [thumbnail_coordinator.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/thumbnail_coordinator.py) `request_thumbnail` / [card_list_model.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/card_list_model.py) / [metadata_panel.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/metadata_panel.py)
-- **背景**: Stage 5 Task 1a 实现了 WebP 多档磁盘缓存基础设施，但当前 UI 未接入：
-  `request_thumbnail` 无生产调用方；卡片视图与元数据面板直接 QPixmap 加载原图并
-  内存缓存；FileListModel 使用 Qt 标准图标。磁盘缩略图缓存仅由测试链路与启动 GC 触及。
-- **影响范围**: 磁盘缓存未发挥作用（原图每次会话重新加载）；不影响正确性。
-- **推荐修复方案**: 接入 Coordinator 链路（卡片视图按 icon_size 请求 256/512 档），
-  或按需简化缓存体系；需产品确认。
-- **建议修复阶段**: **UX 重构 Task 8**（UI 美化时）或单独决策。
+- **位置**: [thumbnail_coordinator.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/thumbnail_coordinator.py) `request_thumbnail` / [card_list_model.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/card_list_model.py) / [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
+- **修复（UI合理性16，2026-08-03）**: 卡片视图恢复 Coordinator 链路——
+  MainWindow 注入 `_card_thumbnail_provider`，按 256 档 `request_thumbnail`
+  （覆盖全部缩放预设，最大档即 256）；生成服务默认 cover 方形居中裁剪
+  （无圆角/透明条，与卡片既有视觉一致）；未命中显示固定尺寸占位图标
+  （占地与缩略图一致，避免首屏批量生成时布局抖动），生成完成按行刷新；
+  缓存失效（封面变更）/启动 GC 复用既有 Service 链路。
+  TD-L34（每任务新建 QThread）按用户指示延后，不随本项处理。
+- **未覆盖场景**: 元数据面板封面预览仍直接加载原图（单图场景，不在接入范围）。
 
 ### TD-M38: MainWindow 薄委托与文件操作编排待进一步拆分
 
@@ -779,11 +780,12 @@
   `_start_worker` / `_on_thread_finished`
 - **背景**: 每个缩略图任务新建 QThread + ThumbnailWorker，完成后 `deleteLater` 清理。
   测试稳定性1（v0.50.4）排查确认原生崩溃与 coordinator 无直接因果（根因是
-  MetadataPanel 按钮 deleteLater 引用环），但每任务线程创建/销毁开销高，且
-  coordinator 当前无生产调用方（见 TD-M37）。
+  MetadataPanel 按钮 deleteLater 引用环），但每任务线程创建/销毁开销高
+  （TD-M37 已修复：2026-08-03 随 UI合理性16 接入卡片视图生产链路）。
 - **建议**: 改为单长驻 worker 线程 + 任务队列（与 ScanController 模式一致），
-  或在接入 UI 时（TD-M37）一并重做。
-- **建议修复阶段**: 与 TD-M37 一并决策（UX 重构 Task 8 或单独任务）。
+  或保留现状接受开销。
+- **建议修复阶段**: 接入后若实测大批量缓存生成排队偏慢，再单列任务
+  （2026-08-03 更新：TD-M37 已修复，本项仍延后）。
 
 ---
 

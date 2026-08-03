@@ -700,8 +700,10 @@ OperationHistoryDialog → 选中可撤销记录 → UndoService.undo(history_id
 2. **FileListView 未统一**：FileListModel（中栏）和 AssemblyListModel（装配面板）两套模型，维护两份，Task 7 考虑统一
 3. **schema CHECK 约束保留 'undo'**：D4 决策撤销不再写入新记录，但 CHECK 约束含 'undo'（向后兼容，不重建表）
 4. **`content_unit.content_type` 默认 'mod'**：与实体名 ContentUnit 不一致（TD-L23），未来支持多类型时重构
-5. **缩略图 Coordinator 链路未接入 UI（TD-M37）**：磁盘 WebP 缓存基础设施已实现，
-   但 UI（卡片视图/元数据面板）直接加载原图 QPixmap，`request_thumbnail` 无生产调用方
+5. **缩略图 Coordinator 链路未接入 UI（TD-M37）**：✅ 已解决（UI合理性16，
+   2026-08-03）——卡片视图经 MainWindow provider 接入 256 档缓存链路（cover
+   方形居中裁剪 + 固定尺寸占位图标）；元数据面板仍直接加载原图（单图场景，
+   不在接入范围）；TD-L34（每任务新建 QThread）延后
 
 ---
 
