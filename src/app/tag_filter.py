@@ -27,6 +27,7 @@ spec §5.1 / §7.2 / §10.3：中栏顶部标签筛选栏，多选标签实时�
 from __future__ import annotations
 
 import logging
+import warnings
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
@@ -45,6 +46,18 @@ from application.tag_service import TagService
 from domain.models import Tag, TagCategory
 
 logger = logging.getLogger(__name__)
+
+
+def _disconnect_button(btn: QPushButton) -> None:
+    """断开按钮 clicked 连接（测试稳定性1：避免 lambda 闭包引用环在析构期崩溃）。"""
+    try:
+        with warnings.catch_warnings():
+            # 无连接时 PySide6 会打印 RuntimeWarning，这里忽略
+            warnings.simplefilter("ignore", RuntimeWarning)
+            btn.clicked.disconnect()
+    except (RuntimeError, TypeError):
+        pass
+
 
 # 选中态标签按钮样式：边框高亮（Q7 用户确认）
 # 显式设置 color 避免父主题继承导致白底白字
@@ -247,8 +260,10 @@ class TagFilterBar(QWidget):
         # 清空旧按钮（保留末尾 stretch）
         while self._category_layout.count() > 1:
             item = self._category_layout.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                _disconnect_button(widget)
+                widget.deleteLater()
         self._category_buttons.clear()
 
         for category, _ in self._categories:
@@ -269,8 +284,10 @@ class TagFilterBar(QWidget):
         # 清空旧按钮（保留末尾 stretch）
         while self._tag_layout.count() > 1:
             item = self._tag_layout.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                _disconnect_button(widget)
+                widget.deleteLater()
         self._tag_buttons.clear()
 
         if self._expanded_category_id is None:
