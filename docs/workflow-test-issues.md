@@ -262,12 +262,36 @@ constraint failed
   最终改 `--`）；
   卡片视图保持 Q6:B 决策不变（名称不含标记，ToolTip 承载状态）
 
-### UI合理性13
+### UI合理性13 ✅ 已修复（v0.50.6，2026-08-03）
 - 元数据的标题留存选择
 - 可以直接用重命名栏来代替
 - 而不是数据库中又多一列
 - 迁移可能比较麻烦，可以等后续数据导出导入时解决
 - 优先级L0
+- 决策（用户确认 2026-08-03）：保留 title 列但停止使用；UI 去掉标题输入框，
+  创建/搜索/重命名不再用 title；schema 不动；原标题栏改为重命名栏位
+  （回车保存，不走元数据保存按钮）；删除既有遗留别名（实查 4 条，以实际清单为准）。
+- 实现：
+  - MetadataPanel 标题输入框 →「重命名」栏：显示真实文件名，回车发射
+    `rename_requested(unit_id, new_name)` → MainWindow 执行
+    FileOperationService.rename（冲突/非法名走既有错误处理 + operation_history +
+    目录树/中栏刷新）；「保存」按钮仅负责来源/备注/封面（封面已即时保存）；
+    重命名成功后不重载表单（未保存的来源/备注编辑保留）
+  - 创建（标记/扫描/Mod 组）不再写 title；`update_metadata` 移除 title 参数；
+    重命名/移动不再维护 title
+  - 搜索改为按真实文件名（basename）匹配，优先级 名称 > 标签 > 备注；
+    搜索对话框列「标题」→「名称」，搜索范围仍仅限内容单元
+  - 遗留别名清除：新增 `scripts/clear_legacy_titles.py`（默认 dry-run、幂等）+ 单测；
+    真实库 4 条已清（title → NULL），1286 条默认 title 保留
+  - schema 不动（CURRENT_SCHEMA_VERSION 仍 13）；删除 title 列见独立 issue
+
+### Schema 升级：删除 content_unit.title 列（独立 issue，2026-08-03 记录）
+- 背景：UI合理性13 收尾后，content_unit.title 已无任何读写路径（列保留但停止使用）。
+- 计划：bump CURRENT_SCHEMA_VERSION 至 14，迁移删除 title 列（同步 ContentUnit 模型、
+  content_unit 仓储列、相关测试；删除前确认旧库 title 数据无用户依赖）。
+- 前置条件：等数据导出/导入机制就绪（原 UI合理性13 备注），且 title 停止使用经过
+  一段真实使用期后再物理删除，避免迁移窗口冲突。
+- 优先级L0（低风险但需迁移窗口，独立于 UI合理性13 处理）
 
 ## 26-8-3
 ### 操作便捷性6 ✅ 已修复（v0.50.3，2026-08-03）

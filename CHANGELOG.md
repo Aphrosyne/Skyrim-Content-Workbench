@@ -8,6 +8,25 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+- **title 停用 + 重命名栏（UI合理性13）**：保留 content_unit.title 列但停止使用，
+  UI 去掉标题输入框，创建/搜索/重命名不再读写 title；原标题栏改为「重命名」栏位
+  （显示真实文件名，回车直接重命名，不走元数据「保存」按钮）：
+  - MetadataPanel 重命名栏回车 → `rename_requested` 信号 → MainWindow 执行
+    FileOperationService.rename（复用冲突/非法名处理、operation_history、
+    目录树/中栏刷新）；重命名成功后不重载表单（未保存的来源/备注编辑保留）
+  - 创建（标记/扫描/Mod 组）不再写 title；`update_metadata` 移除 title 参数；
+    重命名/移动不再维护 title
+  - 搜索改为按真实文件名（basename）匹配，优先级 名称 > 标签 > 备注；
+    搜索结果列「标题」→「名称」（[models.py](src/domain/models.py) /
+    [search.py](src/infrastructure/repositories/search.py) /
+    [metadata_panel.py](src/app/metadata_panel.py) /
+    [main_window.py](src/app/main_window.py)）
+  - 遗留别名清除：新增 [clear_legacy_titles.py](scripts/clear_legacy_titles.py)
+    （默认 dry-run、幂等，`UPDATE title = NULL WHERE title != 文件名`），
+    真实库 4 条遗留别名已清除
+  - schema 不动（CURRENT_SCHEMA_VERSION 仍 13）；删除 title 列的 schema 升级
+    另立 issue（待数据导出/导入机制就绪）
+
 - **内容单元标记前置缩写（UI合理性12）**：列表视图标记由名称后的 ` [内容单元]` 改为
   名称前的 `--`（双短横线，验收反馈逐次调整），长文件名截断时标记不再被遮挡；
   卡片视图保持 Q6:B 决策不变（名称不含标记，ToolTip 承载状态）
