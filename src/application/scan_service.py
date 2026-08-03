@@ -264,7 +264,6 @@ class ScanService:
             unit = ContentUnit(
                 id=self._new_uuid(),
                 path=archive_path,
-                title=Path(archive_path).name,
                 content_type="mod",
                 created_at=now,
                 updated_at=now,

@@ -417,8 +417,7 @@ class FileOperationService:
 
         文件重命名/移动不会产生新的 ContentUnit 行，而是改写旧行：
         - path / path_key 更新为新路径（仓储 update 自动重算 path_key）
-        - title 若仍是扫描时的默认文件名（== 旧文件名，说明用户未手动修改），
-          跟随更新为新文件名；用户改过的标题保留
+        - title 原样保留（UI合理性13：title 列停止使用，重命名不再维护 title）
         - 若目标位于已标记文件夹内（spec §5.4：父子不可同时标记），改为删除该行，
           与扫描侧 _has_ancestor_content_unit 的跳过逻辑保持一致
 
@@ -445,11 +444,10 @@ class FileOperationService:
                 ) from e
             return
 
-        title = dst.name if unit.title == src.name else unit.title
         updated = ContentUnit(
             id=unit.id,
             path=str(dst),
-            title=title,
+            title=unit.title,
             content_type=unit.content_type,
             source_url=unit.source_url,
             cover_path=unit.cover_path,

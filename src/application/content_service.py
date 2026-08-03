@@ -18,9 +18,12 @@ list_directory_entries：从文件系统读取目录下所有条目（roadmap Ta
 不依赖 Path.resolve()（后者会访问文件系统解析符号链接，语义不一致）。
 
 Stage 4 Task 2 新增：
-- update_metadata：编辑 title / source_url / notes / cover_path。
+- update_metadata：编辑 source_url / notes / cover_path。
 - list_cover_candidates：列出内容单元目录内所有支持的图片格式（用于 CoverPickerDialog）。
 - 委托 TagService 完成标签关联与批量打标签。
+
+UI合理性13（2026-08-03）：title 列保留但停止使用——创建不再默认 title=文件名，
+update_metadata 不再提供 title 参数；重命名/移动由 FileOperationService 处理且不维护 title。
 """
 
 from __future__ import annotations
@@ -59,9 +62,6 @@ logger = logging.getLogger(__name__)
 _COVER_IMAGE_EXTENSIONS = frozenset(
     {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".ico"}
 )
-
-# title 最大长度（避免过长破坏 UI 布局）
-_TITLE_MAX_LENGTH = 200
 
 # source_url 最大长度
 _URL_MAX_LENGTH = 2000
@@ -150,14 +150,12 @@ class ContentService:
     def create_content_unit(
         self,
         path: Path,
-        title: str | None = None,
         content_type: str = "mod",
     ) -> ContentUnit:
         """创建新 ContentUnit。
 
         Args:
             path: 内容单元对应的真实路径（文件或文件夹）。
-            title: 标题，默认 None（显示时回退到路径名）。
             content_type: 类型，默认 "mod"。
 
         Returns:
@@ -165,12 +163,13 @@ class ContentService:
 
         Raises:
             ConstraintViolationError: path 已存在 ContentUnit。
+
+        UI合理性13：不再接收 title——新记录 title 恒为 None（列保留、停止使用）。
         """
         now = self._now()
         unit = ContentUnit(
             id=self._new_uuid(),
             path=str(path),
-            title=title,
             content_type=content_type,
             created_at=now,
             updated_at=now,
@@ -259,8 +258,8 @@ class ContentService:
                     failures=failures,
                 )
 
-        # 创建新记录（默认 title=path.name，避免元数据面板显示"（无标题）"）
-        result = self.create_content_unit(path, title=path.name)
+        # 创建新记录（UI合理性13：不再默认 title=文件名，title 列停止使用）
+        result = self.create_content_unit(path)
 
         # Stage 5 Task 1：标记文件夹为内容单元时自动录入封面
         # 仅文件夹内容单元 + cover_path 为空时尝试，无图片不报错
@@ -369,7 +368,6 @@ class ContentService:
     def update_metadata(
         self,
         unit_id: str,
-        title: str | None = None,
         source_url: str | None = None,
         notes: str | None = None,
         cover_path: str | None = None,
@@ -385,7 +383,6 @@ class ContentService:
 
         Args:
             unit_id: 内容单元 ID。
-            title: 新标题。None 不改；"" 清空；strip 后为空视为清空。
             source_url: 新来源 URL。None 不改；"" 清空。
             notes: 新备注。None 不改；"" 清空。
             cover_path: 新封面相对路径。None 不改；"" 清空。
@@ -396,7 +393,7 @@ class ContentService:
 
         Raises:
             ContentUnitNotFoundError: unit_id 不存在。
-            InvalidMetadataError: title 过长 / source_url 过长 / cover_path 不存在。
+            InvalidMetadataError: source_url 过长 / cover_path 不存在。
             CoverImageNotFoundError: cover_path 指定的图片在内容单元目录下不存在。
         """
         unit = self._repo.get_by_id(unit_id)
@@ -407,13 +404,7 @@ class ContentService:
         cover_changed = False
         original_cover_path = unit.cover_path
 
-        # 校验并应用各字段
-        if title is not None:
-            title = title.strip()
-            if len(title) > _TITLE_MAX_LENGTH:
-                raise InvalidMetadataError(f"标题不能超过 {_TITLE_MAX_LENGTH} 个字符")
-            unit.title = title or None  # 空字符串 → None
-
+        # 校验并应用各字段（UI合理性13：title 已停用，不再写入）
         if source_url is not None:
             source_url = source_url.strip()
             if len(source_url) > _URL_MAX_LENGTH:

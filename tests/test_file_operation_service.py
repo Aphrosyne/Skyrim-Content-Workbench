@@ -399,7 +399,7 @@ def _seed_content_unit(repo: ContentUnitRepository, unit_id: str, path: str) -> 
     unit = ContentUnit(
         id=unit_id,
         path=path,
-        # 与扫描默认行为一致（title = 文件名）；Path.name 兼容 Windows 反斜杠路径
+        # 模拟遗留数据的 title（= 文件名）；UI合理性13 起重命名不再维护 title
         title=Path(path).name,
         content_type="mod",
         created_at="2026-07-28T00:00:00Z",
@@ -996,9 +996,12 @@ class TestRenameWithoutSync:
 
 
 class TestFileContentUnitSync:
-    """数据库问题1：文件重命名/移动原地更新 content_unit 行（path + 默认标题跟随）。"""
+    """数据库问题1：文件重命名/移动原地更新 content_unit 行。
 
-    def test_rename_file_updates_content_unit_path_and_default_title(
+    UI合理性13：title 列停止使用，重命名/移动不再维护 title（原值保留）。
+    """
+
+    def test_rename_file_updates_content_unit_path_keeps_title(
         self, service_with_sync, tmp_path: Path
     ) -> None:
         svc, conn, _, content_unit_repo = service_with_sync
@@ -1015,7 +1018,7 @@ class TestFileContentUnitSync:
         rows = conn.execute("SELECT path, path_key, title FROM content_unit").fetchall()
         assert len(rows) == 1
         assert make_path_key(rows[0]["path"]) == make_path_key(str(parent / "BAA.7z"))
-        assert rows[0]["title"] == "BAA.7z"
+        assert rows[0]["title"] == "AAA.7z"  # title 不再跟随重命名
 
     def test_rename_file_preserves_custom_title(self, service_with_sync, tmp_path: Path) -> None:
         svc, conn, _, content_unit_repo = service_with_sync
@@ -1078,7 +1081,7 @@ class TestFileContentUnitSync:
         assert make_path_key(rows[0]["path"]) == make_path_key(str(dst_dir / "AAA.7z"))
         assert rows[0]["title"] == "AAA.7z"  # 文件名未变，标题不变
 
-    def test_move_file_with_new_name_updates_default_title(
+    def test_move_file_with_new_name_keeps_title_unchanged(
         self, service_with_sync, tmp_path: Path
     ) -> None:
         svc, conn, _, content_unit_repo = service_with_sync
@@ -1097,7 +1100,7 @@ class TestFileContentUnitSync:
         rows = conn.execute("SELECT path, title FROM content_unit").fetchall()
         assert len(rows) == 1
         assert make_path_key(rows[0]["path"]) == make_path_key(str(dst_dir / "BAA.7z"))
-        assert rows[0]["title"] == "BAA.7z"
+        assert rows[0]["title"] == "AAA.7z"  # UI合理性13：title 不再跟随
 
     def test_move_file_into_marked_folder_removes_unit(
         self, service_with_sync, tmp_path: Path

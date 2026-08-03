@@ -140,23 +140,21 @@ class TestScanRootFull:
         for unit in repo.list_all():
             assert unit.content_type == "mod"
 
-    def test_full_scan_content_unit_title_is_filename_with_ext(
+    def test_full_scan_content_unit_title_is_none(
         self,
         scan_service: ScanService,
         managed_root_service: ManagedRootService,
         mod_tree: Path,
         db_connection,
     ) -> None:
-        """新规则：title 为压缩包文件名（含扩展名）。"""
+        """UI合理性13：扫描创建的内容单元不再写 title（恒为 None）。"""
         root = managed_root_service.add_root(mod_tree)
         scan_service.scan_root(root.id, incremental=False)
 
         repo = ContentUnitRepository(db_connection)
         units = repo.list_all()
-        titles = {u.title for u in units}
-        assert "寒霜之心.7z" in titles
-        assert "DragonSword.rar" in titles
-        assert "nested.zip" in titles
+        assert len(units) >= 3
+        assert all(u.title is None for u in units)
 
 
 class TestScanRootIncremental:

@@ -945,35 +945,11 @@ class TestListByPathPrefixNormalized:
 
 
 class TestUpdateMetadata:
-    def test_update_title(self, service: ContentService, db_connection: sqlite3.Connection) -> None:
+    def test_update_does_not_touch_title(
+        self, service: ContentService, db_connection: sqlite3.Connection
+    ) -> None:
+        """UI合理性13：update_metadata 不再写入 title，原值保留。"""
         unit = _make_unit("u1", "/mods/a")
-        db_connection.execute(
-            "INSERT INTO content_unit (id, path, path_key, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (unit.id, unit.path, make_path_key(unit.path), unit.created_at, unit.updated_at),
-        )
-        db_connection.commit()
-
-        updated = service.update_metadata("u1", title="中文名")
-        assert updated.title == "中文名"
-        assert updated.updated_at != unit.updated_at  # updated_at 已更新
-
-    def test_update_title_strips_whitespace(
-        self, service: ContentService, db_connection: sqlite3.Connection
-    ) -> None:
-        db_connection.execute(
-            "INSERT INTO content_unit (id, path, path_key, created_at, updated_at) "
-            "VALUES ('u1', '/mods/a', '/mods/a', 't', 't')"
-        )
-        db_connection.commit()
-
-        updated = service.update_metadata("u1", title="  中文名  ")
-        assert updated.title == "中文名"
-
-    def test_update_title_empty_clears(
-        self, service: ContentService, db_connection: sqlite3.Connection
-    ) -> None:
-        """空字符串 title 应清空（设为 None）。"""
         db_connection.execute(
             "INSERT INTO content_unit (id, path, path_key, title, "
             "created_at, updated_at) "
@@ -981,22 +957,10 @@ class TestUpdateMetadata:
         )
         db_connection.commit()
 
-        updated = service.update_metadata("u1", title="")
-        assert updated.title is None
-
-    def test_update_title_too_long_raises(
-        self, service: ContentService, db_connection: sqlite3.Connection
-    ) -> None:
-        from application.errors import InvalidMetadataError
-
-        db_connection.execute(
-            "INSERT INTO content_unit (id, path, path_key, created_at, updated_at) "
-            "VALUES ('u1', '/mods/a', '/mods/a', 't', 't')"
-        )
-        db_connection.commit()
-
-        with pytest.raises(InvalidMetadataError):
-            service.update_metadata("u1", title="x" * 201)
+        updated = service.update_metadata("u1", notes="新备注")
+        assert updated.title == "原标题"  # title 不再被写入
+        assert updated.notes == "新备注"
+        assert updated.updated_at != unit.updated_at  # updated_at 已更新
 
     def test_update_source_url(
         self, service: ContentService, db_connection: sqlite3.Connection
@@ -1054,7 +1018,7 @@ class TestUpdateMetadata:
         from application.errors import ContentUnitNotFoundError
 
         with pytest.raises(ContentUnitNotFoundError):
-            service.update_metadata("nonexistent", title="x")
+            service.update_metadata("nonexistent", source_url="x")
 
 
 class TestUpdateMetadataCoverPath:
@@ -1261,8 +1225,8 @@ class TestUpdateMetadataCoverPath:
         )
 
         svc = ContentService(repo, thumbnail_service=thumb_service)
-        # 仅更新 title（不改 cover_path）
-        svc.update_metadata("u-m4-nochange", title="新标题")
+        # 仅更新 notes（不改 cover_path）
+        svc.update_metadata("u-m4-nochange", notes="新备注")
 
         # 缓存应仍存在（未触发 invalidate）
         assert cache_repo.get_by_id_and_size("u-m4-nochange", 256) is not None

@@ -4,13 +4,13 @@
 移动后又多出一条搜索内容；重启多次依旧。
 
 根因链路：
-1. 压缩包在扫描时自动成为 content_unit（title = 文件名）
+1. 压缩包在扫描时自动成为 content_unit（title = 文件名；UI合理性13 起不再写入）
 2. FileOperationService 文件重命名/移动只更新父目录 mtime，不更新 content_unit 行
 3. 下次扫描发现新路径 → 只插入新行、从不删除旧行 → 旧路径残留 + 新路径新增
 4. 搜索匹配 title/notes/tags，两行都命中 → 重复结果；无任何逻辑清理旧行
 
 修复：
-- 文件重命名/移动原地更新 content_unit 行（path/path_key + 默认标题跟随）
+- 文件重命名/移动原地更新 content_unit 行（path/path_key；UI合理性13 起 title 不再跟随）
 - 扫描时清理 root 下文件已不存在的 content_unit 行（含级联）
 
 本测试断言修复后的完整链路：扫描 → 重命名 → 扫描 → 搜索恰好 1 条、无失效路径。
@@ -104,7 +104,7 @@ def test_rename_then_scan_search_returns_single_result(tmp_path: Path) -> None:
 
     # 4. 搜索 "AA"：应恰好 1 条，路径指向 BAA.7z
     results = search.search("AA")
-    actual = [(r.title, r.path) for r in results]
+    actual = [(r.name, r.path) for r in results]
     assert len(results) == 1, f"期望 1 条结果，实际 {len(results)}：{actual}"
     assert results[0].path.endswith("BAA.7z")
 
@@ -112,7 +112,7 @@ def test_rename_then_scan_search_returns_single_result(tmp_path: Path) -> None:
     rows = conn.execute("SELECT path, title FROM content_unit").fetchall()
     assert len(rows) == 1
     assert rows[0]["path"].endswith("BAA.7z")
-    assert rows[0]["title"] == "BAA.7z"
+    assert rows[0]["title"] is None  # UI合理性13：title 不再写入/跟随
     conn.close()
 
 
