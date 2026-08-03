@@ -8,6 +8,21 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+- **内容单元标记可配置（UI合理性21，v0.50.12）**：
+  - 新增 `ContentUnitMarkerConfig`（QSettings 键 `marker/*`）：行首徽章字符/开关、
+    色条颜色/开关；`reserved_width` 按启用组合自动派生
+    （仅色条 5 / 仅图标 18 / 双启用 23）；"至少启用一个"校验
+  - 新增 `ContentUnitMarkerDialog`（顶部菜单「视图 → 内容单元标记设置…」）：
+    字符输入（单个 Unicode 字符校验）、色条 QColorDialog（完整 hex）、恢复默认、
+    确定后立即生效；验收反馈：字符/颜色在对应标记未启用时也可预填编辑
+  - `ContentUnitStripeDelegate` 改配置驱动：徽章位图缓存按字符键控，
+    色条/徽章/预留宽度全部走配置；MainWindow 仅接线
+  - 默认配置：只启用紫色色条（#B39DDB），🔗 预填但不启用
+  （[content_unit_marker_config.py](src/app/content_unit_marker_config.py) /
+  [content_unit_marker_dialog.py](src/app/content_unit_marker_dialog.py) /
+  [content_unit_delegate.py](src/app/content_unit_delegate.py) /
+  [main_menu_bar.py](src/app/main_menu_bar.py) / [main_window.py](src/app/main_window.py)）
+
 - **内容单元标记改版：行首 🔗 徽章 + 左侧色条（UI合理性13，v0.50.11）**：
   - 名称前 `--` 文本标记改为**行首位图徽章**：🔗 不再拼进 DisplayRole 文本
     （emoji 字体回退抬高行高度量——实测 "armor" 15.23px vs "🔗 armor" 15.98px，

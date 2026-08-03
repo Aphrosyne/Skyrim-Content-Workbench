@@ -53,6 +53,10 @@ _ALL_KEYS = (
     ui.QSETTINGS_KEY_HEADER_OPERATION_HISTORY,
     ui.QSETTINGS_KEY_VIEW_MODE,
     ui.QSETTINGS_KEY_ZOOM,
+    ui.QSETTINGS_KEY_MARKER_ICON_ENABLED,
+    ui.QSETTINGS_KEY_MARKER_ICON_GLYPH,
+    ui.QSETTINGS_KEY_MARKER_STRIPE_ENABLED,
+    ui.QSETTINGS_KEY_MARKER_STRIPE_COLOR,
 )
 
 _DB_COUNTER = {"n": 0}
@@ -158,6 +162,13 @@ def test_content_unit_stripe_delegate_installed(qapp, tmp_path: Path) -> None:
     try:
         delegate = window._content_view.itemDelegateForColumn(COL_NAME)  # noqa: SLF001
         assert isinstance(delegate, ContentUnitStripeDelegate)
+        # UI合理性21：默认配置 = 仅启用色条，🔗 预填但不启用
+        assert delegate.config().icon_enabled is False
+        assert delegate.config().stripe_enabled is True
+        # 菜单入口存在且启用
+        marker_action = window._menu_bar.marker_config_action()  # noqa: SLF001
+        assert marker_action.text() == ui.MENU_VIEW_CONTENT_UNIT_MARKER
+        assert marker_action.isEnabled()
     finally:
         window.close()
 

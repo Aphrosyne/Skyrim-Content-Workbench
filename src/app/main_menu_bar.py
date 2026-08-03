@@ -21,6 +21,8 @@ class MainMenuBar(QMenuBar):
     switch_view_requested = Signal(str)
     # 布局重置请求（UI合理性2：分割线/列宽恢复默认）
     layout_reset_requested = Signal()
+    # 内容单元标记设置请求（UI合理性21）
+    marker_config_requested = Signal()
     # 快捷键设置请求（占位，二期实现自定义快捷键）
     shortcuts_requested = Signal()
     # 工具菜单请求（复用 MainWindow 既有 handler）
@@ -62,6 +64,12 @@ class MainMenuBar(QMenuBar):
             lambda checked=False: self.layout_reset_requested.emit()
         )
         view_menu.addAction(self._reset_layout_action)
+
+        self._marker_config_action = QAction(ui.MENU_VIEW_CONTENT_UNIT_MARKER, self)
+        self._marker_config_action.triggered.connect(
+            lambda checked=False: self.marker_config_requested.emit()
+        )
+        view_menu.addAction(self._marker_config_action)
 
         # 快捷键自定义：二期独立任务实现，占位保持禁用（AGENTS 待确认需求保留 TODO）
         self._shortcuts_action = QAction(ui.MENU_VIEW_SHORTCUTS, self)
@@ -115,6 +123,9 @@ class MainMenuBar(QMenuBar):
 
     def reset_layout_action(self) -> QAction:
         return self._reset_layout_action
+
+    def marker_config_action(self) -> QAction:
+        return self._marker_config_action
 
     def shortcuts_action(self) -> QAction:
         return self._shortcuts_action

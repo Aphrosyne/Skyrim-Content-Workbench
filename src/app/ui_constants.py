@@ -78,14 +78,8 @@ CONTENT_UNIT_STRIPE_WIDTH = 3
 CONTENT_UNIT_BADGE_SIZE = 14
 CONTENT_UNIT_BADGE_LEADING_GAP = 2  # 色条 → 徽章
 CONTENT_UNIT_BADGE_TRAILING_GAP = 4  # 徽章 → 图标
-# 预留区总宽：所有行（含非内容单元）内容统一右移该像素数，
-# 色条/徽章独占最左侧，图标/文字行与行对齐（2026-08-04 验收反馈）。
-CONTENT_UNIT_STRIPE_RESERVED_WIDTH = (
-    CONTENT_UNIT_STRIPE_WIDTH
-    + CONTENT_UNIT_BADGE_LEADING_GAP
-    + CONTENT_UNIT_BADGE_SIZE
-    + CONTENT_UNIT_BADGE_TRAILING_GAP
-)
+# 预留区总宽由 ContentUnitMarkerConfig.reserved_width 按启用组合自动派生
+# （UI合理性21：仅色条 5 / 仅图标 18 / 双启用 23）。
 
 # 右键菜单
 CONTEXT_MENU_COPY_PATH = "复制路径"
@@ -592,6 +586,11 @@ QSETTINGS_KEY_SPLITTER_MAIN = "layout/splitter/main"
 QSETTINGS_KEY_SPLITTER_RIGHT = "layout/splitter/right"
 QSETTINGS_KEY_HEADER_FILE_LIST = "layout/header/file_list"
 QSETTINGS_KEY_HEADER_OPERATION_HISTORY = "layout/header/operation_history"
+# 内容单元标记配置（UI合理性21，2026-08-04）
+QSETTINGS_KEY_MARKER_ICON_ENABLED = "marker/icon_enabled"
+QSETTINGS_KEY_MARKER_ICON_GLYPH = "marker/icon_glyph"
+QSETTINGS_KEY_MARKER_STRIPE_ENABLED = "marker/stripe_enabled"
+QSETTINGS_KEY_MARKER_STRIPE_COLOR = "marker/stripe_color"
 
 # === 布局默认值（UI合理性2/3，2026-08-03） ===
 # 所有分割线/列宽默认值集中在此，用户可手动调整后重启生效。
@@ -613,8 +612,19 @@ MENU_BAR_TOOLS = "工具"
 MENU_VIEW_LIST = "列表视图"
 MENU_VIEW_CARD = "卡片视图"
 MENU_VIEW_RESET_LAYOUT = "重置布局"
+MENU_VIEW_CONTENT_UNIT_MARKER = "内容单元标记设置…"
 MENU_VIEW_SHORTCUTS = "快捷键设置…"
 MENU_VIEW_SHORTCUTS_TODO = "快捷键自定义待独立任务实现（UI合理性3 二期）"
 MENU_TOOLS_TAG_MANAGER = "标签管理…"
 MENU_TOOLS_OPERATION_HISTORY = "操作历史…"
 LAYOUT_RESET_STATUS = "布局已重置为默认比例"
+
+# === 内容单元标记设置对话框（UI合理性21，2026-08-04） ===
+MARKER_CONFIG_DIALOG_TITLE = "内容单元标记设置"
+MARKER_CONFIG_ICON_ENABLED = "启用行首图标标记"
+MARKER_CONFIG_ICON_LABEL = "标记字符（单个字符）"
+MARKER_CONFIG_STRIPE_ENABLED = "启用左侧色条"
+MARKER_CONFIG_STRIPE_LABEL = "色条颜色"
+MARKER_CONFIG_RESET = "恢复默认"
+MARKER_CONFIG_NEED_ONE = "图标标记和左侧色条至少要启用一个。"
+MARKER_CONFIG_GLYPH_INVALID = "标记字符必须是单个字符。"

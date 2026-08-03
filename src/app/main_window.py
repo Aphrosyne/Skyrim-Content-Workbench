@@ -80,6 +80,8 @@ from app.batch_tag_dialog import BatchTagDialog
 from app.card_list_model import CardListModel
 from app.content_filter import filter_entries
 from app.content_unit_delegate import ContentUnitStripeDelegate
+from app.content_unit_marker_config import ContentUnitMarkerConfig
+from app.content_unit_marker_dialog import ContentUnitMarkerDialog
 from app.file_list_model import (
     COL_MODIFIED,
     COL_NAME,
@@ -385,6 +387,8 @@ class MainWindow(QMainWindow):
         # UI合理性2：分割线状态 helper（键与默认值见 ui_constants）
         self._qsettings = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
         self._splitter_state = SplitterStateHelper(self._qsettings)
+        # UI合理性21：内容单元标记配置（行首徽章 + 色条），QSettings 持久化
+        self._marker_config = ContentUnitMarkerConfig.load(self._qsettings)
         # 操作便捷性3（2026-08-02）：最近移动目标（右键子菜单 / Ctrl+Q / 对话框快捷区）
         self._recent_move_targets = RecentMoveTargets(self._qsettings)
         # UI合理性8（2026-08-02）：最近使用标签（面板最近区 / 右键「添加最近标签」）
@@ -795,10 +799,10 @@ class MainWindow(QMainWindow):
         self._content_view.horizontalHeader().setStretchLastSection(False)
         self._content_view.horizontalHeader().setSectionsClickable(True)
         self._content_view.setModel(self._content_list_model)
-        # UI合理性13（2026-08-04）：内容单元行左侧淡紫色色条 + 行首 🔗 徽章
-        # （名称列专用 delegate，仅负责绘制预留区内容，其余渲染交给基类）
+        # UI合理性13/21（2026-08-04）：内容单元行左侧色条 + 行首徽章
+        # （名称列专用 delegate，按配置绘制预留区内容，其余渲染交给基类）
         self._content_view.setItemDelegateForColumn(
-            COL_NAME, ContentUnitStripeDelegate(self._content_view)
+            COL_NAME, ContentUnitStripeDelegate(self._content_view, config=self._marker_config)
         )
         # UI合理性2 + 验收反馈（2026-08-03）：setModel 会重置表头 resize 模式，
         # 须在 setModel 之后设置。四列全部 Interactive 固定默认宽度（Explorer 风格）：
@@ -959,6 +963,7 @@ class MainWindow(QMainWindow):
         self._menu_bar = MainMenuBar(self)
         self._menu_bar.layout_reset_requested.connect(self._on_layout_reset)
         self._menu_bar.switch_view_requested.connect(self._on_menu_view_switch)
+        self._menu_bar.marker_config_requested.connect(self._on_marker_config_clicked)
         self._menu_bar.tag_manager_requested.connect(self._on_tag_manager_clicked)
         self._menu_bar.operation_history_requested.connect(self._on_operation_history_clicked)
         # 工具菜单项按注入服务开关（与工具栏按钮可见性一致）
@@ -1765,6 +1770,19 @@ class MainWindow(QMainWindow):
         # 操作历史对话框为模态，无法实时重置；删除存档使下次打开即回默认
         self._splitter_state.remove_key(ui.QSETTINGS_KEY_HEADER_OPERATION_HISTORY)
         self.statusBar().showMessage(ui.LAYOUT_RESET_STATUS, 3000)
+
+    def _on_marker_config_clicked(self) -> None:
+        """UI合理性21：菜单「内容单元标记设置…」→ 配置对话框，确定后保存并重绘。"""
+        dialog = ContentUnitMarkerDialog(self._marker_config, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_config = dialog.resulting_config()
+        new_config.save(self._qsettings)
+        self._marker_config = new_config
+        delegate = self._content_view.itemDelegateForColumn(COL_NAME)
+        if isinstance(delegate, ContentUnitStripeDelegate):
+            delegate.set_config(new_config)
+        self._content_view.viewport().update()
 
     def _on_menu_view_switch(self, mode: str) -> None:
         """UI合理性3：菜单视图切换 → 复用既有 _switch_view。"""
