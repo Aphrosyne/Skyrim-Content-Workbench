@@ -9,7 +9,7 @@
 - matched_field 中文映射
 - 标签聚合显示
 - update_results 更新内容
-- title 为 None 回退到 path
+- 名称列显示真实文件名（UI合理性13 替代 title）
 - 关闭按钮
 """
 
@@ -25,15 +25,15 @@ from domain.models import SearchResult  # noqa: E402
 
 def _make_result(
     unit_id: str = "u1",
-    title: str | None = "测试标题",
+    name: str = "测试名称",
     path: str = "D:/mod/test.7z",
-    matched_field: str = "title",
+    matched_field: str = "name",
     tags: list[str] | None = None,
 ) -> SearchResult:
     """构造测试用 SearchResult。"""
     return SearchResult(
         unit_id=unit_id,
-        title=title,
+        name=name,
         path=path,
         content_type="mod",
         matched_field=matched_field,
@@ -71,8 +71,8 @@ class TestResultDisplay:
     def test_results_populate_table(self, qapp) -> None:
         """有结果 → 表格正确填充。"""
         results = [
-            _make_result("u1", "标题1", "D:/mod1.7z"),
-            _make_result("u2", "标题2", "D:/mod2.7z"),
+            _make_result("u1", "名称1", "D:/mod1.7z"),
+            _make_result("u2", "名称2", "D:/mod2.7z"),
         ]
         dialog = SearchDialog("测试", results)
         try:
@@ -97,13 +97,13 @@ class TestResultDisplay:
     def test_matched_field_chinese_mapping(self, qapp) -> None:
         """matched_field 中文映射正确。"""
         results = [
-            _make_result("u1", matched_field="title"),
+            _make_result("u1", matched_field="name"),
             _make_result("u2", matched_field="tag"),
             _make_result("u3", matched_field="notes"),
         ]
         dialog = SearchDialog("测试", results)
         try:
-            assert dialog.row_matched_field_label(0) == "标题"
+            assert dialog.row_matched_field_label(0) == "名称"
             assert dialog.row_matched_field_label(1) == "标签"
             assert dialog.row_matched_field_label(2) == "备注"
         finally:
@@ -124,9 +124,9 @@ class TestResultDisplay:
         finally:
             dialog.close()
 
-    def test_none_title_falls_back_to_path_name(self, qapp) -> None:
-        """title 为 None → 回退到 path 的文件名。"""
-        results = [_make_result("u1", title=None, path="D:/mods/寒霜之心.7z")]
+    def test_name_column_shows_real_filename(self, qapp) -> None:
+        """名称列显示真实文件名（UI合理性13）。"""
+        results = [_make_result("u1", name="寒霜之心.7z", path="D:/mods/寒霜之心.7z")]
         dialog = SearchDialog("测试", results)
         try:
             item = dialog._table.item(0, 0)  # noqa: SLF001

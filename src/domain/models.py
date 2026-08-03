@@ -290,22 +290,22 @@ class FileEntry:
 
 @dataclass
 class SearchResult:
-    """搜索结果项（Stage 5 Task 7）。
+    """搜索结果项（Stage 5 Task 7；UI合理性13 改为按文件名匹配）。
 
-    spec §8：搜索范围为内容单元标题 + 标签名 + 备注。
+    spec §8：搜索范围为内容单元文件名 + 标签名 + 备注。
     一个内容单元匹配多个字段时只返回一条记录，matched_field 取最高优先级
-    （标题 > 标签 > 备注，Q7=B）。
+    （名称 > 标签 > 备注，Q7=B）。
 
     - unit_id：内容单元 ID
-    - title：内容单元标题（可能为 None，UI 显示时回退到 path）
+    - name：内容单元文件名（path 的 basename）
     - path：内容单元路径
     - content_type：内容单元类型
-    - matched_field：命中的字段名（'title' / 'tag' / 'notes'），按优先级取
+    - matched_field：命中的字段名（'name' / 'tag' / 'notes'），按优先级取
     - tags：聚合的标签名列表（可能为空列表）
     """
 
     unit_id: str
-    title: str | None
+    name: str
     path: str
     content_type: str
     matched_field: str
@@ -316,8 +316,8 @@ class SearchResult:
             raise ValueError("SearchResult.unit_id 不能为空")
         if not self.path:
             raise ValueError("SearchResult.path 不能为空")
-        if self.matched_field not in ("title", "tag", "notes"):
+        if self.matched_field not in ("name", "tag", "notes"):
             raise ValueError(
-                f"SearchResult.matched_field 必须是 'title' / 'tag' / 'notes' 之一，"
+                f"SearchResult.matched_field 必须是 'name' / 'tag' / 'notes' 之一，"
                 f"得到：{self.matched_field}"
             )

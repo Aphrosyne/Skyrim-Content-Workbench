@@ -1,27 +1,25 @@
-"""SearchRepository（Stage 5 Task 7）。
+"""SearchRepository（Stage 5 Task 7；UI合理性13 搜索范围 title → 文件名）。
 
-跨表 LIKE 查询实现全局搜索。
+跨表搜索实现全局搜索（数据量小，匹配在 Python 侧完成）。
 
 搜索范围（spec §8）：
-- content_unit.title（标题）
+- content_unit.path 的文件名（basename，UI合理性13 替代原 title 匹配）
 - content_unit.notes（备注）
 - tag.name（标签名，通过 content_unit_tag 关联）
 
 设计决策：
 - Q2=B（原决策）：仅搜索已标记的内容单元。v13（UX 重构 Task 6）移除 is_marked
   字段后该条件自然消失——content_unit 表中有记录即已标记，取消标记 = DELETE 记录，
-  无需 WHERE 过滤。
-- Q6=A：单关键词子串匹配（LIKE '%query%'）。
-- Q7=B：匹配字段优先级排序（title > tag > notes）。
+  无需额外过滤。
+- Q6=A：单关键词子串匹配（原 LIKE '%query%' 语义）。
+- Q7=B：匹配字段优先级排序（name > tag > notes）。
 - Q8=C：不限制结果数量。
-- LIKE 通配符（% _ \\）转义，作为字面量匹配。
-- 大小写不敏感：LOWER() 双侧转换（ASCII），中文 UTF-8 字节比较天然准确。
+- 大小写不敏感（ASCII），中文天然准确。
 
-SQL 结构：
-- WHERE 子句：title / notes / 关联 tag.name 任一 LIKE 命中
-- matched_field：CASE WHEN 按优先级取（title > tag > notes）
-- tags：子查询 GROUP_CONCAT 聚合该内容单元的所有标签名
-- ORDER BY：matched_field 优先级，其次 title
+实现说明（UI合理性13）：
+- 原实现用 SQL LIKE 匹配 content_unit.title；title 停用后改为匹配真实文件名。
+  SQLite 无内置 basename / reverse（3.50 验证），且 title 列不再写入新值，
+  故在 Python 侧计算 basename 并做子串匹配，行为与原 LIKE 转义后一致。
 """
 
 from __future__ import annotations
@@ -35,16 +33,17 @@ from infrastructure.repositories.errors import RepositoryError
 logger = logging.getLogger(__name__)
 
 
-def _like_escape(s: str) -> str:
-    """转义 LIKE 模式中的特殊字符（\\ % _）。
-
-    与 tag.py 的 _like_escape 保持一致，配合 ESCAPE '\\' 子句使用。
-    """
-    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+def _basename(path: str) -> str:
+    """返回路径的文件名部分（兼容 \\ 与 / 分隔符，无分隔符时返回原路径）。"""
+    for sep in ("\\", "/"):
+        pos = path.rfind(sep)
+        if pos >= 0:
+            return path[pos + 1 :]
+    return path
 
 
 class SearchRepository:
-    """全局搜索仓储：跨表 LIKE 查询。"""
+    """全局搜索仓储：文件名 + 备注 + 标签名匹配。"""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -56,7 +55,7 @@ class SearchRepository:
             query: 搜索关键词（非空，调用方负责空白过滤）。
 
         Returns:
-            匹配的 SearchResult 列表，按 matched_field 优先级 + title 排序。
+            匹配的 SearchResult 列表，按 matched_field 优先级 + 文件名排序。
 
         Raises:
             RepositoryError: 数据库查询失败。
@@ -64,81 +63,56 @@ class SearchRepository:
         if not query:
             return []
 
-        # 转义 LIKE 通配符，构建 %query% 子串模式
-        escaped = _like_escape(query)
-        pattern = f"%{escaped}%"
+        needle = query.casefold()
 
-        # SQL：
-        # - 主表 content_unit，LEFT JOIN 关联标签用于命中判断
-        # - WHERE：title / notes / EXISTS(tag.name) 任一命中
-        # - matched_field：CASE 按优先级 title > tag > notes
-        # - tags：子查询 GROUP_CONCAT 聚合所有标签名（按 name 排序）
-        # - ORDER BY：matched_field 优先级 + title
-        sql = """
-        SELECT
-            cu.id AS unit_id,
-            cu.title AS title,
-            cu.path AS path,
-            cu.content_type AS content_type,
-            CASE
-                WHEN LOWER(cu.title) LIKE LOWER(:pattern) ESCAPE '\\' THEN 'title'
-                WHEN EXISTS (
-                    SELECT 1 FROM content_unit_tag cut
-                    JOIN tag t ON cut.tag_id = t.id
-                    WHERE cut.content_unit_id = cu.id
-                      AND LOWER(t.name) LIKE LOWER(:pattern) ESCAPE '\\'
-                ) THEN 'tag'
-                WHEN LOWER(cu.notes) LIKE LOWER(:pattern) ESCAPE '\\' THEN 'notes'
-                ELSE 'title'
-            END AS matched_field,
-            COALESCE(
-                (SELECT GROUP_CONCAT(t.name, ', ')
-                 FROM content_unit_tag cut
-                 JOIN tag t ON cut.tag_id = t.id
-                 WHERE cut.content_unit_id = cu.id
-                 ORDER BY t.name),
-                ''
-            ) AS tags_str
-        FROM content_unit cu
-        WHERE (
-              LOWER(cu.title) LIKE LOWER(:pattern) ESCAPE '\\'
-             OR LOWER(cu.notes) LIKE LOWER(:pattern) ESCAPE '\\'
-             OR EXISTS (
-                 SELECT 1 FROM content_unit_tag cut
-                 JOIN tag t ON cut.tag_id = t.id
-                 WHERE cut.content_unit_id = cu.id
-                   AND LOWER(t.name) LIKE LOWER(:pattern) ESCAPE '\\'
-             )
-          )
-        ORDER BY
-            CASE matched_field
-                WHEN 'title' THEN 0
-                WHEN 'tag' THEN 1
-                WHEN 'notes' THEN 2
-            END,
-            COALESCE(cu.title, cu.path)
-        """
-
+        # 1. 一次性读取全部内容单元（id/path/content_type/notes）与标签关联，
+        #    在 Python 侧完成匹配与聚合（数据量小，避免 SQLite 无 basename 的兼容问题）。
         try:
-            rows = self._conn.execute(
-                sql,
-                {"pattern": pattern},
+            unit_rows = self._conn.execute(
+                "SELECT id, path, content_type, notes FROM content_unit"
+            ).fetchall()
+            tag_rows = self._conn.execute(
+                "SELECT cut.content_unit_id AS unit_id, t.name AS name "
+                "FROM content_unit_tag cut JOIN tag t ON cut.tag_id = t.id "
+                "ORDER BY t.name"
             ).fetchall()
         except sqlite3.Error as e:
             raise RepositoryError(f"搜索查询失败：{e}") from e
 
+        # 标签按内容单元聚合（保持原 GROUP_CONCAT 的按名排序语义）
+        tags_by_unit: dict[str, list[str]] = {}
+        for row in tag_rows:
+            tags_by_unit.setdefault(row["unit_id"], []).append(row["name"])
+
+        # 2. 匹配：文件名 / 标签 / 备注，优先级 name > tag > notes
         results: list[SearchResult] = []
-        for row in rows:
-            tags_str = row["tags_str"] or ""
-            tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+        for row in unit_rows:
+            unit_id = row["id"]
+            path = row["path"]
+            name = _basename(path)
+            tags = tags_by_unit.get(unit_id, [])
+
+            if needle in name.casefold():
+                matched_field = "name"
+            elif any(needle in tag.casefold() for tag in tags):
+                matched_field = "tag"
+            elif row["notes"] and needle in row["notes"].casefold():
+                matched_field = "notes"
+            else:
+                continue
+
             results.append(
                 SearchResult(
-                    unit_id=row["unit_id"],
-                    title=row["title"],
-                    path=row["path"],
+                    unit_id=unit_id,
+                    name=name,
+                    path=path,
                     content_type=row["content_type"],
-                    matched_field=row["matched_field"],
+                    matched_field=matched_field,
                     tags=tags,
                 )
             )
+
+        # 3. 排序：matched_field 优先级 + 文件名（与原 title 排序语义一致）
+        field_priority = {"name": 0, "tag": 1, "notes": 2}
+        results.sort(key=lambda r: (field_priority[r.matched_field], r.name.casefold(), r.name))
         return results

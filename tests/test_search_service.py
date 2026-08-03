@@ -20,14 +20,14 @@ from domain.models import SearchResult
 from infrastructure.repositories.errors import RepositoryError
 
 
-def _make_result(unit_id: str = "u1", title: str = "测试") -> SearchResult:
+def _make_result(unit_id: str = "u1", name: str = "测试.7z") -> SearchResult:
     """构造测试用 SearchResult。"""
     return SearchResult(
         unit_id=unit_id,
-        title=title,
+        name=name,
         path=f"D:/mod/{unit_id}.7z",
         content_type="mod",
-        matched_field="title",
+        matched_field="name",
         tags=["标签"],
     )
 

@@ -1,10 +1,10 @@
 """搜索结果对话框（Stage 5 Task 7）。
 
-spec §8：搜索范围为内容单元标题 + 标签名 + 备注。
+spec §8：搜索范围为内容单元文件名 + 标签名 + 备注（UI合理性13：标题 → 文件名）。
 
 UI（Q3=B 非模态对话框）：
 - 顶部标题：显示查询词 + 结果数量
-- 中间：QTableWidget 显示结果列表（标题 / 路径 / 匹配字段 / 标签）
+- 中间：QTableWidget 显示结果列表（名称 / 路径 / 匹配字段 / 标签）
 - 空结果：显示「未找到匹配的内容单元」
 - 双击行 → 触发 jump_callback（Q4=B 跳转后保持对话框打开）
 
@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -39,7 +38,7 @@ from domain.models import SearchResult
 logger = logging.getLogger(__name__)
 
 # 表格列索引
-_COL_TITLE = 0
+_COL_NAME = 0
 _COL_PATH = 1
 _COL_MATCHED_FIELD = 2
 _COL_TAGS = 3
@@ -47,7 +46,7 @@ _COL_COUNT = 4
 
 # matched_field 中文映射
 _FIELD_LABELS = {
-    "title": ui.SEARCH_MATCHED_FIELD_TITLE,
+    "name": ui.SEARCH_MATCHED_FIELD_NAME,
     "tag": ui.SEARCH_MATCHED_FIELD_TAG,
     "notes": ui.SEARCH_MATCHED_FIELD_NOTES,
 }
@@ -112,7 +111,7 @@ class SearchDialog(QDialog):
         self._table = QTableWidget(0, _COL_COUNT, self)
         self._table.setHorizontalHeaderLabels(
             [
-                ui.SEARCH_COL_TITLE,
+                ui.SEARCH_COL_NAME,
                 ui.SEARCH_COL_PATH,
                 ui.SEARCH_COL_MATCHED_FIELD,
                 ui.SEARCH_COL_TAGS,
@@ -147,12 +146,11 @@ class SearchDialog(QDialog):
 
         self._table.setRowCount(len(self._results))
         for row, result in enumerate(self._results):
-            # 标题（None 回退到 path）
-            title_text = result.title or Path(result.path).name or result.path
-            title_item = QTableWidgetItem(title_text)
-            title_item.setToolTip(result.title or result.path)
-            title_item.setData(Qt.UserRole, result.unit_id)
-            self._table.setItem(row, _COL_TITLE, title_item)
+            # 名称（真实文件名，UI合理性13 替代原 title 显示）
+            name_item = QTableWidgetItem(result.name)
+            name_item.setToolTip(result.path)
+            name_item.setData(Qt.UserRole, result.unit_id)
+            self._table.setItem(row, _COL_NAME, name_item)
 
             # 路径
             path_item = QTableWidgetItem(result.path)
@@ -177,7 +175,7 @@ class SearchDialog(QDialog):
         回调由 MainWindow 实现，负责导航到所在目录 + 选中条目。
         """
         row = index.row()
-        item = self._table.item(row, _COL_TITLE)
+        item = self._table.item(row, _COL_NAME)
         if item is None:
             return
         data = item.data(Qt.UserRole)
@@ -233,7 +231,7 @@ class SearchDialog(QDialog):
 
     def row_unit_id(self, row: int) -> str | None:
         """返回指定行的 unit_id（供测试）。"""
-        item = self._table.item(row, _COL_TITLE)
+        item = self._table.item(row, _COL_NAME)
         if item is None:
             return None
         data = item.data(Qt.UserRole)
