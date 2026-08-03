@@ -19,7 +19,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QSettings  # noqa: E402
 
 from app import ui_constants as ui  # noqa: E402
-from app.file_list_model import COL_MODIFIED, COL_SIZE, COL_TYPE  # noqa: E402
+from app.file_list_model import COL_MODIFIED, COL_NAME, COL_SIZE, COL_TYPE  # noqa: E402
 from app.main_menu_bar import MainMenuBar  # noqa: E402
 from app.main_window import VIEW_INDEX_CARD, VIEW_INDEX_LIST, MainWindow  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
@@ -48,6 +48,7 @@ from infrastructure.repositories.tag_category import (  # noqa: E402
 _ALL_KEYS = (
     ui.QSETTINGS_KEY_SPLITTER_MAIN,
     ui.QSETTINGS_KEY_SPLITTER_RIGHT,
+    ui.QSETTINGS_KEY_HEADER_FILE_LIST,
     ui.QSETTINGS_KEY_HEADER_OPERATION_HISTORY,
     ui.QSETTINGS_KEY_VIEW_MODE,
     ui.QSETTINGS_KEY_ZOOM,
@@ -203,6 +204,7 @@ def test_menu_reset_layout_restores_defaults(qapp, tmp_path: Path) -> None:
         )
         settings.setValue(ui.QSETTINGS_KEY_HEADER_OPERATION_HISTORY, [1, 2, 3])
         assert settings.contains(ui.QSETTINGS_KEY_HEADER_OPERATION_HISTORY)
+        settings.setValue(ui.QSETTINGS_KEY_HEADER_FILE_LIST, [111, 222, 333, 444])
 
         window._menu_bar.reset_layout_action().trigger()  # noqa: SLF001
         qapp.processEvents()
@@ -210,8 +212,12 @@ def test_menu_reset_layout_restores_defaults(qapp, tmp_path: Path) -> None:
         # 所有布局存档键被清除（几何恢复由 helper 单测按比例覆盖）
         assert not settings.contains(ui.QSETTINGS_KEY_SPLITTER_MAIN)
         assert not settings.contains(ui.QSETTINGS_KEY_SPLITTER_RIGHT)
+        assert not settings.contains(ui.QSETTINGS_KEY_HEADER_FILE_LIST)
         assert not settings.contains(ui.QSETTINGS_KEY_HEADER_OPERATION_HISTORY)
         assert window.statusBar().currentMessage() == ui.LAYOUT_RESET_STATUS
+        # 中栏列宽实时恢复默认
+        header = window._content_view.horizontalHeader()  # noqa: SLF001
+        assert header.sectionSize(COL_NAME) == ui.FILE_LIST_COLUMN_WIDTHS[0]
     finally:
         window.close()
 
@@ -230,15 +236,78 @@ def test_main_splitter_applies_defaults_on_first_show(qapp, tmp_path: Path) -> N
 
 
 def test_file_list_column_width_defaults_applied(qapp, tmp_path: Path) -> None:
-    """UI合理性2：名称列 Stretch；类型/大小/修改日期按常量默认宽度。"""
+    """验收反馈：四列 Interactive 固定默认宽度（Explorer 风格，右侧留白供框选）。"""
     window = _build_window(tmp_path)
     try:
         header = window._content_view.horizontalHeader()  # noqa: SLF001
-        assert header.sectionResizeMode(0) == header.ResizeMode.Stretch
-        for col in (COL_TYPE, COL_SIZE, COL_MODIFIED):
+        assert not header.stretchLastSection()
+        for col in (COL_NAME, COL_TYPE, COL_SIZE, COL_MODIFIED):
+            assert header.sectionResizeMode(col) == header.ResizeMode.Interactive
             assert header.sectionSize(col) == ui.FILE_LIST_COLUMN_WIDTHS[col]
     finally:
         window.close()
+
+
+def test_file_list_column_widths_persist_across_restart(qapp, tmp_path: Path) -> None:
+    """固化（2026-08-03 验收反馈）：中栏四列宽度跨重启保留。"""
+    window1 = _build_window(tmp_path)
+    window1.show()
+    qapp.processEvents()
+    try:
+        header1 = window1._content_view.horizontalHeader()  # noqa: SLF001
+        header1.resizeSection(COL_NAME, 400)  # sectionResized → 实时保存
+        header1.resizeSection(COL_MODIFIED, 180)
+        qapp.processEvents()
+    finally:
+        window1.close()
+
+    window2 = _build_window(tmp_path)
+    window2.show()
+    qapp.processEvents()
+    try:
+        header2 = window2._content_view.horizontalHeader()  # noqa: SLF001
+        assert header2.sectionSize(COL_NAME) == 400
+        assert header2.sectionSize(COL_MODIFIED) == 180
+    finally:
+        window2.close()
+
+
+def test_file_list_scrollbar_does_not_shift_columns(qapp, tmp_path: Path) -> None:
+    """验收反馈：列宽固定 → 滚动条出现/消失只改变右侧留白，列位置不横移（中栏不跳）。"""
+    window = _build_window(tmp_path)
+    try:
+        view = window._content_view  # noqa: SLF001
+        header = view.horizontalHeader()  # noqa: SLF001
+        # 无 Stretch 列，且首列从左侧固定起算
+        assert all(header.sectionResizeMode(i) == header.ResizeMode.Interactive for i in range(4))
+    finally:
+        window.close()
+
+
+def test_rubber_band_selects_when_bottom_edge_in_blank(qapp, tmp_path: Path) -> None:
+    """操作合理性4：末行下方空白区起框（从下往上拉）也能选中到末行。"""
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QStandardItemModel
+
+    from app.main_window import _RubberBandTableView
+
+    view = _RubberBandTableView()
+    try:
+        model = QStandardItemModel(5, 1)
+        view.setModel(model)
+        # 模拟：上边缘落在第 3 行，下边缘落在末行下方空白区（视口内）
+        view.rowAt = lambda y: 3 if y == 90 else -1  # type: ignore[method-assign]
+
+        view._select_rows_in_rect(QRect(10, 90, 100, 110))  # bottom=199（空白区）
+        selected = [idx.row() for idx in view.selectionModel().selectedRows()]
+        assert set(selected) == {3, 4}
+
+        # 矩形整体落在空白区 → 不选中
+        view.selectionModel().clear()
+        view._select_rows_in_rect(QRect(10, 200, 100, 50))
+        assert not view.selectionModel().hasSelection()
+    finally:
+        view.close()
 
 
 def test_splitter_state_persists_across_restart(qapp, tmp_path: Path) -> None:
@@ -257,3 +326,34 @@ def test_splitter_state_persists_across_restart(qapp, tmp_path: Path) -> None:
         assert window2._splitter.sizes() == saved_sizes  # noqa: SLF001
     finally:
         window2.close()
+
+
+def test_splitter_restores_registry_string_sizes(qapp, tmp_path: Path) -> None:
+    """Windows 注册表字符串列表尺寸也能恢复（固化修复，2026-08-03）。"""
+    settings = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+    settings.setValue(ui.QSETTINGS_KEY_SPLITTER_MAIN, ["300", "420", "300"])
+    settings.sync()
+
+    window = _build_window(tmp_path)
+    window.show()
+    qapp.processEvents()
+    try:
+        sizes = window._splitter.sizes()  # noqa: SLF001
+        assert sizes[1] > sizes[0] and sizes[1] > sizes[2]  # 比例 300/420/300
+    finally:
+        window.close()
+
+
+def test_splitter_drag_saves_immediately(qapp, tmp_path: Path) -> None:
+    """UI合理性2 固化：拖动分隔线即时写入 QSettings（不依赖 closeEvent）。"""
+    window = _build_window(tmp_path)
+    window.show()
+    qapp.processEvents()
+    try:
+        window._splitter.setSizes([200, 500, 300])  # noqa: SLF001
+        window._splitter.splitterMoved.emit(1, 500)  # noqa: SLF001 模拟用户拖动
+
+        settings = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+        assert settings.contains(ui.QSETTINGS_KEY_SPLITTER_MAIN)
+    finally:
+        window.close()

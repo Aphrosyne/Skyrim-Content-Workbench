@@ -18,16 +18,29 @@ from PySide6.QtWidgets import QHeaderView, QSplitter
 
 
 def _valid_int_list(value: object, count: int) -> list[int] | None:
-    """校验 QSettings 读回的尺寸列表：长度匹配且全部为正整数。"""
+    """校验 QSettings 读回的尺寸列表：长度匹配且全部为正整数。
+
+    兼容数字字符串：Windows 注册表（native 格式）把列表元素以字符串形式
+    读回（如 ['300', '420', '300']），需转 int 后才可用于 setSizes。
+    """
     if not isinstance(value, (list, tuple)):
         return None
     if len(value) != count:
         return None
     ints: list[int] = []
     for item in value:
-        if not isinstance(item, int) or item <= 0:
+        if isinstance(item, int):
+            parsed = item
+        elif isinstance(item, str):
+            try:
+                parsed = int(item.strip())
+            except ValueError:
+                return None
+        else:
             return None
-        ints.append(item)
+        if parsed <= 0:
+            return None
+        ints.append(parsed)
     return ints
 
 

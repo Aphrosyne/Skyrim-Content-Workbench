@@ -24,11 +24,12 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QSettings, Qt  # noqa: E402
-from PySide6.QtWidgets import QMenu  # noqa: E402
+from PySide6.QtWidgets import QDialog, QMenu  # noqa: E402
 
 from app import ui_constants as ui  # noqa: E402
 from app.main_window import MainWindow  # noqa: E402
 from app.recent_tags import RecentTags  # noqa: E402
+from app.tag_manager_dialog import TagManagerDialog  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
 from application.file_operation_service import FileOperationService  # noqa: E402
 from application.folder_tree_service import FolderTreeService  # noqa: E402
@@ -757,3 +758,37 @@ def test_metadata_full_text_backward_compat(qapp, main_window_with_tags):
     assert "标题" not in text  # UI合理性13：多行文本不再含标题行
     assert "路径" in text
     assert "寒霜之心.7z" in text
+
+
+def test_tag_manager_changes_refresh_metadata_panel(qapp, main_window_with_tags, monkeypatch):
+    """BugFix2 验收反馈：标签管理关闭后，元数据面板当前单元标签即时刷新。"""
+    window, conn, _, tag_service = main_window_with_tags
+    _select_root(qapp, window)
+    _navigate_to_armor(qapp, window)
+
+    view = window._content_view  # noqa: SLF001
+    idx = _find_entry_index(window, "寒霜之心.7z")
+    view.selectRow(idx)
+    qapp.processEvents()
+
+    panel = window.metadata_panel()
+    unit = panel.current_unit()
+    assert unit is not None
+
+    # 先给该单元挂一个标签（面板尚未刷新，chip 应为空）
+    cat = tag_service.create_category("状态")
+    tag = tag_service.create_tag("已测试", cat.id)
+    tag_service.attach_tag_to_unit(unit.id, tag.id)
+    conn.commit()
+    assert panel.tag_chips() == []
+
+    # 模拟打开标签管理对话框：exec 中把标签改名并提交
+    def fake_exec(self):
+        tag_service.rename_tag(tag.id, "已改名")
+        conn.commit()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(TagManagerDialog, "exec", fake_exec)
+    window._on_tag_manager_clicked()
+
+    assert panel.tag_chips() == ["已改名"]

@@ -8,6 +8,32 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+- **分类颜色统一 + 批量打标签重构（BugFix2 / UI合理性12，v0.50.9）**：
+  - BugFix2：新增共享颜色 helper `tag_colors`（hue → QColor / 样式表 hex / 色块图标），
+    选色改为**预选色表**（24 色相块，点击即选，所见即所得）替换 QColorDialog——
+    修复"快速颜色与实际颜色不一致"根因（原仅存 hue + 固定 S/L 重建）；
+    分类色接入标签管理树、元数据面板预选标签/chip、标签筛选栏、批量打标签
+    （背景/边框统一分类色，文字色按相对亮度自动黑/白，暗色模式友好）
+  - UI合理性12：批量打标签重构——预选标签按分类分组（组头可折叠）+ 搜索过滤框
+    （输入即过滤）；chip 区改 FlowLayout 按钮；删除「（未添加标签）」空提示；
+    删除独立标签输入框（仅保留搜索框）
+  - 验收反馈：分类组头不着色（避免颜色杂乱）；标签按钮背景/边框统一分类色 +
+    自动黑/白文字色；标签管理对话框关闭后元数据面板即时刷新当前单元标签
+    （`refresh_tags` 不触碰表单字段，保留未保存的来源/备注编辑）
+  - 文件列表四列改 Interactive 固定默认宽度（320/60/80/150，Explorer 风格右侧留白
+    供框选），滚动条出现/消失不再导致列横移跳动；修复末行下方空白区起框（从下往上
+    拉）选不中（操作合理性4）
+  - 修复分割线固化：Windows 注册表字符串列表兼容（原校验只接受 int 导致恢复回退
+    默认）+ 拖动分隔线实时保存（closeEvent 兜底）
+  - 中栏文件列表四列宽度接入固化：保存/恢复 + 拖动即保存（layout/header/file_list），
+    「重置布局」实时恢复默认宽度
+  （[tag_colors.py](src/app/tag_colors.py) /
+  [color_picker_dialog.py](src/app/color_picker_dialog.py) /
+  [batch_tag_dialog.py](src/app/batch_tag_dialog.py) /
+  [metadata_panel.py](src/app/metadata_panel.py) /
+  [tag_filter.py](src/app/tag_filter.py) /
+  [tag_manager_dialog.py](src/app/tag_manager_dialog.py)）
+
 - **分割线状态持久化/重置 + 顶部菜单栏（UI合理性2/3，v0.50.8）**：
   - 分割线（主三栏 / 右栏 / 操作历史列宽）保存/恢复/重置抽成独立 helper
     `SplitterStateHelper`（QSettings 持久化，键 `layout/*`），MainWindow 仅接线，

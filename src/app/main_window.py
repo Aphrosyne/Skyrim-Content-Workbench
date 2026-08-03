@@ -54,7 +54,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
-    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -81,6 +80,7 @@ from app.batch_tag_dialog import BatchTagDialog
 from app.card_list_model import CardListModel
 from app.file_list_model import (
     COL_MODIFIED,
+    COL_NAME,
     COL_SIZE,
     COL_TYPE,
     SORT_MODIFIED,
@@ -206,11 +206,16 @@ class _RubberBandTableView(QTableView):
         # 计算矩形覆盖的行范围
         top_row = self.rowAt(rect.top())
         bottom_row = self.rowAt(rect.bottom())
-        # 若矩形超出可见区域上方/下方，扩展到首末行
-        if top_row == -1 and rect.top() < 0:
+        last_row = self.model().rowCount() - 1 if self.model() else -1
+        # 修复（操作合理性4，2026-08-03）：矩形边缘落在行区外时扩展到首末行。
+        # 此前仅处理超出视口的情况，导致在末行下方空白区起框（从下往上拉）
+        # 时 bottom_row=-1 直接 return、选不中。
+        if top_row == -1 and rect.top() <= 0:
             top_row = 0
-        if bottom_row == -1 and rect.bottom() > self.height():
-            bottom_row = self.model().rowCount() - 1 if self.model() else -1
+        if bottom_row == -1 and rect.bottom() >= 0:
+            # 下边缘在首行之下（含视口内空白区与视口外）→ 扩展到末行；
+            # 若下边缘在视口上方（rect.bottom() < 0）则保持 -1，无可选。
+            bottom_row = last_row
         if top_row == -1 or bottom_row == -1 or top_row > bottom_row:
             return
         # 选中范围内的所有行（ClearAndSelect 替换当前选择）
@@ -769,14 +774,23 @@ class MainWindow(QMainWindow):
         self._content_view.horizontalHeader().setStretchLastSection(False)
         self._content_view.horizontalHeader().setSectionsClickable(True)
         self._content_view.setModel(self._content_list_model)
-        # UI合理性2：setModel 会重置表头 resize 模式，须在 setModel 之后设置。
-        # 名称列 Stretch 吸收剩余宽度（这就是「名称列加宽」的机制）；
-        # 其余列按常量默认宽度（FILE_LIST_COLUMN_WIDTHS，用户可手动调整后重启生效）。
-        self._content_view.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch
-        )
-        for col in (COL_TYPE, COL_SIZE, COL_MODIFIED):
+        # UI合理性2 + 验收反馈（2026-08-03）：setModel 会重置表头 resize 模式，
+        # 须在 setModel 之后设置。四列全部 Interactive 固定默认宽度（Explorer 风格）：
+        # 右侧留出空白供 rubber band 框选；列不随滚动条出现/消失而横移（中栏不跳）。
+        # 宽度见 FILE_LIST_COLUMN_WIDTHS，用户可手动调整后重启生效。
+        for col in (COL_NAME, COL_TYPE, COL_SIZE, COL_MODIFIED):
             self._content_view.setColumnWidth(col, ui.FILE_LIST_COLUMN_WIDTHS[col])
+        # 固化（2026-08-03 验收反馈）：中栏列宽持久化——恢复存档（无则默认）、
+        # 拖动即保存；重置布局时恢复默认。连接放在 restore 之后避免恢复触发保存。
+        file_header = self._content_view.horizontalHeader()
+        self._splitter_state.restore_header(
+            file_header, ui.QSETTINGS_KEY_HEADER_FILE_LIST, ui.FILE_LIST_COLUMN_WIDTHS
+        )
+        file_header.sectionResized.connect(
+            lambda *_: self._splitter_state.save_header(
+                file_header, ui.QSETTINGS_KEY_HEADER_FILE_LIST
+            )
+        )
         self._content_view.doubleClicked.connect(self._on_entry_activated)
         self._content_view.customContextMenuRequested.connect(self._on_content_context_menu)
         self._content_view.horizontalHeader().sectionClicked.connect(
@@ -895,6 +909,16 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 1)
+        # UI合理性2 固化（2026-08-03 验收反馈）：拖动分隔线即实时保存，
+        # 重启保留；closeEvent 保存作为兜底。setSizes 不触发 splitterMoved，无回环。
+        self._splitter.splitterMoved.connect(
+            lambda *_: self._splitter_state.save(self._splitter, ui.QSETTINGS_KEY_SPLITTER_MAIN)
+        )
+        self._right_splitter.splitterMoved.connect(
+            lambda *_: self._splitter_state.save(
+                self._right_splitter, ui.QSETTINGS_KEY_SPLITTER_RIGHT
+            )
+        )
 
         # 主布局：顶部模式栏 + 三栏 splitter
         central = QWidget(self)
@@ -1681,6 +1705,12 @@ class MainWindow(QMainWindow):
             self._right_splitter,
             ui.QSETTINGS_KEY_SPLITTER_RIGHT,
             ui.LAYOUT_RIGHT_SPLITTER_DEFAULT_SIZES,
+        )
+        # 中栏文件列表列宽：实时恢复默认（非模态，可立即生效）
+        self._splitter_state.reset_header(
+            self._content_view.horizontalHeader(),
+            ui.QSETTINGS_KEY_HEADER_FILE_LIST,
+            ui.FILE_LIST_COLUMN_WIDTHS,
         )
         # 操作历史对话框为模态，无法实时重置；删除存档使下次打开即回默认
         self._splitter_state.remove_key(ui.QSETTINGS_KEY_HEADER_OPERATION_HISTORY)
@@ -2827,6 +2857,10 @@ class MainWindow(QMainWindow):
         # Stage 4 Task 3：标签库可能变更，刷新 TagFilterBar 可选标签。
         # refresh_categories 会自动剔除已删除的已选标签并重新筛选。
         self._refresh_tag_filter_bar()
+        # BugFix2 验收反馈：标签库可能变更，刷新元数据面板当前单元的标签显示
+        # （refresh_tags 不触碰表单字段，保留未保存的来源/备注编辑）
+        if self._metadata_panel is not None:
+            self._metadata_panel.refresh_tags()
 
     # === Stage 5 Task 6：操作历史与撤销 ===
 

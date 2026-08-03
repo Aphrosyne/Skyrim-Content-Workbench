@@ -84,6 +84,22 @@ def test_restore_ignores_invalid_saved_values(qapp, tmp_path: Path) -> None:
         assert len(set(restored.sizes())) == 1, f"存档 {bad!r} 应回退默认值"
 
 
+def test_restore_accepts_numeric_strings_from_registry(qapp, tmp_path: Path) -> None:
+    """Windows 注册表以字符串列表读回尺寸，应兼容（固化修复，2026-08-03）。"""
+    settings = _make_settings(tmp_path)
+    settings.setValue("layout/main", ["300", "420", "300"])
+    splitter = _make_splitter()
+
+    SplitterStateHelper(settings).restore(splitter, "layout/main", default_sizes=(9, 9, 9))
+    _assert_same_proportions(splitter.sizes(), [300, 420, 300])
+
+    # 非法字符串仍回退默认
+    settings.setValue("layout/main", ["abc", "420", "300"])
+    fresh = _make_splitter()
+    SplitterStateHelper(settings).restore(fresh, "layout/main", default_sizes=(7, 7, 7))
+    assert len(set(fresh.sizes())) == 1
+
+
 def test_reset_removes_key_and_applies_defaults(qapp, tmp_path: Path) -> None:
     settings = _make_settings(tmp_path)
     helper = SplitterStateHelper(settings)
