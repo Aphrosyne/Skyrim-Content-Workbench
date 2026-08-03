@@ -4,7 +4,8 @@
 - rowCount 委托给 FileListModel；
 - DisplayRole 返回名称（不含 [内容单元] 标记，Q6:B）；
 - ToolTipRole 含路径 + 内容单元状态（Q6:B）；
-- DecorationRole 复用 FileListModel.icon_for（封面优先，回退标准图标）；
+- DecorationRole：provider 缩略图（256 档缓存）→ 缩放；未命中/无封面 →
+  固定尺寸占位图标（UI合理性16，占位与缩略图占地一致）；
 - UserRole 返回 FileEntry；
 - FileListModel.refresh() 后 CardListModel 行数同步；
 - 空 source 行数为 0；
@@ -21,7 +22,9 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtGui import QColor, QPixmap  # noqa: E402
 
+from app import ui_constants as ui  # noqa: E402
 from app.card_list_model import CardListModel  # noqa: E402
 from app.file_list_model import FileListModel  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
@@ -149,16 +152,16 @@ def test_user_role_returns_file_entry(file_list_model_with_entries) -> None:
     assert isinstance(entry, FileEntry)
 
 
-def test_decoration_role_returns_icon(file_list_model_with_entries) -> None:
-    """DecorationRole 返回 QIcon（封面或标准图标）。"""
+def test_decoration_role_returns_fixed_size_pixmap(file_list_model_with_entries) -> None:
+    """无 provider → DecorationRole 返回固定尺寸占位 QPixmap（默认 160×160）。"""
     source, _ = file_list_model_with_entries
     card = CardListModel()
     card.set_source(source)
     idx = card.index(0, 0)
-    icon = card.data(idx, Qt.DecorationRole)
-    # 无缩略图 provider 时返回 Qt 标准图标（QIcon 实例）
-    # 注意：在测试环境中无 thumbnail_coordinator，icon_for 返回标准文件图标
-    assert icon is not None or icon is None  # 仅验证不抛异常
+    decoration = card.data(idx, Qt.DecorationRole)
+    assert isinstance(decoration, QPixmap)
+    assert decoration.width() == ui.ZOOM_SLIDER_DEFAULT
+    assert decoration.height() == ui.ZOOM_SLIDER_DEFAULT
 
 
 def test_source_refresh_propagates(qapp, tmp_path: Path) -> None:
@@ -219,6 +222,13 @@ def test_entry_count_matches_row_count(file_list_model_with_entries) -> None:
 
 
 # === Stage 5 Task 2 验收修复：方形裁剪 + elide ===
+
+
+def _make_cover_pixmap(size: int = 256) -> QPixmap:
+    """构造方形测试缩略图（模拟 cover 模式 256 档缓存输出）。"""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(QColor(200, 30, 30))
+    return pixmap
 
 
 @pytest.fixture
@@ -285,12 +295,11 @@ def file_list_model_with_cover_image(qapp, tmp_path: Path) -> tuple[FileListMode
 
 
 def test_card_decoration_is_square_pixmap(file_list_model_with_cover_image) -> None:
-    """有封面的内容单元 DecorationRole 返回方形 QPixmap（icon_size × icon_size）。"""
-    from PySide6.QtGui import QPixmap  # noqa: PLC0415
-
+    """有封面 + provider 命中 → DecorationRole 返回方形 QPixmap（icon_size）。"""
     source, entries = file_list_model_with_cover_image
     card = CardListModel()
     card.set_source(source)
+    card.set_thumbnail_provider(lambda unit_id, source_path, size: _make_cover_pixmap(size))
     card.set_icon_size(128)
 
     for entry in entries:
@@ -305,12 +314,11 @@ def test_card_decoration_is_square_pixmap(file_list_model_with_cover_image) -> N
 
 
 def test_card_decoration_crops_horizontal_image(file_list_model_with_cover_image) -> None:
-    """横向图（200×100）裁剪为方形后，宽度 = 高度 = icon_size。"""
-    from PySide6.QtGui import QPixmap  # noqa: PLC0415
-
+    """横向封面内容单元 → 缩略图缩放到 icon_size 方形（横图统一外框）。"""
     source, entries = file_list_model_with_cover_image
     card = CardListModel()
     card.set_source(source)
+    card.set_thumbnail_provider(lambda unit_id, source_path, size: _make_cover_pixmap(size))
     card.set_icon_size(128)
 
     h_entry = next(e for e in entries if e.name == "h_pack")
@@ -322,12 +330,11 @@ def test_card_decoration_crops_horizontal_image(file_list_model_with_cover_image
 
 
 def test_card_decoration_crops_vertical_image(file_list_model_with_cover_image) -> None:
-    """竖向图（100×200）裁剪为方形后，宽度 = 高度 = icon_size。"""
-    from PySide6.QtGui import QPixmap  # noqa: PLC0415
-
+    """竖向封面内容单元 → 缩略图缩放到 icon_size 方形（竖图统一外框）。"""
     source, entries = file_list_model_with_cover_image
     card = CardListModel()
     card.set_source(source)
+    card.set_thumbnail_provider(lambda unit_id, source_path, size: _make_cover_pixmap(size))
     card.set_icon_size(128)
 
     v_entry = next(e for e in entries if e.name == "v_pack")
@@ -365,3 +372,139 @@ def test_card_name_elided_when_too_long(qapp) -> None:
     display = card.data(idx, Qt.DisplayRole)
     assert display != long_name, "长文件名应被截断"
     assert "…" in display, "截断后应含省略号"
+
+
+# === UI合理性16：256 档缩略图缓存 + 固定尺寸占位 ===
+
+
+def test_provider_hit_returns_scaled_pixmap(file_list_model_with_cover_image) -> None:
+    """provider 命中（256 档）→ DecorationRole 为缩放到 icon_size 的方形 QPixmap。"""
+    source, entries = file_list_model_with_cover_image
+    card = CardListModel()
+    card.set_source(source)
+    card.set_thumbnail_provider(lambda unit_id, source_path, size: _make_cover_pixmap(size))
+    card.set_icon_size(128)
+
+    for entry in entries:
+        if entry.content_unit is None or not entry.content_unit.cover_path:
+            continue
+        row = next(i for i, e in enumerate(entries) if e.path == entry.path)
+        decoration = card.data(card.index(row, 0), Qt.DecorationRole)
+        assert isinstance(decoration, QPixmap), f"{entry.name} 应返回 QPixmap"
+        assert decoration.width() == 128, f"{entry.name} 宽度应为 128"
+        assert decoration.height() == 128, f"{entry.name} 高度应为 128"
+
+
+def test_provider_miss_uses_fixed_size_placeholder(
+    file_list_model_with_cover_image,
+) -> None:
+    """provider 未命中 → 固定尺寸占位 QPixmap（icon_size × icon_size）。"""
+    source, entries = file_list_model_with_cover_image
+    card = CardListModel()
+    card.set_source(source)
+    card.set_thumbnail_provider(lambda unit_id, source_path, size: None)
+    card.set_icon_size(128)
+
+    cover_rows = [
+        row
+        for row, e in enumerate(entries)
+        if e.content_unit is not None and e.content_unit.cover_path
+    ]
+    assert cover_rows  # 夹具应至少含一个封面内容单元
+    for row in cover_rows:
+        decoration = card.data(card.index(row, 0), Qt.DecorationRole)
+        assert isinstance(decoration, QPixmap)
+        assert (decoration.width(), decoration.height()) == (128, 128)
+
+
+def test_placeholder_footprint_matches_thumbnail(file_list_model_with_cover_image) -> None:
+    """占位图与缩略图占地一致，避免首次批量生成缓存时布局抖动（UI合理性16）。"""
+    source, entries = file_list_model_with_cover_image
+    card = CardListModel()
+    card.set_source(source)
+    card.set_icon_size(128)
+
+    state = {"hit": False}
+
+    def provider(unit_id: str, source_path: str, size: int) -> QPixmap | None:
+        return _make_cover_pixmap(size) if state["hit"] else None
+
+    card.set_thumbnail_provider(provider)
+    cover_row = next(
+        row
+        for row, e in enumerate(entries)
+        if e.content_unit is not None and e.content_unit.cover_path
+    )
+    placeholder = card.data(card.index(cover_row, 0), Qt.DecorationRole)
+    assert isinstance(placeholder, QPixmap)
+    assert (placeholder.width(), placeholder.height()) == (128, 128)
+
+    # 后台生成完成 → 刷新后同一行装饰为缩略图，占地相同
+    state["hit"] = True
+    card.notify_thumbnail_ready(entries[cover_row].content_unit.id, 256)
+    thumbnail = card.data(card.index(cover_row, 0), Qt.DecorationRole)
+    assert isinstance(thumbnail, QPixmap)
+    assert (thumbnail.width(), thumbnail.height()) == (128, 128)
+
+
+def test_notify_thumbnail_ready_clears_cache_and_requeries(
+    file_list_model_with_cover_image,
+) -> None:
+    """notify_thumbnail_ready → 清除缓存 + 触发 dataChanged + 重新查询 provider。"""
+    source, entries = file_list_model_with_cover_image
+    card = CardListModel()
+    card.set_source(source)
+    card.set_icon_size(128)
+
+    calls: list[str] = []
+
+    def provider(unit_id: str, source_path: str, size: int) -> QPixmap | None:
+        calls.append(unit_id)
+        return _make_cover_pixmap(size) if len(calls) > 1 else None
+
+    card.set_thumbnail_provider(provider)
+    cover_entry = next(
+        e for e in entries if e.content_unit is not None and e.content_unit.cover_path
+    )
+    row = next(i for i, e in enumerate(entries) if e.path == cover_entry.path)
+    idx = card.index(row, 0)
+
+    first = card.data(idx, Qt.DecorationRole)
+    assert isinstance(first, QPixmap)  # 未命中 → 占位
+    assert len(calls) == 1
+
+    emitted: list[object] = []
+
+    def on_data_changed(*args: object) -> None:
+        emitted.append(args)
+
+    card.dataChanged.connect(on_data_changed)
+    card.notify_thumbnail_ready(cover_entry.content_unit.id, 256)
+    assert len(emitted) == 1  # 对应行 dataChanged
+
+    second = card.data(idx, Qt.DecorationRole)
+    assert isinstance(second, QPixmap)
+    assert len(calls) == 2  # 缓存已清除 → 重新查询
+
+
+def test_set_icon_size_regenerates_placeholder(file_list_model_with_cover_image) -> None:
+    """缩放变化 → 占位图标随 icon_size 重建（尺寸一致）。"""
+    source, entries = file_list_model_with_cover_image
+    card = CardListModel()
+    card.set_source(source)
+    card.set_thumbnail_provider(lambda unit_id, source_path, size: None)
+    card.set_icon_size(128)
+
+    cover_row = next(
+        row
+        for row, e in enumerate(entries)
+        if e.content_unit is not None and e.content_unit.cover_path
+    )
+    placeholder = card.data(card.index(cover_row, 0), Qt.DecorationRole)
+    assert isinstance(placeholder, QPixmap)
+    assert (placeholder.width(), placeholder.height()) == (128, 128)
+
+    card.set_icon_size(256)
+    placeholder2 = card.data(card.index(cover_row, 0), Qt.DecorationRole)
+    assert isinstance(placeholder2, QPixmap)
+    assert (placeholder2.width(), placeholder2.height()) == (256, 256)

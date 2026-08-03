@@ -43,7 +43,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QPoint, QRect, QSettings, QSize, Qt
-from PySide6.QtGui import QFontMetrics, QKeySequence, QShortcut
+from PySide6.QtGui import QFontMetrics, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -420,8 +420,8 @@ class MainWindow(QMainWindow):
     def _init_thumbnail_coordinator(self) -> None:
         """初始化缩略图调度器并连接信号。
 
-        Task 1b 修正：UI 层统一加载原图，不再查询缓存。
-        Coordinator 保留启动（ContentService 标记内容单元时仍会生成缓存，供未来使用）。
+        UI合理性16（2026-08-03）：卡片视图恢复 256 档缩略图缓存链路
+        （Task 1b 曾改为直接加载原图，多内容下全尺寸解码卡顿）。
         """
         if self._thumbnail_coordinator is None:
             return
@@ -430,10 +430,28 @@ class MainWindow(QMainWindow):
             self._on_thumbnail_ready,
             Qt.QueuedConnection,  # noqa: UP037
         )
+        # 注入卡片缩略图 provider（缓存命中同步返回，未命中投递后台生成）
+        self._card_list_model.set_thumbnail_provider(self._card_thumbnail_provider)
+
+    def _card_thumbnail_provider(
+        self,
+        content_unit_id: str,
+        source_path: str,
+        size: int,
+    ) -> QPixmap | None:
+        """卡片视图缩略图查询回调（UI合理性16）。
+
+        缓存命中同步返回 QPixmap；未命中投递后台生成并返回 None
+        （由模型显示占位图标，生成完成后经 thumbnail_ready 刷新）。
+        """
+        if self._thumbnail_coordinator is None:
+            return None
+        return self._thumbnail_coordinator.request_thumbnail(
+            content_unit_id, Path(source_path), size=size
+        )
 
     def _on_thumbnail_ready(self, content_unit_id: str, size: int) -> None:
-        """后台缩略图生成完成回调（Task 1b 修正：UI 不走缓存，空实现保留兼容）。"""
-        # Task 1b 修正：CardListModel 直接加载原图，不再需要刷新缓存
+        """后台缩略图生成完成：刷新对应行 DecorationRole。"""
         self._card_list_model.notify_thumbnail_ready(content_unit_id, size)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)

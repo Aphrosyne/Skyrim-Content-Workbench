@@ -1,13 +1,17 @@
-"""卡片视图 model（Stage 5 Task 1b）。
+"""卡片视图 model（Stage 5 Task 1b + UI合理性16）。
 
 轻量代理：委托给 FileListModel，共享同一份数据源（Q6:B 复用 FileListModel）。
 两个视图（QTableView + QListView）共用同一份 FileEntry 列表，切换不丢失数据。
 
-Task 1b 修正：直接加载原图，不走缓存 provider。
-Task 2 验收修复：
-- 有封面 → QPixmap 加载原图，居中裁剪为 icon_size × icon_size 方形（统一外框）
-- 无封面或非内容单元 → 返回 Qt 标准图标（委托 FileListModel）
-- 内存缓存 unit_id → QPixmap（方形裁剪后的），避免 data() 高频调用重复加载
+UI合理性16（2026-08-03）：启用 256px 图片缓存机制，消除多内容下原图全尺寸
+解码导致的卡顿。
+- 有封面 → 查询 256 档缓存缩略图（provider 注入），缩放到 icon_size 显示；
+  缓存缩略图为方形居中裁剪（与 Task 2 验收视觉一致）
+- 未命中 → 固定尺寸占位图标（icon_size × icon_size 透明底 + 居中标准图标），
+  后台生成完成后 notify_thumbnail_ready 刷新——占位图与缩略图占地一致，
+  避免首次批量生成缓存时布局抖动
+- 无封面或非内容单元 → 同样返回固定尺寸占位图标（网格布局稳定）
+- 内存缓存 (unit_id, size) → QPixmap，避免 data() 高频调用重复查询
 - DisplayRole 长文件名 elide 省略号（避免撑大卡片宽度）
 
 数据角色：
@@ -24,16 +28,23 @@ Task 2 验收修复：
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QAbstractListModel, QMimeData, QModelIndex, Qt, QUrl
-from PySide6.QtGui import QBrush, QColor, QIcon, QPixmap
+from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPixmap
 
 from app import ui_constants as ui
 from app.file_list_model import FileListModel
 from domain.models import FileEntry
 
 logger = logging.getLogger(__name__)
+
+# 缩略图缓存档位（UI合理性16：256px；缩放滑块最大档即 256，纯降采样足够）
+_THUMBNAIL_CACHE_SIZE = 256
+
+# 缩略图 provider 签名：(content_unit_id, source_path, size) → QPixmap | None
+CardThumbnailProvider = Callable[[str, str, int], QPixmap | None]
 
 
 def _build_tooltip(entry: FileEntry) -> str:
@@ -63,9 +74,14 @@ class CardListModel(QAbstractListModel):
         super().__init__(parent)
         self._source: FileListModel | None = None
         self._icon_size: int = ui.ZOOM_SLIDER_DEFAULT
-        # QPixmap 内存缓存：unit_id → QPixmap（按 icon_size 缩放后的）
-        # 避免 data() 高频调用时重复加载原图
-        self._pixmap_cache: dict[str, QPixmap | None] = {}
+        # UI合理性16：缩略图 provider（缓存命中同步返回，未命中投递后台生成）
+        self._thumbnail_provider: CardThumbnailProvider | None = None
+        # QPixmap 内存缓存：(unit_id, size) → QPixmap（按 icon_size 缩放后的）
+        # 避免 data() 高频调用时重复查询/缩放
+        self._pixmap_cache: dict[tuple[str, int], QPixmap | None] = {}
+        # 占位图标缓存：is_dir → QPixmap（icon_size × icon_size）
+        # 占位图与缩略图占地一致，保持网格布局稳定
+        self._placeholder_cache: dict[bool, QPixmap] = {}
 
     # --- QAbstractListModel 必需方法 ---
 
@@ -116,75 +132,69 @@ class CardListModel(QAbstractListModel):
         return metrics.elidedText(name, Qt.TextElideMode.ElideRight, text_width)
 
     def _get_decoration(self, entry: FileEntry) -> QPixmap | QIcon | None:
-        """获取卡片装饰图（Task 2 验收修复：方形裁剪统一外框）。
-
-        - 有封面的内容单元 → 加载原图，居中裁剪为 icon_size × icon_size 方形
-          （Q1=A 居中裁剪，类似 Instagram 缩略图；横竖图统一外框）
-        - 无封面或非内容单元 → 回退到 Qt 标准文件夹/文件图标（委托 FileListModel）
-        """
+        """获取卡片装饰图（UI合理性16：256 档缓存 + 固定尺寸占位）。"""
         if entry.content_unit is None or not entry.content_unit.cover_path:
-            # 无封面 → 委托 source 返回 Qt 标准图标
-            if self._source is not None:
-                return self._source.icon_for(entry)
-            return None
+            return self._get_placeholder(entry)
+        if self._thumbnail_provider is None:
+            # 未注入 provider（未接线）→ 退化占位图标
+            return self._get_placeholder(entry)
 
         unit_id = entry.content_unit.id
+        cache_key = (unit_id, _THUMBNAIL_CACHE_SIZE)
 
         # 内存缓存命中
-        if unit_id in self._pixmap_cache:
-            pixmap = self._pixmap_cache[unit_id]
+        if cache_key in self._pixmap_cache:
+            pixmap = self._pixmap_cache[cache_key]
             if pixmap is not None:
                 return pixmap
-            # None 表示已查过但无封面图 → 回退标准图标
-            if self._source is not None:
-                return self._source.icon_for(entry)
-            return None
+            # None = 已查询但未命中 → 占位图标
+            return self._get_placeholder(entry)
 
-        # 加载原图
-        pixmap = self._load_original_pixmap(entry)
+        pixmap = self._query_thumbnail(unit_id, entry, _THUMBNAIL_CACHE_SIZE)
         if pixmap is not None:
-            # Task 2 验收修复：方形裁剪（居中 crop），统一外框
-            cropped = self._crop_to_square(pixmap)
-            self._pixmap_cache[unit_id] = cropped
-            return cropped
-        # 加载失败 → 缓存 None 避免重复加载，回退标准图标
-        self._pixmap_cache[unit_id] = None
+            # 缓存为方形，直接缩放到 icon_size（缩放档 ≤ 256，纯降采样）
+            scaled = pixmap.scaled(
+                self._icon_size,
+                self._icon_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self._pixmap_cache[cache_key] = scaled
+            return scaled
+        self._pixmap_cache[cache_key] = None
+        return self._get_placeholder(entry)
+
+    def _get_placeholder(self, entry: FileEntry) -> QPixmap:
+        """返回固定尺寸占位图标（icon_size × icon_size 透明底 + 居中标准图标）。
+
+        UI合理性16：未生成缩略图时占位图与缩略图占地一致，保证网格布局稳定。
+        """
+        is_dir = entry.is_dir
+        if is_dir in self._placeholder_cache:
+            return self._placeholder_cache[is_dir]
+        pixmap = QPixmap(self._icon_size, self._icon_size)
+        pixmap.fill(Qt.GlobalColor.transparent)
         if self._source is not None:
-            return self._source.icon_for(entry)
-        return None
-
-    def _crop_to_square(self, pixmap: QPixmap) -> QPixmap:
-        """将 pixmap 居中裁剪为 icon_size × icon_size 方形（Q1=A）。
-
-        步骤：
-        1. 先按短边等比放大填满 icon_size（KeepAspectRatioByExpanding）
-        2. 居中裁剪多余部分，输出严格方形 pixmap
-        """
-        scaled = pixmap.scaled(
-            self._icon_size,
-            self._icon_size,
-            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        # 居中裁剪到严格 icon_size × icon_size
-        x = max(0, (scaled.width() - self._icon_size) // 2)
-        y = max(0, (scaled.height() - self._icon_size) // 2)
-        return scaled.copy(x, y, self._icon_size, self._icon_size)
-
-    def _load_original_pixmap(self, entry: FileEntry) -> QPixmap | None:
-        """加载原图（Task 1b 修正：不走缓存，直接读文件）。
-
-        原图过大时由 QPixmap 自身处理解码，实测 4K 图无明显卡顿。
-        若未来需要限制解码尺寸，可在此处加 QPixmap.load + 尺寸提示。
-        """
-        unit = entry.content_unit
-        if unit is None or not unit.cover_path:
-            return None
-        full_path = Path(unit.path) / unit.cover_path
-        pixmap = QPixmap(str(full_path))
-        if pixmap.isNull():
-            return None
+            icon = self._source.icon_for(entry)
+            if icon is not None:
+                painter = QPainter(pixmap)
+                icon.paint(
+                    painter,
+                    pixmap.rect(),
+                    Qt.AlignmentFlag.AlignCenter,
+                    QIcon.Mode.Normal,
+                    QIcon.State.Off,
+                )
+                painter.end()
+        self._placeholder_cache[is_dir] = pixmap
         return pixmap
+
+    def _query_thumbnail(self, unit_id: str, entry: FileEntry, size: int) -> QPixmap | None:
+        """通过 provider 查询指定档位缩略图。"""
+        if self._thumbnail_provider is None or entry.content_unit is None:
+            return None
+        source_path = str(Path(entry.content_unit.path) / entry.content_unit.cover_path)
+        return self._thumbnail_provider(unit_id, source_path, size)
 
     # --- 拖拽支持（UX 重构 Phase 1 Task 4）---
 
@@ -236,10 +246,11 @@ class CardListModel(QAbstractListModel):
         """设置卡片图标尺寸，触发全表 DecorationRole 重查。
 
         缩放滑块变化时调用，让 view 重新查询 DecorationRole 并按新尺寸渲染 pixmap。
-        Task 1b：尺寸变化时清空内存缓存（因 icon_size 改变后缩放结果不同）。
+        尺寸变化时清空内存缓存（缩放结果不同）+ 占位图标（尺寸随 icon_size）。
         """
         self._icon_size = size
         self._pixmap_cache.clear()
+        self._placeholder_cache.clear()
         self.notify_decoration_changed()
 
     def notify_decoration_changed(self) -> None:
@@ -251,16 +262,43 @@ class CardListModel(QAbstractListModel):
         self.dataChanged.emit(top_left, bottom_right, [Qt.DecorationRole])
 
     def notify_thumbnail_ready(self, content_unit_id: str, size: int) -> None:
-        """缩略图生成完成回调（保留接口兼容，当前不走缓存，空实现）。
+        """缩略图生成完成回调：清除对应档位缓存并触发对应行重绘。
 
-        Task 1b 修正：不再查询缓存，此方法保留仅为兼容 MainWindow 信号连接。
+        清除 (unit_id, size) 内存缓存，下次 data() 重新查询 provider 获取
+        新生成的缩略图。
         """
-        # 当前直接加载原图，无需处理缓存回调
-        return
+        cache_key = (content_unit_id, size)
+        if cache_key in self._pixmap_cache:
+            del self._pixmap_cache[cache_key]
+        if self._source is None:
+            return
+        for row in range(self._source.rowCount()):
+            entry = self._source.entry_at(row)
+            if entry is None or entry.content_unit is None:
+                continue
+            if entry.content_unit.id == content_unit_id:
+                idx = self.index(row, 0)
+                self.dataChanged.emit(idx, idx, [Qt.DecorationRole])
+                break
+
+    def set_thumbnail_provider(self, provider: CardThumbnailProvider | None) -> None:
+        """注入缩略图查询回调。
+
+        provider 签名：(content_unit_id: str, source_path: str, size: int) → QPixmap | None
+        - 返回 QPixmap：缓存命中，立即显示
+        - 返回 None：缓存未命中，由 provider 内部决定是否投递后台生成；
+          本模型先显示固定尺寸占位图标，生成完成后 notify_thumbnail_ready 刷新
+
+        设为 None 可禁用缩略图功能（退化为占位标准图标）。
+        """
+        self._thumbnail_provider = provider
+        self._pixmap_cache.clear()
+        self.notify_decoration_changed()
 
     def _on_source_reset(self) -> None:
         """FileListModel 重置时，CardListModel 同步重置。"""
         self._pixmap_cache.clear()
+        self._placeholder_cache.clear()
         self.beginResetModel()
         self.endResetModel()
 

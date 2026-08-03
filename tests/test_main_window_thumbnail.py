@@ -2,7 +2,8 @@
 
 覆盖：
 - coordinator 未注入 → 文件列表退化为标准图标
-- coordinator 已注入 → provider 注入到 FileListModel
+- coordinator 已注入 → provider 注入到 CardListModel（UI合理性16）
+- 卡片缩略图全链路：未命中占位 → 后台生成 → ready 刷新 → 二次命中缓存
 - metadata_saved → 失效缓存
 - closeEvent → 调用 coordinator.shutdown
 """
@@ -161,11 +162,11 @@ def test_coordinator_not_injected_degrades_to_standard_icons(qapp, tmp_path):
 
 
 def test_coordinator_injected_starts_without_error(env_with_coordinator):
-    """Task 1b 修正：coordinator 注入 → 正常启动（UI 统一加载原图，不注入 provider）。"""
+    """UI合理性16：coordinator 注入 → 正常启动 + 卡片视图注入缩略图 provider。"""
     window, coordinator, _, _ = env_with_coordinator
     assert window._thumbnail_coordinator is not None  # noqa: SLF001
-    # Task 1b 修正：CardListModel 不再持有 provider（直接加载原图）
-    assert not hasattr(window._card_list_model, "_thumbnail_provider")  # noqa: SLF001
+    # 卡片视图已接入 256 档缩略图缓存链路
+    assert window._card_list_model._thumbnail_provider is not None  # noqa: SLF001
 
 
 def test_close_event_calls_coordinator_shutdown(qapp, env_with_coordinator, monkeypatch):
@@ -216,3 +217,54 @@ def test_metadata_saved_does_not_call_coordinator_invalidate(
         qapp.processEvents()
     # UI 层不应调用 invalidate（由 Service 层条件性处理）
     assert called_unit_ids == []
+
+
+def test_card_thumbnail_generated_then_cache_hit(qapp, env_with_coordinator):
+    """UI合理性16：卡片未命中 → 后台生成 → ready 刷新 → 二次请求命中缓存。"""
+    from PySide6.QtCore import QEventLoop, Qt, QTimer
+    from PySide6.QtGui import QPixmap
+
+    from app import ui_constants as ui  # noqa: PLC0415
+
+    window, coordinator, conn, mods_root = env_with_coordinator
+
+    # 标记护甲文件夹为内容单元（自动设置封面）
+    armor = mods_root / "护甲"
+    unit = window._content_service.mark_as_content_unit(armor)  # noqa: SLF001
+    conn.commit()
+    assert unit.cover_path  # 自动封面已设置
+
+    # 刷新中栏使 FileEntry 携带 content_unit
+    window._refresh_content_list(str(mods_root))  # noqa: SLF001
+    qapp.processEvents()
+
+    card_model = window._card_list_model  # noqa: SLF001
+    assert card_model._thumbnail_provider is not None  # noqa: SLF001
+    source = window._content_list_model  # noqa: SLF001
+    row = next(i for i in range(source.rowCount()) if source.entry_at(i).path == str(armor))
+    idx = card_model.index(row, 0)
+
+    # 首次：缓存未命中 → 占位 QPixmap（并已投递后台生成）
+    first = card_model.data(idx, Qt.DecorationRole)
+    assert isinstance(first, QPixmap)
+    assert first.width() == ui.ZOOM_SLIDER_DEFAULT
+
+    # 等待后台生成完成（thumbnail_ready 信号）
+    loop = QEventLoop()
+    coordinator.thumbnail_ready.connect(lambda unit_id, size: loop.quit())
+    QTimer.singleShot(15000, loop.quit)  # 超时兜底
+    loop.exec()
+    qapp.processEvents()
+
+    # 生成完成后：缓存清除 + 重新查询 → 返回缩略图（尺寸一致，占地不抖动）
+    second = card_model.data(idx, Qt.DecorationRole)
+    assert isinstance(second, QPixmap)
+    assert second.width() == ui.ZOOM_SLIDER_DEFAULT
+    assert second.height() == ui.ZOOM_SLIDER_DEFAULT
+
+    # 再次请求命中磁盘缓存
+    unit_id = unit.id
+    cover_path = Path(armor) / unit.cover_path
+    pixmap = coordinator.request_thumbnail(unit_id, cover_path, size=256)
+    assert pixmap is not None
+    assert not pixmap.isNull()

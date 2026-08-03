@@ -8,6 +8,19 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+- **卡片视图启用 256px 缩略图缓存（UI合理性16）**：恢复 ThumbnailCoordinator
+  生成链路到卡片视图（Stage 5 Task 1b 曾改为直接加载原图，多内容下全尺寸解码
+  导致卡顿）：
+  - 生成器新增 `mode="cover"` 方形居中裁剪模式（生成器默认 contain 不变），
+    缩略图生成服务（ThumbnailService.generate）默认使用 cover，
+    与卡片 Task 2 验收视觉（方形居中裁剪、无圆角/透明条）一致
+    （[thumbnail_generator.py](src/infrastructure/thumbnail_generator.py)）
+  - CardListModel 恢复缩略图 provider：缓存命中同步返回、未命中显示固定尺寸
+    占位图标（icon_size × icon_size，占地与缩略图一致，避免首次批量生成缓存时
+    布局抖动），后台生成完成后按行刷新（[card_list_model.py](src/app/card_list_model.py)）
+  - MainWindow 恢复 `_card_thumbnail_provider` 接线（256 档），缓存失效/GC 复用
+    既有 Service 链路（[main_window.py](src/app/main_window.py)）
+
 ## [0.50.4] - 2026-08-03
 
 全量 pytest 原生崩溃修复（测试稳定性1）。
