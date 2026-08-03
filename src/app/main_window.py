@@ -1600,6 +1600,12 @@ class MainWindow(QMainWindow):
         self._qsettings.setValue(ui.QSETTINGS_KEY_VIEW_MODE, view_mode)
         # UI合理性3：同步菜单栏视图选中态
         self._menu_bar.set_view(view_mode)
+        # UI合理性3 验收反馈：菜单切换时同步中栏列表/卡片按钮选中态
+        # （按钮自身点击时 Qt 已自动勾选，此处幂等）
+        if view_index == VIEW_INDEX_CARD:
+            self._view_card_button.setChecked(True)
+        else:
+            self._view_list_button.setChecked(True)
 
     def _on_zoom_combo_changed(self, index: int) -> None:
         """缩放下拉框变化：应用缩放并持久化。"""

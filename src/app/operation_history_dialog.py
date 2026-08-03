@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QHBoxLayout,
+    QHeaderView,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -166,6 +167,10 @@ class OperationHistoryDialog(QDialog):
             ui.QSETTINGS_KEY_HEADER_OPERATION_HISTORY,
             ui.LAYOUT_OPERATION_HISTORY_COLUMN_WIDTHS,
         )
+        # 验收反馈（2026-08-03）：列宽固定后右侧会留白被误认为"空列"，
+        # 末列（状态）显式 Stretch：自动吸收剩余宽度且不可拖动（避免右边缘被拉长）；
+        # 时间/操作列保持 Interactive 可拖动
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         header.sectionResized.connect(
             lambda *_: self._splitter_state.save_header(
                 header, ui.QSETTINGS_KEY_HEADER_OPERATION_HISTORY

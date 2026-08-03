@@ -177,11 +177,16 @@ def test_menu_view_switch_updates_window_and_menu(qapp, tmp_path: Path) -> None:
         assert window.current_view_index() == VIEW_INDEX_CARD
         assert menu_bar.view_card_action().isChecked()
         assert not menu_bar.view_list_action().isChecked()
+        # 中栏列表/卡片按钮同步勾选（验收反馈：此前菜单切换不刷新按钮）
+        assert window._view_card_button.isChecked()  # noqa: SLF001
+        assert not window._view_list_button.isChecked()  # noqa: SLF001
 
         menu_bar.view_list_action().trigger()
         qapp.processEvents()
         assert window.current_view_index() == VIEW_INDEX_LIST
         assert menu_bar.view_list_action().isChecked()
+        assert window._view_list_button.isChecked()  # noqa: SLF001
+        assert not window._view_card_button.isChecked()  # noqa: SLF001
     finally:
         window.close()
 

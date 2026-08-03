@@ -41,10 +41,14 @@ def test_columns_interactive_with_default_widths(qapp, tmp_path: Path) -> None:
     dialog = _make_dialog(_make_settings(tmp_path))
     try:
         header = dialog._table.horizontalHeader()  # noqa: SLF001
+        # 验收反馈：固定列宽后末列 Stretch 吸收剩余宽度，不出现"空列"
+        assert dialog._table.columnCount() == 3  # noqa: SLF001
         assert all(
-            header.sectionResizeMode(i) == QHeaderView.ResizeMode.Interactive for i in range(3)
+            header.sectionResizeMode(i) == QHeaderView.ResizeMode.Interactive for i in range(2)
         )
-        for i, width in enumerate(ui.LAYOUT_OPERATION_HISTORY_COLUMN_WIDTHS):
+        # 末列（状态）Stretch：不可拖动、自动填充剩余宽度
+        assert header.sectionResizeMode(2) == QHeaderView.ResizeMode.Stretch
+        for i, width in enumerate(ui.LAYOUT_OPERATION_HISTORY_COLUMN_WIDTHS[:2]):
             assert header.sectionSize(i) == width
     finally:
         dialog.close()
@@ -88,7 +92,7 @@ def test_reset_clears_key_and_new_dialog_uses_defaults(qapp, tmp_path: Path) -> 
     dialog2 = _make_dialog(settings)
     try:
         header2 = dialog2._table.horizontalHeader()  # noqa: SLF001
-        for i, width in enumerate(ui.LAYOUT_OPERATION_HISTORY_COLUMN_WIDTHS):
+        for i, width in enumerate(ui.LAYOUT_OPERATION_HISTORY_COLUMN_WIDTHS[:2]):
             assert header2.sectionSize(i) == width
     finally:
         dialog2.close()
