@@ -186,6 +186,44 @@ def test_clear_panel_resets_all(qapp, unit_with_tags):
     assert not panel.is_form_enabled()
 
 
+def test_clear_panel_disconnects_chip_handlers(qapp, unit_with_tags, monkeypatch):
+    """测试稳定性1：clear_panel 后旧 chip 按钮信号已断开，点击不再触发操作。"""
+    content_service, tag_service, _, _, unit, *_ = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+    chips = [btn for _, btn in panel._chip_buttons]  # noqa: SLF001
+    assert chips
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(panel, "_apply_tag_toggle", lambda *a, **kw: calls.append(a))
+
+    panel.clear_panel()
+    for btn in chips:
+        btn.click()
+
+    assert calls == []  # 旧 chip 按钮信号已断开，点击无副作用
+
+
+def test_clear_panel_drop_panel_handles_deferred_delete_safely(qapp, unit_with_tags):
+    """测试稳定性1 回归：clear_panel 后 panel 回收 + DeferredDelete 处理不原生崩溃。
+
+    修复前：chip 按钮 clicked lambda 闭包引用 self，deleteLater 后 panel 包装器回收，
+    事件循环处理 DeferredDelete 时在按钮析构途中触发 panel 二次删除（Windows
+    access violation / Fatal Python error: Aborted）。修复后应正常通过。
+    该测试若回归会直接终止整个 pytest 进程（原生崩溃无法以异常捕获）。
+    """
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    content_service, tag_service, _, _, unit, *_ = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+    panel.clear_panel()
+    del panel
+
+    # 处理挂起的 DeferredDelete（等价于后续测试中 QEventLoop.exec 的行为）
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 # === 标签 chip 操作 ===
 
 

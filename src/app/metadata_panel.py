@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 
@@ -495,9 +496,11 @@ class MetadataPanel(QWidget):
         self._created_value.setText("")
         self._source_url_edit.clear()
         self._notes_edit.clear()
+        self._disconnect_flow_buttons(self._tag_flow)
         self._tag_flow.clear()
         self._chip_buttons = []
         self._tag_input.clear()
+        self._disconnect_flow_buttons(self._recent_flow_layout)
         self._recent_flow_layout.clear()
         self._recent_widget.setVisible(False)
         self._recent_title.setVisible(False)
@@ -514,9 +517,40 @@ class MetadataPanel(QWidget):
             item = self._preset_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                self._disconnect_button_signals(widget)
+                for child in widget.findChildren(QPushButton):
+                    self._disconnect_button_signals(child)
                 widget.deleteLater()
         self._preset_groups = {}
         self._preset_buttons = []
+
+    def _disconnect_button_signals(self, widget: QWidget) -> None:
+        """断开按钮信号，打破 clicked/toggled lambda 对 self 的引用环。
+
+        测试稳定性1（2026-08-03）：chip / 预设 / 最近标签按钮的 lambda 闭包捕获 self，
+        deleteLater 后若 panel 包装器已被回收，事件循环处理 DeferredDelete 时会在按钮
+        析构途中拆除连接、释放 lambda，触发 panel 二次删除（PySide6 6.11.1 +
+        Python 3.14 原生崩溃）。删除前断开信号，将引用环在 panel 仍存活时打破。
+        """
+        if isinstance(widget, QPushButton):
+            for signal_name in ("clicked", "toggled"):
+                try:
+                    with warnings.catch_warnings():
+                        # 无连接时 PySide6 会打印 RuntimeWarning，这里忽略
+                        warnings.simplefilter("ignore", RuntimeWarning)
+                        getattr(widget, signal_name).disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+
+    def _disconnect_flow_buttons(self, flow: FlowLayout) -> None:
+        """断开 flow 内（含子层）按钮信号，供 flow.clear() 前调用（测试稳定性1）。"""
+        for i in range(flow.count()):
+            item = flow.itemAt(i)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                self._disconnect_button_signals(widget)
+                for child in widget.findChildren(QPushButton):
+                    self._disconnect_button_signals(child)
 
     def current_unit(self) -> ContentUnit | None:
         """返回当前加载的 ContentUnit（供测试）。"""
@@ -692,6 +726,7 @@ class MetadataPanel(QWidget):
     def _load_tags_for_unit(self, unit_id: str) -> None:
         """从 TagService 加载当前 unit 的所有标签，填充 chip 列表。"""
         self._current_tags = []
+        self._disconnect_flow_buttons(self._tag_flow)
         self._tag_flow.clear()
         self._chip_buttons = []
         try:
@@ -721,6 +756,7 @@ class MetadataPanel(QWidget):
         for i, (t, btn) in enumerate(self._chip_buttons):
             if t.id == tag.id:
                 self._tag_flow.takeAt(i)
+                self._disconnect_button_signals(btn)
                 btn.deleteLater()
                 del self._chip_buttons[i]
                 break
@@ -867,6 +903,7 @@ class MetadataPanel(QWidget):
 
     def _refresh_recent_list(self) -> None:
         """刷新最近使用标签区域（UI合理性8）。无记录/无 unit 时整体隐藏。"""
+        self._disconnect_flow_buttons(self._recent_flow_layout)
         self._recent_flow_layout.clear()
         if self._current_unit is None or self._recent_tags is None:
             self._recent_widget.setVisible(False)

@@ -773,6 +773,18 @@
   MainWindow 收敛为布局 + 组合根。
 - **建议修复阶段**: **Task 8（UI 美化）之后或与其并行**（用户确认，2026-08-02）。
 
+### TD-L34: ThumbnailCoordinator 每任务新建 QThread，生命周期开销与析构风险
+
+- **位置**: [thumbnail_coordinator.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/thumbnail_coordinator.py)
+  `_start_worker` / `_on_thread_finished`
+- **背景**: 每个缩略图任务新建 QThread + ThumbnailWorker，完成后 `deleteLater` 清理。
+  测试稳定性1（v0.50.4）排查确认原生崩溃与 coordinator 无直接因果（根因是
+  MetadataPanel 按钮 deleteLater 引用环），但每任务线程创建/销毁开销高，且
+  coordinator 当前无生产调用方（见 TD-M37）。
+- **建议**: 改为单长驻 worker 线程 + 任务队列（与 ScanController 模式一致），
+  或在接入 UI 时（TD-M37）一并重做。
+- **建议修复阶段**: 与 TD-M37 一并决策（UX 重构 Task 8 或单独任务）。
+
 ---
 
 ## 处理优先级建议

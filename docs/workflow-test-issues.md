@@ -313,7 +313,7 @@ constraint failed
 - 启用图片缓存机制，256大小，多内容下太卡
 - 优先级L1
 
-### 测试稳定性1 ⏸️ 已记录（2026-08-03）
+### 测试稳定性1 ✅ 已修复（v0.50.4，2026-08-03）
 - 全量 pytest 在 `test_thumbnail_coordinator.py::test_thumbnail_ready_signal_emitted_after_generate`
   处原生崩溃（Windows fatal exception: access violation，缩略图 worker 线程调用
   `get_connection` 时与主线程竞争）
@@ -322,3 +322,17 @@ constraint failed
 - 用户备注（2026-08-03）：可能与此前关闭缩略图机制有关——现在所有图片均用原图渲染
 - 待后续排查：`thumbnail_worker` 线程与主线程 DB 连接竞争 / 测试中等待 worker 完成
 - 优先级L2
+- 根因（2026-08-03 已复现确认）：与缩略图 worker / DB 连接无关——是 `MetadataPanel`
+  清除 chip / 预设 / 最近标签按钮时 `deleteLater` + lambda 闭包引用 `self` 的引用环：
+  按钮 clicked/toggled 连接的 lambda 捕获面板，deleteLater 后若面板包装器已被回收，
+  事件循环处理 DeferredDelete 时在按钮析构途中拆除连接 → 释放 lambda → 触发面板
+  二次删除 → 原生崩溃（PySide6 6.11.1 + Python 3.14，access violation / Abort）。
+  全量测试中恰好由 `test_thumbnail_coordinator.py` 的 QEventLoop.exec 处理挂起事件
+  而暴露（worker 线程 sqlite3 帧仅为并发表象）。
+- 最小复现子集：`test_metadata_panel.py::test_panel_load_none_clears`
+  （或 `test_clear_panel_resets_all`）+ `test_thumbnail_coordinator.py`
+- 实现（v0.50.4）：`MetadataPanel` 删除/清空按钮前先断开信号（clicked/toggled，
+  新增 `_disconnect_button_signals` / `_disconnect_flow_buttons`，覆盖 chip / 预设 /
+  最近标签与 `_remove_tag_chip` / `clear_panel` 等全部清理路径）；`TagFilterBar`
+  rebuild 同样先断开；新增 2 个回归测试（旧 chip 信号已断开 + DeferredDelete 不崩溃）；
+  全量 pytest 恢复稳定通过。

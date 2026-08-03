@@ -8,6 +8,26 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.50.4] - 2026-08-03
+
+全量 pytest 原生崩溃修复（测试稳定性1）。
+
+**修复**
+
+- **MetadataPanel 清理按钮时先断开信号，消除 deleteLater 引用环原生崩溃（测试稳定性1）**：
+  chip / 预设 / 最近标签按钮的 clicked/toggled lambda 闭包引用面板，deleteLater 后面板
+  包装器回收时，事件循环处理 DeferredDelete 会在按钮析构途中触发面板二次删除
+  （PySide6 6.11.1 + Python 3.14，Windows access violation / Abort；全量 pytest 在
+  `test_thumbnail_coordinator.py` 处原生崩溃）。新增 `_disconnect_button_signals` /
+  `_disconnect_flow_buttons`，全部清理路径（`_remove_tag_chip` / `clear_panel` /
+  `_load_tags_for_unit` / `_refresh_recent_list` / `_clear_preset_groups`）先断开再
+  deleteLater（[metadata_panel.py](src/app/metadata_panel.py)）
+- **TagFilterBar rebuild 同类防御**：分类/标签按钮重建删除前先断开 clicked 连接
+  （[tag_filter.py](src/app/tag_filter.py)）
+
+**测试**：新增 2 个回归测试（旧 chip 信号已断开 + DeferredDelete 处理不崩溃）；
+全量 pytest 恢复稳定通过；ruff check + format 全绿。
+
 ## [0.50.3] - 2026-08-03
 
 封面设置即时保存（操作便捷性6）。
