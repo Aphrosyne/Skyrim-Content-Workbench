@@ -24,7 +24,10 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtWidgets import QLabel  # noqa: E402
+
 from app.batch_tag_dialog import BatchTagDialog  # noqa: E402
+from app.tag_colors import category_color_hex  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
 from application.tag_service import TagService  # noqa: E402
 from infrastructure.db import get_connection, init_db  # noqa: E402
@@ -239,21 +242,6 @@ def test_dialog_add_tag_whitespace_stripped(qapp, env_with_units, monkeypatch):
     dialog.add_tag_via_input("  重甲  ")
 
     assert dialog.selected_tag_names() == ["重甲"]
-
-
-# === 自动补全 ===
-
-
-def test_dialog_completer_has_all_tags(qapp, env_with_units):
-    """QCompleter model 应包含所有标签名。"""
-    _, tag_service, _, _, unit_ids, *_ = env_with_units
-    dialog = BatchTagDialog(tag_service, unit_ids)
-
-    model = dialog._tag_completer.model()  # noqa: SLF001
-    names = [model.data(model.index(i)) for i in range(model.rowCount())]
-    assert "重甲" in names
-    assert "轻甲" in names
-    assert "已测试" in names
 
 
 # === 预选标签区域 ===
@@ -635,3 +623,86 @@ def test_dialog_add_mode_partial_already_attached(qapp, env_with_units, monkeypa
         tags = tag_service.list_tags_of_content_unit(uid)
         flat = [t.name for _, tags_in_cat in tags for t in tags_in_cat]
         assert "重甲" in flat
+
+
+# === UI合理性12：重构（搜索过滤 / 分组折叠 / 无空提示 / 分类色） ===
+
+
+def test_preset_search_filters_tags(qapp, env_with_units):
+    """搜索框输入即过滤预选标签。"""
+    _, tag_service, _, _, unit_ids, *_ = env_with_units
+    dialog = BatchTagDialog(tag_service, unit_ids)
+
+    assert len(dialog.preset_tag_names()) == 3
+    dialog.search_edit().setText("重")
+
+    names = dialog.preset_tag_names()
+    assert names == ["重甲"]
+
+    dialog.search_edit().setText("不存在")
+    assert dialog.preset_tag_names() == []
+
+
+def test_preset_grouped_by_category(qapp, env_with_units):
+    """预选标签按分类分组（组头存在，可折叠）。"""
+    _, tag_service, _, _, unit_ids, cat1, cat2, *_ = env_with_units
+    dialog = BatchTagDialog(tag_service, unit_ids)
+
+    assert cat1.name in dialog.preset_group_names()
+    assert cat2.name in dialog.preset_group_names()
+
+    dialog.click_preset_group(cat1.name)
+    assert dialog.is_preset_group_collapsed(cat1.id)
+
+    dialog.click_preset_group(cat1.name)
+    assert not dialog.is_preset_group_collapsed(cat1.id)
+
+
+def test_no_empty_tags_hint_label(qapp, env_with_units):
+    """UI合理性12：已删除「（未添加标签）」空提示。"""
+    _, tag_service, _, _, unit_ids, *_ = env_with_units
+    dialog = BatchTagDialog(tag_service, unit_ids)
+
+    assert not hasattr(dialog, "_empty_hint")
+    labels = dialog.findChildren(QLabel)
+    assert all("未添加标签" not in lbl.text() for lbl in labels)
+
+
+def test_only_one_input_box(qapp, env_with_units):
+    """验收反馈：删除独立标签输入框，仅保留搜索框一个输入框。"""
+    from PySide6.QtWidgets import QLineEdit
+
+    _, tag_service, _, _, unit_ids, *_ = env_with_units
+    dialog = BatchTagDialog(tag_service, unit_ids)
+
+    line_edits = dialog.findChildren(QLineEdit)
+    assert len(line_edits) == 1
+    assert line_edits[0] is dialog.search_edit()
+
+
+def test_chip_and_preset_buttons_colored_by_category(qapp, env_with_units, monkeypatch):
+    """BugFix2：chip 与预选标签按钮背景/边框统一分类色；分组头不着色。"""
+    _, tag_service, _, _, unit_ids, cat1, cat2, tag1, _tag2, tag3 = env_with_units
+    dialog = BatchTagDialog(tag_service, unit_ids)
+    monkeypatch.setattr("app.batch_tag_dialog.QMessageBox.information", lambda *a, **kw: None)
+
+    dialog.add_tag_via_input(tag1.name)
+    chip_btn = next(btn for t, btn in dialog._chip_buttons if t.id == tag1.id)  # noqa: SLF001
+    assert category_color_hex(cat1.color_hue) in chip_btn.styleSheet()
+
+    # tag3（已测试）属于 cat2（状态）
+    tag3_btn = next(b for b in dialog._preset_buttons if b.text() == tag3.name)  # noqa: SLF001
+    assert category_color_hex(cat2.color_hue) in tag3_btn.styleSheet()
+
+    # 分组头不着色（验收反馈：分类与标签都上色太杂乱）
+    from PySide6.QtWidgets import QPushButton as _QPushButton
+
+    headers = [
+        w
+        for w in dialog._preset_content.findChildren(_QPushButton)  # noqa: SLF001
+        if w.text().strip().startswith(("▸", "▾"))
+    ]
+    assert headers
+    assert all(
+        category_color_hex(c.color_hue) not in h.styleSheet() for h in headers for c in (cat1, cat2)
+    )

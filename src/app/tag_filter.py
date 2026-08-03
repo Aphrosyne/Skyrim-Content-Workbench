@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import ui_constants as ui
+from app.tag_colors import category_color_hex, text_color_hex
 from application.tag_service import TagService
 from domain.models import Tag, TagCategory
 
@@ -71,7 +72,7 @@ QPushButton {
 }
 """
 
-_TAG_NORMAL_STYLE = """
+_TAG_FALLBACK_STYLE = """
 QPushButton {
     border: 1px solid #ccc;
     background: #fafafa;
@@ -138,6 +139,8 @@ class TagFilterBar(QWidget):
         # - _selected_tag_ids: set[str]（已选标签 ID）
         # - _expanded_category_id: str | None（当前展开的分类 ID，互斥）
         self._categories: list[tuple[TagCategory, list[Tag]]] = []
+        # BugFix2：分类色映射（tag_id → color_hue），供标签按钮填充着色
+        self._tag_hues: dict[str, int] = {}
         self._selected_tag_ids: set[str] = set()
         self._expanded_category_id: str | None = None
 
@@ -209,7 +212,9 @@ class TagFilterBar(QWidget):
         except Exception:  # noqa: BLE001
             logger.exception("加载标签分类失败")
             self._categories = []
-
+        self._tag_hues = {
+            tag.id: category.color_hue for category, tags in self._categories for tag in tags
+        }
         # 剔除已不存在的已选标签
         valid_tag_ids = {tag.id for _, tags in self._categories for tag in tags}
         invalid = self._selected_tag_ids - valid_tag_ids
@@ -370,7 +375,16 @@ class TagFilterBar(QWidget):
             btn.setStyleSheet(_TAG_SELECTED_STYLE)
             btn.setChecked(True)
         else:
-            btn.setStyleSheet(_TAG_NORMAL_STYLE)
+            hue = self._tag_hues.get(tag_id)
+            if hue is not None:
+                # BugFix2 验收反馈：背景/边框统一分类色，文字色按亮度自动黑/白
+                btn.setStyleSheet(
+                    ui.TAG_BUTTON_FILLED_STYLE.format(
+                        color=category_color_hex(hue), text=text_color_hex(hue)
+                    )
+                )
+            else:
+                btn.setStyleSheet(_TAG_FALLBACK_STYLE)
             btn.setChecked(False)
 
     def _apply_category_button_style(self, category_id: str, btn: QPushButton) -> None:

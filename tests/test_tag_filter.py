@@ -21,6 +21,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from app.tag_colors import category_color_hex  # noqa: E402
 from app.tag_filter import TagFilterBar  # noqa: E402
 from application.tag_service import TagService  # noqa: E402
 from infrastructure.repositories.content_unit_tag import (  # noqa: E402
@@ -101,6 +102,22 @@ def test_initial_state_with_categories_visible(qapp, tag_service_with_categories
     # 默认无已选 → 筛选未激活
     assert not bar.is_filter_active()
     assert bar.current_selected_tag_ids() == set()
+
+
+def test_tag_buttons_filled_by_category_and_category_plain(qapp, tag_service_with_categories):
+    """BugFix2 验收反馈：标签按钮背景/边框统一分类色；分类按钮不着色。"""
+    service, cat_armor, *_ = tag_service_with_categories
+    bar = TagFilterBar(service)
+    bar.refresh_categories()
+    bar._on_category_clicked(cat_armor.id)  # noqa: SLF001 展开分类重建标签按钮
+
+    btn = _find_tag_button(bar, "重甲")
+    assert btn is not None
+    assert category_color_hex(cat_armor.color_hue) in btn.styleSheet()
+
+    cat_btn = _find_category_button(bar, cat_armor.name)
+    assert cat_btn is not None
+    assert category_color_hex(cat_armor.color_hue) not in cat_btn.styleSheet()
 
 
 # === 分类展开/折叠 ===

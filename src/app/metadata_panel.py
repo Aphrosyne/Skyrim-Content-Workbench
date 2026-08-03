@@ -72,6 +72,7 @@ from app import ui_constants as ui
 from app.flow_layout import FlowLayout
 from app.path_display import make_display_path_from_service
 from app.recent_tags import RecentTags
+from app.tag_colors import category_color_hex, text_color_hex
 from application.content_service import ContentService
 from application.errors import (
     ApplicationError,
@@ -330,6 +331,8 @@ class MetadataPanel(QWidget):
         self._managed_root_service = None
         # 图片预览模式（操作合理性2）：当前预览的图片文件路径（None = 非预览模式）
         self._preview_only_path: Path | None = None
+        # 分类色映射（BugFix2）：category_id → color_hue，供 chip / 预选按钮边框着色
+        self._category_hues: dict[str, int] = {}
 
         self._setup_ui()
 
@@ -936,6 +939,7 @@ class MetadataPanel(QWidget):
     def _load_tags_for_unit(self, unit_id: str) -> None:
         """从 TagService 加载当前 unit 的所有标签，填充 chip 列表。"""
         self._current_tags = []
+        self._category_hues = {}
         self._disconnect_flow_buttons(self._tag_flow)
         self._tag_flow.clear()
         self._chip_buttons = []
@@ -945,17 +949,36 @@ class MetadataPanel(QWidget):
             logger.warning("加载内容单元标签失败：%s", e)
             return
 
-        for _category, tags in grouped:
+        for category, tags in grouped:
+            self._category_hues[category.id] = category.color_hue
             for tag in tags:
                 self._append_tag_chip(tag)
                 self._current_tags.append(tag)
 
         self._refresh_recent_list()
 
+    def refresh_tags(self) -> None:
+        """标签库变更后刷新 chip / 预选标签 / 补全候选（不触碰表单字段）。
+
+        供 MainWindow 在标签管理对话框关闭后调用：保留未保存的来源/备注编辑，
+        仅重新加载当前单元的标签与预选列表（BugFix2 验收反馈）。
+        """
+        if self._current_unit is None:
+            return
+        self._load_tags_for_unit(self._current_unit.id)
+        self._refresh_completer()
+        self._refresh_preset_list()
+
     def _append_tag_chip(self, tag: Tag) -> None:
-        """添加一个 chip 按钮（与「最近使用/已有标签」按钮样式一致，浅灰描边）。"""
+        """添加一个 chip 按钮（背景/边框统一分类色，文字色按亮度自动黑/白）。"""
         btn = QPushButton(f"{tag.name} ×", self._tag_list)
-        btn.setStyleSheet(ui.METADATA_TAG_BUTTON_STYLE.format(bg=self._region_bg))
+        hue = self._category_hues.get(tag.category_id)
+        btn.setStyleSheet(
+            ui.TAG_BUTTON_FILLED_STYLE.format(
+                color=self._category_hex(tag.category_id),
+                text=text_color_hex(hue) if hue is not None else "#1a1a1a",
+            )
+        )
         btn.setToolTip(ui.METADATA_PANEL_TAG_REMOVED.format(name=tag.name))
         btn.clicked.connect(lambda checked=False, t=tag: self._apply_tag_toggle(t, attach=False))
         self._tag_flow.addWidget(btn)
@@ -1014,6 +1037,13 @@ class MetadataPanel(QWidget):
         except Exception:  # noqa: BLE001 - 预览判断不应阻断表单加载
             logger.exception("图片文件判断失败：%s", path)
             return False
+
+    def _category_hex(self, category_id: str) -> str:
+        """返回分类色 hex（未知分类回退浅灰，供 chip / 预选按钮边框着色）。"""
+        hue = self._category_hues.get(category_id)
+        if hue is None:
+            return "#c0c0c0"
+        return category_color_hex(hue)
 
     # --- 事件处理 ---
 
@@ -1076,6 +1106,7 @@ class MetadataPanel(QWidget):
             self._preset_empty_hint.setVisible(True)
             return
         current_ids = {t.id for t in self._current_tags}
+        self._category_hues = {category.id: category.color_hue for category, _tags in grouped}
         total_shown = 0
         for category, tags in grouped:
             available = sorted(
@@ -1104,7 +1135,13 @@ class MetadataPanel(QWidget):
             flow_layout = FlowLayout(flow)
             for tag in available:
                 btn = QPushButton(tag.name, flow)
-                btn.setStyleSheet(ui.METADATA_TAG_BUTTON_STYLE.format(bg=self._region_bg))
+                # BugFix2：组内标签按钮背景/边框统一分类色，文字色自动黑/白
+                btn.setStyleSheet(
+                    ui.TAG_BUTTON_FILLED_STYLE.format(
+                        color=category_color_hex(category.color_hue),
+                        text=text_color_hex(category.color_hue),
+                    )
+                )
                 btn.clicked.connect(lambda checked=False, t=tag: self._apply_tag_toggle(t, True))
                 flow_layout.addWidget(btn)
                 self._preset_buttons.append(btn)

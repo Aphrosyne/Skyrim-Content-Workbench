@@ -24,11 +24,12 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QSettings, Qt  # noqa: E402
-from PySide6.QtWidgets import QVBoxLayout  # noqa: E402
+from PySide6.QtWidgets import QPushButton, QVBoxLayout  # noqa: E402
 
 from app import ui_constants as ui  # noqa: E402
 from app.metadata_panel import MetadataPanel  # noqa: E402
 from app.recent_tags import RecentTags  # noqa: E402
+from app.tag_colors import category_color_hex  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
 from application.errors import InvalidMetadataError  # noqa: E402
 from application.tag_service import TagService  # noqa: E402
@@ -1111,3 +1112,22 @@ def test_preset_area_height_draggable_and_clamped(qapp, services):
         handle, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(10, 3 - 120)
     )
     assert scroll.sizeHint().height() == ui.METADATA_PANEL_PRESET_SCROLL_HEIGHT - 120
+
+
+def test_chip_and_preset_buttons_colored_by_category(qapp, unit_with_tags):
+    """BugFix2：chip/预选按钮背景与边框统一分类色；分组头不着色。"""
+    content_service, tag_service, _, _, unit, cat1, cat2, tag1, tag2 = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+
+    # chip：tag1 属于 cat1
+    chip_btn = next(btn for t, btn in panel._chip_buttons if t.id == tag1.id)  # noqa: SLF001
+    assert category_color_hex(cat1.color_hue) in chip_btn.styleSheet()
+
+    # 预选标签按钮：tag2 属于 cat2
+    tag2_btn = next(b for b in panel._preset_buttons if b.text() == tag2.name)  # noqa: SLF001
+    assert category_color_hex(cat2.color_hue) in tag2_btn.styleSheet()
+
+    # 分组头不着色（验收反馈：分类与标签都上色太杂乱）
+    header = next(b for b in panel._preset_content.findChildren(QPushButton) if "状态" in b.text())  # noqa: SLF001
+    assert category_color_hex(cat2.color_hue) not in header.styleSheet()

@@ -29,9 +29,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
-    QColorDialog,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -46,6 +44,8 @@ from PySide6.QtWidgets import (
 )
 
 from app import ui_constants as ui
+from app.color_picker_dialog import ColorPickerDialog
+from app.tag_colors import color_icon
 from application.errors import (
     ApplicationError,
     DuplicateTagCategoryNameError,
@@ -204,12 +204,11 @@ class TagManagerDialog(QDialog):
 
     def _make_category_item(self, cat: TagCategory) -> QTreeWidgetItem:
         item = QTreeWidgetItem()
-        item.setText(0, f"{cat.name}（H={cat.color_hue}）")
+        item.setText(0, cat.name)
         item.setData(0, _ROLE_CATEGORY, cat)
         item.setData(0, _ROLE_IS_CATEGORY, True)
-        # 色块图标
-        pixmap_color = QColor.fromHsl(cat.color_hue, 200, 120)
-        item.setIcon(0, _color_icon(pixmap_color))
+        # 色块图标（共享 helper，保证各界面颜色一致）
+        item.setIcon(0, color_icon(cat.color_hue))
         return item
 
     def _make_tag_item(self, tag: Tag) -> QTreeWidgetItem:
@@ -550,18 +549,15 @@ class TagManagerDialog(QDialog):
     # --- 辅助对话框 ---
 
     def _ask_color_hue(self, default: int = 210) -> int | None:
-        """弹出颜色选择对话框，返回 color_hue（0-360）。取消返回 None。"""
-        # 先用 QColorDialog 预览
-        initial = QColor.fromHsl(default, 200, 120)
-        color = QColorDialog.getColor(
-            initial,
-            self,
-            ui.TAG_COLOR_DIALOG_TITLE,
-            QColorDialog.ColorDialogOption.ShowAlphaChannel,
-        )
-        if not color.isValid():
+        """弹出 hue 选色对话框（BugFix2：所见即所得），返回 color_hue（0-359）。
+
+        取消返回 None。滑块所选 hue 与存储/显示完全一致，
+        不再使用 QColorDialog 的 RGB 快速色板（原"快速颜色与实际颜色不一致"根因）。
+        """
+        dialog = ColorPickerDialog(initial_hue=default, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
-        return color.hslHue() % 360
+        return dialog.selected_hue()
 
     def _ask_target_category(
         self, categories: list[TagCategory], exclude_id: str | None = None
@@ -595,10 +591,3 @@ class TagManagerDialog(QDialog):
 
     def _show_info(self, text: str) -> None:
         QMessageBox.information(self, ui.TAG_OP_OK, text)
-
-
-def _color_icon(color: QColor) -> QPixmap:
-    """生成 16x16 色块图标。"""
-    pixmap = QPixmap(16, 16)
-    pixmap.fill(color)
-    return pixmap

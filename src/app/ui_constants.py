@@ -346,12 +346,13 @@ METADATA_TAG_BUTTON_STYLE = (
 # BatchTagDialog 批量打标签对话框（Stage 4 Task 2）
 BATCH_TAG_DIALOG_TITLE = "批量打标签"
 BATCH_TAG_DIALOG_TARGET_HINT = "目标内容单元数：{count}"
-BATCH_TAG_DIALOG_TAG_INPUT_PLACEHOLDER = "输入标签名（回车添加）…"
-BATCH_TAG_DIALOG_TAG_INPUT_HINT = "输入标签名后回车添加，前缀自动补全"
 BATCH_TAG_DIALOG_PRESET_TAGS_LABEL = "已有标签（点击快速添加）"
 BATCH_TAG_DIALOG_PRESET_TAGS_EMPTY_HINT = "（暂无可用标签，可在标签管理中创建）"
 BATCH_TAG_DIALOG_TAGS_LABEL = "本次操作的标签"
-BATCH_TAG_DIALOG_EMPTY_TAGS_HINT = "（未添加标签）"
+BATCH_TAG_DIALOG_CHIP_AREA_HEIGHT = 84  # chip 区高度（UI合理性12 重构）
+BATCH_TAG_DIALOG_SEARCH_PLACEHOLDER = "搜索标签…（输入即过滤）"
+BATCH_TAG_DIALOG_SEARCH_TOOLTIP = "按名称过滤预选标签，点击快速添加"
+BATCH_TAG_DIALOG_CHIP_REMOVE_TOOLTIP = "点击移除该标签"
 BATCH_TAG_DIALOG_TAG_NOT_FOUND = "标签「{name}」不存在，请先在标签管理中创建。"
 BATCH_TAG_DIALOG_INVALID_TAG_NAME = "标签名称不能为空或仅含空白。"
 BATCH_TAG_DIALOG_DUPLICATE_TAG = "标签「{name}」已添加。"
@@ -406,6 +407,16 @@ TAG_INPUT_RENAME_TAG_TITLE = "重命名标签"
 TAG_INPUT_MOVE_TAG_TITLE = "移动标签到分类"
 TAG_INPUT_MOVE_TAG_LABEL = "请选择目标分类："
 TAG_COLOR_DIALOG_TITLE = "选择分类颜色"
+TAG_COLOR_SLIDER_LABEL = "色相："
+TAG_COLOR_DIALOG_OK = "确定"
+TAG_COLOR_DIALOG_CANCEL = "取消"
+
+# 分类色填充样式模板（BugFix2 验收反馈，2026-08-03）：{color} 为分类色 hex，
+# {text} 为按分类色相对亮度自动选择的黑/白文字色；背景与边框统一分类色。
+TAG_BUTTON_FILLED_STYLE = (
+    "QPushButton {{ background: {color}; border: 1px solid {color}; color: {text}; "
+    "border-radius: 4px; padding: 2px 8px; }}"
+)
 
 # 标签管理 - 确认对话框
 TAG_CONFIRM_DELETE_CATEGORY_TITLE = "确认删除分类"
@@ -553,6 +564,7 @@ QSETTINGS_KEY_ZOOM = "view/card_icon_size"
 QSETTINGS_KEY_VIEW_MODE = "view/current_mode"  # "list" | "card"
 QSETTINGS_KEY_SPLITTER_MAIN = "layout/splitter/main"
 QSETTINGS_KEY_SPLITTER_RIGHT = "layout/splitter/right"
+QSETTINGS_KEY_HEADER_FILE_LIST = "layout/header/file_list"
 QSETTINGS_KEY_HEADER_OPERATION_HISTORY = "layout/header/operation_history"
 
 # === 布局默认值（UI合理性2/3，2026-08-03） ===
@@ -562,7 +574,12 @@ QSETTINGS_KEY_HEADER_OPERATION_HISTORY = "layout/header/operation_history"
 LAYOUT_MAIN_SPLITTER_DEFAULT_SIZES = (220, 480, 324)  # 左栏 / 中栏 / 右栏
 LAYOUT_RIGHT_SPLITTER_DEFAULT_SIZES = (625, 125)  # 元数据 / 装配面板（保持既有行为）
 LAYOUT_OPERATION_HISTORY_COLUMN_WIDTHS = (180, 340, 90)  # 时间 / 操作 / 状态
-FILE_LIST_COLUMN_WIDTHS = (0, 60, 80, 150)  # 名称(0=Stretch) / 类型 / 大小 / 修改日期
+FILE_LIST_COLUMN_WIDTHS = (
+    320,
+    60,
+    80,
+    150,
+)  # 名称 / 类型 / 大小 / 修改日期（固定宽度，右侧留白供框选）
 
 # === 顶部菜单栏（UI合理性3，2026-08-03） ===
 MENU_BAR_VIEW = "视图"

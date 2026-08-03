@@ -175,6 +175,8 @@ class TestMakeItems:
         assert item.data(0, Qt.UserRole + 2) is True  # _ROLE_IS_CATEGORY
         stored_cat = item.data(0, Qt.UserRole)
         assert stored_cat.id == "c-1"
+        # BugFix2：节点文本为纯分类名（去掉 H= 调试信息），颜色由色块图标表达
+        assert item.text(0) == "服装护甲"
         # 色块图标存在
         assert not item.icon(0).isNull()
         dialog.close()
