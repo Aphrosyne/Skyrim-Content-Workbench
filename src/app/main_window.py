@@ -11,7 +11,7 @@
 
 扫描联动（roadmap 阶段 2 Task 5 验收项 5）：
 - 扫描完成 → 刷新目录树 + 刷新当前中栏文件列表
-  （新扫描出的压缩包文件立即显示 [内容单元] 标记）。
+  （新扫描出的压缩包文件立即显示 -- 标记）。
 
 约束（AGENTS 规则 3）：
 - UI 不直接调用 shutil / Path.rename / Path.unlink 等文件写 API。
@@ -3837,7 +3837,7 @@ class MainWindow(QMainWindow):
 
         扫描联动（roadmap 阶段 2 Task 5 验收项 5）：
         - 若当前选中目录树节点，刷新该目录的文件列表，
-          使新扫描出的压缩包文件立即显示 [内容单元] 标记。
+          使新扫描出的压缩包文件立即显示 -- 标记。
         """
         text = ui.format_scan_summary(
             scanned_dirs=summary.scanned_dirs,

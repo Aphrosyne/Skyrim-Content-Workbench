@@ -8,6 +8,11 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+- **内容单元标记前置缩写（UI合理性12）**：列表视图标记由名称后的 ` [内容单元]` 改为
+  名称前的 `--`（双短横线，验收反馈逐次调整），长文件名截断时标记不再被遮挡；
+  卡片视图保持 Q6:B 决策不变（名称不含标记，ToolTip 承载状态）
+  （[ui_constants.py](src/app/ui_constants.py) / [file_list_model.py](src/app/file_list_model.py)）
+
 - **卡片视图启用 256px 缩略图缓存（UI合理性16）**：恢复 ThumbnailCoordinator
   生成链路到卡片视图（Stage 5 Task 1b 曾改为直接加载原图，多内容下全尺寸解码
   导致卡顿）：

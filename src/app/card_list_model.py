@@ -15,7 +15,7 @@ UI合理性16（2026-08-03）：启用 256px 图片缓存机制，消除多内�
 - DisplayRole 长文件名 elide 省略号（避免撑大卡片宽度）
 
 数据角色：
-- DisplayRole：entry.name（elide 截断，Q6:B 不含 [内容单元] 标记）
+- DisplayRole：entry.name（elide 截断，Q6:B 不含 -- 标记）
 - DecorationRole：方形裁剪后的 QPixmap（icon_size × icon_size）
 - ToolTipRole：路径 + 内容单元状态（Q6:B 决策，完整信息通过 ToolTip 承载）
 - UserRole：返回 FileEntry（与 FileListModel 一致，便于 handler 复用）
@@ -101,7 +101,7 @@ class CardListModel(QAbstractListModel):
             return None
 
         if role == Qt.DisplayRole:
-            # Q6:B：卡片名称不含 [内容单元] 标记
+            # Q6:B：卡片名称不含 -- 标记
             # Task 2 验收修复：长文件名 elide 省略号，避免撑大卡片宽度
             return self._elide_name(entry.name)
         if role == Qt.ToolTipRole:

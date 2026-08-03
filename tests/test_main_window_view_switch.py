@@ -5,7 +5,7 @@
 - 切换到卡片视图后 QListView 可见；
 - 选中状态跨视图保持（用 entry.path 匹配）；
 - 缩放滑块改变卡片图标尺寸；
-- 卡片名称不含 [内容单元] 标记；
+- 卡片名称不含 -- 标记；
 - 卡片 ToolTip 含状态。
 """
 
@@ -156,7 +156,9 @@ def test_switch_back_to_list_view(main_window_env) -> None:
 
 
 def test_card_name_has_no_content_unit_marker(qapp, main_window_env) -> None:
-    """卡片视图名称不含 [内容单元] 标记（Q6:B）。"""
+    """卡片视图名称不含 -- 标记（Q6:B）。"""
+    from app import ui_constants as ui
+
     window, conn, root_dir = main_window_env
     # 标记 armor 文件夹为内容单元
     window._content_service.mark_as_content_unit(root_dir / "armor")  # noqa: SLF001
@@ -175,7 +177,7 @@ def test_card_name_has_no_content_unit_marker(qapp, main_window_env) -> None:
     idx = card_model.index(idx_row, 0)
     name = card_model.data(idx, Qt.DisplayRole)
     assert name == "armor"
-    assert "[内容单元]" not in name  # Q6:B
+    assert ui.CONTENT_UNIT_MARKER not in name  # Q6:B
 
 
 def test_card_tooltip_includes_status(qapp, main_window_env) -> None:

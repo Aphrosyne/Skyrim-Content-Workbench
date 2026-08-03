@@ -198,7 +198,7 @@ def test_context_menu_includes_mark_for_unmarked(qapp, main_window_env) -> None:
 
 
 def test_mark_content_unit_refreshes_list(qapp, main_window_env) -> None:
-    """标记后中栏列表刷新，显示 [内容单元] 标记。"""
+    """标记后中栏列表刷新，显示 -- 标记。"""
     window, _, _, _ = main_window_env
     _select_staging(qapp, window)
     qapp.processEvents()
@@ -217,7 +217,7 @@ def test_mark_content_unit_refreshes_list(qapp, main_window_env) -> None:
 
 
 def test_unmark_content_unit_refreshes_list(qapp, main_window_env) -> None:
-    """取消标记后中栏列表刷新，[内容单元] 标记消失。"""
+    """取消标记后中栏列表刷新，-- 标记消失。"""
     window, conn, _, _ = main_window_env
     _select_staging(qapp, window)
     qapp.processEvents()
@@ -238,7 +238,7 @@ def test_unmark_content_unit_refreshes_list(qapp, main_window_env) -> None:
     unit = window._content_service.get_by_path(entry.path)  # noqa: SLF001
     assert unit is None
 
-    # 列表刷新后该条目不再显示 [内容单元] 标记
+    # 列表刷新后该条目不再显示 -- 标记
     refreshed_entry = _find_entry_by_name(window, "BDOR Black Knight 1.0.7z")
     assert refreshed_entry is not None
     assert refreshed_entry.content_unit is None

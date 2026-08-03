@@ -4,7 +4,7 @@
 内容单元不是可见性门槛——所有文件系统条目均可见。
 
 4 列布局：
-- 名称列（COL_NAME=0）：图标 + 名称 + 内容单元标记。
+- 名称列（COL_NAME=0）：图标 + 内容单元标记 + 名称。
 - 类型列（COL_TYPE=1）：文件夹 / 扩展名。
 - 大小列（COL_SIZE=2）：字节数格式化；文件夹显示空字符串。
 - 修改日期列（COL_MODIFIED=3）：ISO 8601 UTC 字符串。
@@ -61,15 +61,16 @@ ThumbnailProvider = Callable[[str, str], QPixmap | None]
 
 
 def _display_name(entry: FileEntry) -> str:
-    """构造名称列 DisplayRole 文本：名称 + 内容单元标记。
+    """构造名称列 DisplayRole 文本：内容单元标记 + 名称。
 
     Stage 5 Task 7 收尾：status 简化为两态（organized / unmarked），
     unmarked 视为无内容单元（不在 UI 显示标记），故仅 organized 显示统一标记。
+    UI合理性12（2026-08-03）：标记前置（-- 名称），长文件名截断时标记不被遮挡。
     """
     unit = entry.content_unit
     if unit is None:
         return entry.name
-    return f"{entry.name}{ui.CONTENT_UNIT_MARKER}"
+    return f"{ui.CONTENT_UNIT_MARKER} {entry.name}"
 
 
 def _type_text(entry: FileEntry) -> str:

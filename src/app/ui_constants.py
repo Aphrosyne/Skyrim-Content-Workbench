@@ -63,7 +63,9 @@ COL_TYPE_FILE = "文件"
 # 文件列表项内容单元标记
 # Stage 5 Task 7 收尾：status 简化为两态（organized / unmarked），
 # unmarked 不显示标记，故仅需一个统一标记。
-CONTENT_UNIT_MARKER = " [内容单元]"
+# UI合理性12（2026-08-03）：标记前置 + 缩写为 --（双短横线，验收反馈逐次调整），
+# 长文件名截断时标记不被遮挡。
+CONTENT_UNIT_MARKER = "--"
 
 # 右键菜单
 CONTEXT_MENU_COPY_PATH = "复制路径"

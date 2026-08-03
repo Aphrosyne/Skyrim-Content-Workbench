@@ -2,7 +2,7 @@
 
 覆盖：
 - rowCount 委托给 FileListModel；
-- DisplayRole 返回名称（不含 [内容单元] 标记，Q6:B）；
+- DisplayRole 返回名称（不含 -- 标记，Q6:B）；
 - ToolTipRole 含路径 + 内容单元状态（Q6:B）；
 - DecorationRole：provider 缩略图（256 档缓存）→ 缩放；未命中/无封面 →
   固定尺寸占位图标（UI合理性16，占位与缩略图占地一致）；
@@ -105,7 +105,7 @@ def test_empty_source_returns_zero_rows(qapp) -> None:
 
 
 def test_display_role_returns_name_without_marker(file_list_model_with_entries) -> None:
-    """DisplayRole 返回名称，不含 [内容单元] 标记（Q6:B）。"""
+    """DisplayRole 返回名称，不含 -- 标记（Q6:B）。"""
     source, entries = file_list_model_with_entries
     card = CardListModel()
     card.set_source(source)
@@ -114,7 +114,7 @@ def test_display_role_returns_name_without_marker(file_list_model_with_entries) 
     idx = card.index(armor_row, 0)
     name = card.data(idx, Qt.DisplayRole)
     assert name == "armor"
-    assert "[内容单元]" not in name  # Q6:B：不含标记
+    assert ui.CONTENT_UNIT_MARKER not in name  # Q6:B：不含标记
 
 
 def test_tooltip_role_includes_path_and_status(file_list_model_with_entries) -> None:

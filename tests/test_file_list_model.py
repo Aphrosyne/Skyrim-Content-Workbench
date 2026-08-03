@@ -194,7 +194,7 @@ class TestDisplayRole:
         model = FileListModel()
         model.refresh([_make_entry("armor", "/mods/armor", is_dir=True, content_unit=unit)])
         idx = model.index(0, COL_NAME)
-        assert model.data(idx, Qt.DisplayRole) == f"armor{ui.CONTENT_UNIT_MARKER}"
+        assert model.data(idx, Qt.DisplayRole) == f"{ui.CONTENT_UNIT_MARKER} armor"
 
     def test_type_column_directory(self, qapp) -> None:  # noqa: ANN001
         from PySide6.QtCore import Qt
