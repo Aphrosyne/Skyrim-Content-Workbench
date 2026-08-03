@@ -5,7 +5,7 @@
 
 输出格式：WebP（Task 1a：相比 PNG 节省约 65% 磁盘占用，Qt6/Pillow 均原生支持）。
 输出尺寸：调用方指定（默认 256x256，Task 1a 卡片视图基础档位）。
-保持宽高比缩放，不足部分透明填充。
+contain 模式保持宽高比缩放，不足部分透明填充；cover 模式居中放大裁剪填满方形。
 
 异常分类（供 ThumbnailService 转换为 status）：
 - FileNotFoundError → status='missing'
@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Literal
 
-from PIL import Image, ImageDraw, ImageFilter, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFilter, ImageOps, UnidentifiedImageError
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ def generate_thumbnail(
     source_path: Path,
     cache_path: Path,
     size: int = 256,
+    mode: Literal["contain", "cover"] = "contain",
 ) -> None:
     """从源图生成缩略图并写入 cache_path。
 
@@ -93,8 +95,12 @@ def generate_thumbnail(
     - Pillow 无法解码 → 抛 ThumbnailSourceCorruptError
     - 其他异常向上传播
 
-    输出 WebP 格式（quality=90），应用圆角遮罩（Q2: C），
-    保持宽高比缩放并居中。不修改源图（仅只读打开 + stat）。
+    输出 WebP 格式（quality=90），不修改源图（仅只读打开 + stat）。
+
+    mode：
+    - "contain"（默认）：宽高比缩放 + 透明填充 + 圆角遮罩（Q2: C）。
+    - "cover"：居中放大裁剪填满 size×size，无透明条、无圆角
+      （UI合理性16：卡片视图 256 档缓存，与卡片方形居中裁剪视觉一致）。
 
     若 cache_path 已存在则覆盖。
     """
@@ -114,15 +120,23 @@ def generate_thumbnail(
         # 损坏的图片文件
         raise ThumbnailSourceCorruptError(f"图片损坏或无法解码：{source_path}") from e
 
-    # 保持宽高比缩放，不足尺寸用透明填充
-    original.thumbnail((size, size), Image.Resampling.LANCZOS)
-    thumb = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    # 居中粘贴
-    offset = ((size - original.width) // 2, (size - original.height) // 2)
-    thumb.paste(original, offset)
-
-    # 应用圆角
-    thumb = _apply_rounded_corners(thumb, size)
+    if mode == "cover":
+        # 居中放大裁剪填满方形（与卡片视图 _crop_to_square 一致的视觉）
+        thumb = ImageOps.fit(
+            original,
+            (size, size),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.5),
+        )
+    else:
+        # 保持宽高比缩放，不足尺寸用透明填充
+        original.thumbnail((size, size), Image.Resampling.LANCZOS)
+        thumb = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        # 居中粘贴
+        offset = ((size - original.width) // 2, (size - original.height) // 2)
+        thumb.paste(original, offset)
+        # 应用圆角
+        thumb = _apply_rounded_corners(thumb, size)
 
     # 确保输出目录存在
     cache_path.parent.mkdir(parents=True, exist_ok=True)

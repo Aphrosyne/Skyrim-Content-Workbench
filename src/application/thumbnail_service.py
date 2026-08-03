@@ -9,6 +9,10 @@
 Task 1a：支持多档缓存（256/512）。get_cache / generate 接收 size 参数，
 invalidate 清理指定 unit 的所有档位文件与记录。
 
+UI合理性16（2026-08-03）：卡片视图恢复缓存链路后，应用侧缓存默认使用
+cover 方形居中裁剪模式（与卡片既有视觉一致，无圆角/透明条）；生成器底层
+contain 模式保留供直接调用。
+
 不访问文件系统的写操作（仅读源图 + 写应用数据目录的缓存 WebP）。
 不修改用户原图。
 
@@ -26,6 +30,7 @@ import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from domain.models import ThumbnailCache
 from infrastructure.repositories.content_unit import ContentUnitRepository
@@ -126,8 +131,13 @@ class ThumbnailService:
         content_unit_id: str,
         source_path: Path,
         size: int = 256,
+        mode: Literal["contain", "cover"] = "cover",
     ) -> str:
         """生成缩略图并写入缓存目录 + 更新数据库记录。
+
+        mode：缓存图像模式（默认 "cover"）。
+        - "cover"：方形居中裁剪填满（UI合理性16，卡片视图视觉）
+        - "contain"：宽高比缩放 + 透明填充 + 圆角（生成器默认，兼容旧档）
 
         - 成功：写入 WebP + upsert status='ok' 记录
         - 源图不存在：upsert status='missing'
@@ -161,7 +171,7 @@ class ThumbnailService:
         source_modified_at = _mtime_to_iso(source_mtime)
 
         try:
-            generate_thumbnail(source_path, cache_path, size)
+            generate_thumbnail(source_path, cache_path, size, mode=mode)
         except ThumbnailSourceNotFoundError:
             self._record_failure(
                 content_unit_id,

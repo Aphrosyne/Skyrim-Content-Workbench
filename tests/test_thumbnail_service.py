@@ -217,6 +217,20 @@ def test_generate_success_writes_cache_and_file(service, jpg_source, cache_repo,
     assert cache.source_size_bytes == jpg_source.stat().st_size
 
 
+def test_generate_uses_cover_mode_by_default(service, jpg_source, thumbnails_dir):
+    """UI合理性16：服务生成链路默认 cover——方形填满、无圆角/透明条。"""
+    status = service.generate("u1", jpg_source, size=256)
+    assert status == "ok"
+    cache_file = thumbnails_dir / "u1_256.webp"
+    with Image.open(cache_file) as img:
+        assert img.size == (256, 256)
+        # 不透明源图输出可为 RGB（WebP 优化掉全不透明 alpha 通道）
+        if "A" in img.getbands():
+            alpha = img.split()[-1]
+            assert alpha.getextrema() == (255, 255)
+            assert alpha.getpixel((0, 0)) == 255  # 角不透明 → 无圆角/透明条
+
+
 def test_generate_512_writes_separate_cache(service, jpg_source, cache_repo, thumbnails_dir):
     """Task 1a：512 档生成独立缓存，与 256 档共存。"""
     # 先生成 256 档
