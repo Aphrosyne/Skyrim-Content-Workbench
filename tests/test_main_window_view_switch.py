@@ -21,11 +21,8 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QSettings, Qt  # noqa: E402
 from PySide6.QtWidgets import QListView  # noqa: E402
 
+from app import ui_constants as ui  # noqa: E402
 from app.main_window import (  # noqa: E402
-    QSETTINGS_APPLICATION,
-    QSETTINGS_KEY_VIEW_MODE,
-    QSETTINGS_KEY_ZOOM,
-    QSETTINGS_ORGANIZATION,
     VIEW_INDEX_CARD,
     VIEW_INDEX_LIST,
     MainWindow,  # noqa: E402
@@ -43,13 +40,13 @@ from infrastructure.repositories.managed_root import ManagedRootRepository  # no
 @pytest.fixture(autouse=True)
 def _clear_qsettings():
     """每个测试前清除 QSettings，避免视图模式/缩放值在测试间持久化干扰。"""
-    s = QSettings(QSETTINGS_ORGANIZATION, QSETTINGS_APPLICATION)
-    s.remove(QSETTINGS_KEY_VIEW_MODE)
-    s.remove(QSETTINGS_KEY_ZOOM)
+    s = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+    s.remove(ui.QSETTINGS_KEY_VIEW_MODE)
+    s.remove(ui.QSETTINGS_KEY_ZOOM)
     s.sync()
     yield
-    s.remove(QSETTINGS_KEY_VIEW_MODE)
-    s.remove(QSETTINGS_KEY_ZOOM)
+    s.remove(ui.QSETTINGS_KEY_VIEW_MODE)
+    s.remove(ui.QSETTINGS_KEY_ZOOM)
     s.sync()
 
 

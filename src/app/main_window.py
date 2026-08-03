@@ -87,12 +87,14 @@ from app.file_list_model import (
     FileListModel,
 )
 from app.folder_tree_model import FolderTreeModel
+from app.main_menu_bar import MainMenuBar
 from app.metadata_panel import MetadataPanel
 from app.metadata_view import MetadataView
 from app.path_display import make_display_path_from_service
 from app.recent_move_targets import RecentMoveTargets
 from app.recent_tags import RecentTags
 from app.scan_controller import ScanController
+from app.splitter_state import SplitterStateHelper
 from app.tag_filter import TagFilterBar
 from app.tag_manager_dialog import TagManagerDialog
 from app.thumbnail_coordinator import ThumbnailCoordinator
@@ -126,11 +128,7 @@ logger = logging.getLogger(__name__)
 # 错误摘要最多展示条数
 MAX_ERROR_SUMMARY_LINES = 5
 
-# QSettings 配置（Stage 5 Task 1：缩放值持久化，Q1=A）
-QSETTINGS_ORGANIZATION = "SkyrimContentWorkbench"
-QSETTINGS_APPLICATION = "SkyrimContentWorkbench"
-QSETTINGS_KEY_ZOOM = "view/card_icon_size"
-QSETTINGS_KEY_VIEW_MODE = "view/current_mode"  # "list" | "card"
+# QSettings 配置键与布局默认值见 ui_constants（UI合理性2/3 迁移，2026-08-03）
 
 # 视图索引（QStackedWidget）
 VIEW_INDEX_LIST = 0
@@ -373,7 +371,9 @@ class MainWindow(QMainWindow):
         self._scan_controller.scan_failed.connect(self._on_scan_failed)
 
         # Stage 5 Task 1：QSettings 持久化缩放值与视图模式（Q1=A）
-        self._qsettings = QSettings(QSETTINGS_ORGANIZATION, QSETTINGS_APPLICATION)
+        # UI合理性2：分割线状态 helper（键与默认值见 ui_constants）
+        self._qsettings = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+        self._splitter_state = SplitterStateHelper(self._qsettings)
         # 操作便捷性3（2026-08-02）：最近移动目标（右键子菜单 / Ctrl+Q / 对话框快捷区）
         self._recent_move_targets = RecentMoveTargets(self._qsettings)
         # UI合理性8（2026-08-02）：最近使用标签（面板最近区 / 右键「添加最近标签」）
@@ -415,6 +415,8 @@ class MainWindow(QMainWindow):
 
         # Stage 5 Task 1：从 QSettings 恢复缩放值与视图模式
         self._restore_view_state()
+        # UI合理性2：分割线状态在首次 showEvent 恢复（窗口尚未布局时 setSizes 会按 0 宽缩放清零）
+        self._splitter_restored = False
 
         # Stage 5 Task 2：同步排序控件初始状态（与 FileListModel 默认值一致）
         self._sync_sort_controls()
@@ -458,12 +460,22 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         """关闭窗口前等待后台线程退出，避免 QThread Running 状态析构 CTD。"""
+        # UI合理性2：关闭前保存分割线状态（重启保留）
+        self._splitter_state.save(self._splitter, ui.QSETTINGS_KEY_SPLITTER_MAIN)
+        self._splitter_state.save(self._right_splitter, ui.QSETTINGS_KEY_SPLITTER_RIGHT)
         # UX 重构 Task 7 Step 2：扫描线程生命周期由 ScanController 管理
         self._scan_controller.shutdown()
         # Stage 4 Task 4：等待缩略图 coordinator 退出
         if self._thumbnail_coordinator is not None:
             self._thumbnail_coordinator.shutdown()
         super().closeEvent(event)
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        """UI合理性2：首次显示并完成布局后恢复分割线尺寸。"""
+        super().showEvent(event)
+        if not self._splitter_restored:
+            self._splitter_restored = True
+            self._restore_splitter_state()
 
     def _commit(self) -> None:
         """提交当前数据库事务（UX 重构 Task 7 Step 1：委托 TransactionScope）。"""
@@ -517,8 +529,9 @@ class MainWindow(QMainWindow):
         self._operation_history_button.setVisible(self._undo_service is not None)
         top_layout.addWidget(self._operation_history_button)
 
-        # === 三栏 Splitter ===
-        splitter = QSplitter(Qt.Horizontal, self)
+        # === 三栏 Splitter（UI合理性2：尺寸保存/恢复由 SplitterStateHelper 管理） ===
+        self._splitter = QSplitter(Qt.Horizontal, self)
+        splitter = self._splitter
 
         # === 左栏：受管理根目录 + 扫描控制 + 目录树 + 详情 ===
         left = QWidget(self)
@@ -861,9 +874,7 @@ class MainWindow(QMainWindow):
                 on_drop_files=self._on_drop_to_assembly,
             )
             self._right_splitter.addWidget(self._assembly_panel)
-            # 初始拉伸比例：元数据 3 : 装配 2（C1 决策）
-            # setSizes 强制初始像素比例，stretchFactor 维持拉伸比例
-            self._right_splitter.setSizes([625, 125])
+            # 初始比例与持久化由 SplitterStateHelper 恢复（默认值见 ui_constants）
             self._right_splitter.setStretchFactor(0, 5)
             self._right_splitter.setStretchFactor(1, 1)
         else:
@@ -885,6 +896,17 @@ class MainWindow(QMainWindow):
         central_layout.addWidget(top_bar)
         central_layout.addWidget(splitter, stretch=1)
         self.setCentralWidget(central)
+
+        # UI合理性3：顶部菜单栏（独立 view，MainWindow 仅接线）
+        self._menu_bar = MainMenuBar(self)
+        self._menu_bar.layout_reset_requested.connect(self._on_layout_reset)
+        self._menu_bar.switch_view_requested.connect(self._on_menu_view_switch)
+        self._menu_bar.tag_manager_requested.connect(self._on_tag_manager_clicked)
+        self._menu_bar.operation_history_requested.connect(self._on_operation_history_clicked)
+        # 工具菜单项按注入服务开关（与工具栏按钮可见性一致）
+        self._menu_bar.set_tag_manager_visible(self._tag_service is not None)
+        self._menu_bar.set_operation_history_visible(self._undo_service is not None)
+        self.setMenuBar(self._menu_bar)
 
         # UX 重构 Phase 2 Task 5（Q7=A）：状态栏统一到 QStatusBar
         self._setup_status_bar()
@@ -1567,7 +1589,9 @@ class MainWindow(QMainWindow):
                     )
         # 持久化视图模式（Q1=A）
         view_mode = "card" if view_index == VIEW_INDEX_CARD else "list"
-        self._qsettings.setValue(QSETTINGS_KEY_VIEW_MODE, view_mode)
+        self._qsettings.setValue(ui.QSETTINGS_KEY_VIEW_MODE, view_mode)
+        # UI合理性3：同步菜单栏视图选中态
+        self._menu_bar.set_view(view_mode)
 
     def _on_zoom_combo_changed(self, index: int) -> None:
         """缩放下拉框变化：应用缩放并持久化。"""
@@ -1589,11 +1613,11 @@ class MainWindow(QMainWindow):
         )
         self._card_list_model.set_icon_size(value)
         self._card_view.doItemsLayout()
-        self._qsettings.setValue(QSETTINGS_KEY_ZOOM, value)
+        self._qsettings.setValue(ui.QSETTINGS_KEY_ZOOM, value)
 
     def _restore_view_state(self) -> None:
         """从 QSettings 恢复缩放值与视图模式（Q1=A）。"""
-        zoom = self._qsettings.value(QSETTINGS_KEY_ZOOM, ui.ZOOM_SLIDER_DEFAULT, type=int)
+        zoom = self._qsettings.value(ui.QSETTINGS_KEY_ZOOM, ui.ZOOM_SLIDER_DEFAULT, type=int)
         if zoom in ui.ZOOM_PRESET_SIZES:
             index = ui.ZOOM_PRESET_SIZES.index(zoom)
             self._zoom_combo.setCurrentIndex(index)
@@ -1609,13 +1633,47 @@ class MainWindow(QMainWindow):
             self._card_view.doItemsLayout()
             self._card_icon_size = zoom
         # 恢复视图模式
-        view_mode = self._qsettings.value(QSETTINGS_KEY_VIEW_MODE, "list", type=str)
+        view_mode = self._qsettings.value(ui.QSETTINGS_KEY_VIEW_MODE, "list", type=str)
         if view_mode == "card":
             self._view_card_button.setChecked(True)
             self._switch_view(VIEW_INDEX_CARD)
         else:
             self._view_list_button.setChecked(True)
             self._switch_view(VIEW_INDEX_LIST)
+
+    def _restore_splitter_state(self) -> None:
+        """UI合理性2：恢复分割线尺寸（无存档时应用默认比例，接线级）。"""
+        # 主栏：保持无显式默认（Qt 按 sizeHint 分配，仅应用已有存档）；
+        # 右栏：恢复默认比例（625:125，保持既有行为，常量可调）。
+        self._splitter_state.restore(
+            self._splitter, ui.QSETTINGS_KEY_SPLITTER_MAIN, default_sizes=None
+        )
+        self._splitter_state.restore(
+            self._right_splitter,
+            ui.QSETTINGS_KEY_SPLITTER_RIGHT,
+            default_sizes=ui.LAYOUT_RIGHT_SPLITTER_DEFAULT_SIZES,
+        )
+
+    def _on_layout_reset(self) -> None:
+        """UI合理性2/3：菜单「重置布局」→ 分割线与操作历史列宽恢复默认比例。"""
+        self._splitter_state.reset(
+            self._splitter,
+            ui.QSETTINGS_KEY_SPLITTER_MAIN,
+            ui.LAYOUT_MAIN_SPLITTER_DEFAULT_SIZES,
+        )
+        self._splitter_state.reset(
+            self._right_splitter,
+            ui.QSETTINGS_KEY_SPLITTER_RIGHT,
+            ui.LAYOUT_RIGHT_SPLITTER_DEFAULT_SIZES,
+        )
+        # 操作历史对话框为模态，无法实时重置；删除存档使下次打开即回默认
+        self._splitter_state.remove_key(ui.QSETTINGS_KEY_HEADER_OPERATION_HISTORY)
+        self.statusBar().showMessage(ui.LAYOUT_RESET_STATUS, 3000)
+
+    def _on_menu_view_switch(self, mode: str) -> None:
+        """UI合理性3：菜单视图切换 → 复用既有 _switch_view。"""
+        view_index = VIEW_INDEX_CARD if mode == "card" else VIEW_INDEX_LIST
+        self._switch_view(view_index)
 
     def _on_open_in_explorer(self, path: str) -> None:
         """在 Windows 资源管理器中打开并选中指定路径（Stage 5 Task 1）。

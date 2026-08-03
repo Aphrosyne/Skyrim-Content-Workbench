@@ -545,3 +545,33 @@ SEARCH_MATCHED_FIELD_NAME = "名称"
 SEARCH_MATCHED_FIELD_TAG = "标签"
 SEARCH_MATCHED_FIELD_NOTES = "备注"
 SEARCH_JUMP_TOOLTIP = "双击跳转到所在目录"
+
+# === QSettings 配置键（UI合理性2/3，2026-08-03 从 main_window 迁移至此） ===
+QSETTINGS_ORGANIZATION = "SkyrimContentWorkbench"
+QSETTINGS_APPLICATION = "SkyrimContentWorkbench"
+QSETTINGS_KEY_ZOOM = "view/card_icon_size"
+QSETTINGS_KEY_VIEW_MODE = "view/current_mode"  # "list" | "card"
+QSETTINGS_KEY_SPLITTER_MAIN = "layout/splitter/main"
+QSETTINGS_KEY_SPLITTER_RIGHT = "layout/splitter/right"
+QSETTINGS_KEY_HEADER_OPERATION_HISTORY = "layout/header/operation_history"
+
+# === 布局默认值（UI合理性2/3，2026-08-03） ===
+# 所有分割线/列宽默认值集中在此，用户可手动调整后重启生效。
+# 注意：文件列表中"名称"列使用 Stretch 模式（自动吸收剩余宽度），
+# 调整宽度请改其余三列的默认值（类型/大小/修改日期）。
+LAYOUT_MAIN_SPLITTER_DEFAULT_SIZES = (220, 480, 324)  # 左栏 / 中栏 / 右栏
+LAYOUT_RIGHT_SPLITTER_DEFAULT_SIZES = (625, 125)  # 元数据 / 装配面板（保持既有行为）
+LAYOUT_OPERATION_HISTORY_COLUMN_WIDTHS = (180, 340, 90)  # 时间 / 操作 / 状态
+FILE_LIST_COLUMN_WIDTHS = (0, 60, 90, 150)  # 名称(0=Stretch) / 类型 / 大小 / 修改日期
+
+# === 顶部菜单栏（UI合理性3，2026-08-03） ===
+MENU_BAR_VIEW = "视图"
+MENU_BAR_TOOLS = "工具"
+MENU_VIEW_LIST = "列表视图"
+MENU_VIEW_CARD = "卡片视图"
+MENU_VIEW_RESET_LAYOUT = "重置布局"
+MENU_VIEW_SHORTCUTS = "快捷键设置…"
+MENU_VIEW_SHORTCUTS_TODO = "快捷键自定义待独立任务实现（UI合理性3 二期）"
+MENU_TOOLS_TAG_MANAGER = "标签管理…"
+MENU_TOOLS_OPERATION_HISTORY = "操作历史…"
+LAYOUT_RESET_STATUS = "布局已重置为默认比例"
