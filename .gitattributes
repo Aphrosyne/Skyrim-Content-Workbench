@@ -1,0 +1,2 @@
+# 文本文件统一以 LF 存储，避免 Windows CRLF/LF 混排与 git 行尾警告
+* text=auto eol=lf
