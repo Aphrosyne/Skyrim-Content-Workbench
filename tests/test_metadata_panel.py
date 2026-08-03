@@ -6,8 +6,8 @@
 - 标签自动补全（QCompleter QStringListModel）
 - 保存按钮：成功写入 metadata + 标签 attach/detach diff + 发射 on_saved 信号
 - 保存失败：InvalidMetadataError 弹 QMessageBox
-- 封面设置回调：on_pick_cover_requested 信号 + set_cover_path 更新预览
-- 清除封面按钮
+- 封面即时保存（操作便捷性6）：on_pick_cover_requested 信号 + apply_cover 立即落库
+- 清除封面按钮（同样立即落库）
 - 测试接口：title_text / source_url_text / notes_text / cover_path_text / tag_chips
 
 测试使用 tmp_path + init_db 构造真实 service。
@@ -493,15 +493,32 @@ def test_pick_cover_button_emits_signal(qapp, unit_with_tags):
     assert received == [unit.id]
 
 
-def test_set_cover_path_updates_preview(qapp, unit_with_tags):
-    """set_cover_path 后 cover_path_text 返回新路径。"""
-    content_service, tag_service, _, _, unit, *_ = unit_with_tags
-    panel = MetadataPanel(content_service, tag_service)
+def test_apply_cover_persists_immediately(qapp, unit_with_tags):
+    """操作便捷性6：apply_cover 立即写库 + 更新表单 + 提交回调 + 信号。"""
+    content_service, tag_service, conn, _, unit, *_ = unit_with_tags
+    # 目录内再放一张候选图（apply_cover 会校验文件存在）
+    (Path(unit.path) / "preview.png").write_bytes(b"\x00" * 50)
+    commits: list[str] = []
+    saved_units: list[ContentUnit] = []
+    panel = MetadataPanel(
+        content_service,
+        tag_service,
+        commit_callback=lambda: commits.append("commit"),
+    )
+    panel.on_cover_saved.connect(lambda u: saved_units.append(u))
     panel.load_unit(unit)
     assert panel.cover_path_text() == "cover.jpg"  # mark 时自动录入
 
-    panel.set_cover_path("preview.png")
+    panel.apply_cover("preview.png")
+
+    assert content_service.get_by_id(unit.id).cover_path == "preview.png"
     assert panel.cover_path_text() == "preview.png"
+    assert commits == ["commit"]
+    assert [u.id for u in saved_units] == [unit.id]
+    assert saved_units[0].cover_path == "preview.png"
+    conn.commit()
+    row = conn.execute("SELECT cover_path FROM content_unit WHERE id = ?", (unit.id,)).fetchone()
+    assert row["cover_path"] == "preview.png"
 
 
 def test_cover_preview_uses_resizable_label(qapp, unit_with_tags):
@@ -520,16 +537,24 @@ def test_cover_preview_uses_resizable_label(qapp, unit_with_tags):
     assert isinstance(panel._cover_preview, _ResizableImageLabel)  # noqa: SLF001
 
 
-def test_clear_cover_button_resets_preview(qapp, unit_with_tags):
-    """点击「清除封面」→ cover_path_text 返回空字符串。"""
-    content_service, tag_service, _, _, unit, *_ = unit_with_tags
+def test_clear_cover_button_persists_immediately(qapp, unit_with_tags):
+    """操作便捷性6：点击「清除封面」→ 立即清空数据库 + 表单。"""
+    content_service, tag_service, conn, _, unit, *_ = unit_with_tags
+    saved_units: list[ContentUnit] = []
     panel = MetadataPanel(content_service, tag_service)
+    panel.on_cover_saved.connect(lambda u: saved_units.append(u))
     panel.load_unit(unit)
-    panel.set_cover_path("cover.jpg")
     assert panel.cover_path_text() == "cover.jpg"
 
     panel._on_clear_cover_clicked()  # noqa: SLF001
+
     assert panel.cover_path_text() == ""
+    assert content_service.get_by_id(unit.id).cover_path is None
+    assert len(saved_units) == 1
+    assert saved_units[0].cover_path is None
+    conn.commit()
+    row = conn.execute("SELECT cover_path FROM content_unit WHERE id = ?", (unit.id,)).fetchone()
+    assert row["cover_path"] is None
 
 
 def test_save_persists_cover_path(qapp, unit_with_tags):
@@ -537,7 +562,7 @@ def test_save_persists_cover_path(qapp, unit_with_tags):
     content_service, tag_service, _, _, unit, *_ = unit_with_tags
     panel = MetadataPanel(content_service, tag_service)
     panel.load_unit(unit)
-    panel.set_cover_path("cover.jpg")
+    panel.apply_cover("cover.jpg")
 
     panel.click_save_button()
 
@@ -552,7 +577,7 @@ def test_save_clears_cover_when_form_empty(qapp, unit_with_tags):
     # 先设置一个封面并保存
     panel = MetadataPanel(content_service, tag_service)
     panel.load_unit(unit)
-    panel.set_cover_path("cover.jpg")
+    panel.apply_cover("cover.jpg")
     panel.click_save_button()
     assert content_service.get_by_id(unit.id).cover_path == "cover.jpg"
 
@@ -566,6 +591,36 @@ def test_save_clears_cover_when_form_empty(qapp, unit_with_tags):
     final = content_service.get_by_id(unit.id)
     assert final is not None
     assert final.cover_path is None
+
+
+def test_apply_cover_keeps_unsaved_form_edits(qapp, unit_with_tags):
+    """操作便捷性6：封面即时保存不重载表单，未保存的标题编辑保留。"""
+    content_service, tag_service, _, _, unit, *_ = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+    panel._title_edit.setText("未保存的标题")  # noqa: SLF001
+
+    panel.apply_cover("cover.jpg")
+
+    assert panel.title_text() == "未保存的标题"
+    # 数据库标题未被封面保存改动
+    assert content_service.get_by_id(unit.id).title == "MyMod"
+
+
+def test_apply_cover_invalid_path_fails_without_changes(qapp, unit_with_tags, monkeypatch):
+    """操作便捷性6：封面路径不存在 → 弹提示、不写库、表单不变。"""
+    content_service, tag_service, _, _, unit, *_ = unit_with_tags
+    monkeypatch.setattr("app.metadata_panel.QMessageBox.information", lambda *a, **kw: None)
+    saved_units: list[ContentUnit] = []
+    panel = MetadataPanel(content_service, tag_service)
+    panel.on_cover_saved.connect(lambda u: saved_units.append(u))
+    panel.load_unit(unit)
+
+    panel.apply_cover("missing.png")
+
+    assert content_service.get_by_id(unit.id).cover_path == "cover.jpg"
+    assert panel.cover_path_text() == "cover.jpg"
+    assert saved_units == []
 
 
 # === 中文支持 ===

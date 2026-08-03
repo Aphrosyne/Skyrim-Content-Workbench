@@ -8,6 +8,22 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+## [0.50.3] - 2026-08-03
+
+封面设置即时保存（操作便捷性6）。
+
+- **封面选择/清除即时落库**：元数据面板「设置封面」对话框点「确定」后立即调用
+  `ContentService.update_metadata` 写入 `cover_path` 并提交事务，不再等待「保存」
+  按钮；「清除封面」同样立即清空（[metadata_view.py](src/app/metadata_view.py) /
+  [metadata_panel.py](src/app/metadata_panel.py)）
+- 封面保存不重载元数据表单：未保存的标题/来源/备注编辑保留，等「保存」按钮统一提交；
+  保存按钮语义不变（仅负责标题/来源/备注，封面已即时保存）
+- 新增 `cover_saved` 信号链路：面板 → MetadataView → MainWindow 刷新中栏
+  （封面图标/缩略图变化）+ 状态栏「封面已保存」（[main_window.py](src/app/main_window.py)）
+
+**测试**：面板层覆盖立即落库/提交回调/信号/清除/未保存编辑保留/失败路径，
+MainWindow 层覆盖对话框确定后数据库已更新；ruff check + format 全绿。
+
 ## [0.50.2] - 2026-08-02
 
 UI 术语调整（UI合理性1）。

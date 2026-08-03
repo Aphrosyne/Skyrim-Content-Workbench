@@ -6,7 +6,7 @@
 - 双击内容单元 → 同样加载（兼容行为，不应破坏）
 - 单击非内容单元 → 清空元数据面板
 - 保存元数据 → on_saved 信号 → 事务提交 + 状态栏提示
-- 设置封面 → CoverPickerDialog 弹出 + 选定后更新表单
+- 设置封面 → CoverPickerDialog 弹出 + 选定后立即保存（操作便捷性6）
 - 批量打标签菜单：多选内容单元 → 右键显示菜单
 - 批量打标签动作：弹 BatchTagDialog + 应用 → 提交
 
@@ -376,7 +376,7 @@ def test_save_metadata_commits_and_shows_status(qapp, main_window_with_tags):
 
 
 def test_pick_cover_button_launches_dialog(qapp, main_window_with_tags, monkeypatch):
-    """点击设置封面按钮 → 弹出 CoverPickerDialog（目录类型内容单元 + 含图片）。"""
+    """点击设置封面 → 弹出对话框；确定后立即保存到数据库（操作便捷性6）。"""
     window, conn, root_dir, _ = main_window_with_tags
 
     # 标记"护甲"目录为内容单元（目录类型，包含图片候选 preview1.jpg / preview2.png）
@@ -384,6 +384,7 @@ def test_pick_cover_button_launches_dialog(qapp, main_window_with_tags, monkeypa
     content_service = window._content_service  # noqa: SLF001
     unit = content_service.mark_as_content_unit(armor_dir)
     conn.commit()
+    assert unit.cover_path == "preview1.jpg"  # 标记时自动录入第一张
 
     # 直接加载到 MetadataPanel（避免复杂的 UI 导航）
     panel = window.metadata_panel()
@@ -399,12 +400,23 @@ def test_pick_cover_button_launches_dialog(qapp, main_window_with_tags, monkeypa
         return 1  # QDialog.Accepted
 
     monkeypatch.setattr("app.cover_picker_dialog.QDialog.exec", fake_exec)
+    # 固定对话框选择 preview2.png（覆盖自动选中的第一张）
+    monkeypatch.setattr(
+        "app.cover_picker_dialog.CoverPickerDialog.selected_relative_path",
+        lambda self: "preview2.png",
+    )
 
     panel.click_pick_cover_button()
     qapp.processEvents()
 
     # 应该弹出了 dialog
     assert len(dialog_instances) == 1
+    # 操作便捷性6：确定后立即落库，无需再点「保存」
+    updated = content_service.get_by_id(unit.id)
+    assert updated is not None
+    assert updated.cover_path == "preview2.png"
+    assert panel.cover_path_text() == "preview2.png"
+    assert window.statusBar().currentMessage() == ui.METADATA_PANEL_COVER_SAVED
 
 
 def test_pick_cover_no_images_shows_information(qapp, main_window_with_tags, monkeypatch):

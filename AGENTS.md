@@ -3,12 +3,14 @@
 > 本文档为方向 C + UX 重构后的版本（2026-08-01 重写）。
 >
 > 开发依据（按优先级）：
-> 1. `docs/PROJECT_HANDOVER.md`（最新工程交接，v0.47.0 / schema v13 / `ux-redesign` 分支）
-> 2. `docs/ux-redesign-roadmap.md`（当前分支的权威计划文档）
+> 1. `docs/PROJECT_HANDOVER.md`（最新工程交接）
+> 2. `docs/ux-redesign-roadmap.md`（UX 重构计划的权威文档）
 > 3. `docs/spec.md`、`docs/architecture.md`（存在部分过时章节，以代码 + CHANGELOG 为准）
 > 4. `docs/open-questions.md`、`docs/technical-debt.md`
 
 **文档与代码冲突时，以代码为准，以 CHANGELOG.md 为修订史。**
+
+**版本号、分支名、Task 进度等易过期信息一律以代码与 CHANGELOG.md 为准，不得据此假定当前状态。**
 
 ---
 
@@ -41,7 +43,7 @@
 - **对涉及真实文件的测试，必须使用 pytest 临时目录**（`tmp_path` fixture）。
 - **不得用真实用户目录作为测试目录**。
 - **所有异常必须转换为用户可理解的错误信息**，并保留技术日志。
-- **不再往 MainWindow 堆方法**（UX 重构 Phase 2 编码约束）：新增逻辑尽量抽到独立 controller / helper / view 中，为 Task 7 拆分减负。
+- **不再往 MainWindow 堆方法**（UX 重构编码约束）：新增逻辑尽量抽到独立 controller / helper / view 中。
 
 ## 代码质量
 
@@ -70,17 +72,15 @@ ThumbnailCache     → 缩略图缓存（关联 content_unit_id，WebP 多档缓
 
 **ContentUnit 关键语义：**
 
-- 标记 = 数据库有记录；取消标记 = 删除记录（纯 DELETE 模式，已随 UX 重构 Task 6
-  / schema v13 落地，`is_marked` 字段已移除）。
+- 标记 = 数据库有记录；取消标记 = 删除记录（纯 DELETE 模式，`is_marked` 字段不存在）。
 - ContentUnit **不存 status、rating 字段**。
 
 所有 Domain 实体为纯 dataclass，不包含数据库或文件系统知识。
 
 ## 架构约束
 
-- **Schema 版本**：当前 `CURRENT_SCHEMA_VERSION = 13`（见 `src/infrastructure/db.py`；
-  v13 起回归纯 DELETE 模式，content_unit 无 is_marked 字段）。
-- **分支**：当前工作在 `ux-redesign` 分支，权威计划是 `docs/ux-redesign-roadmap.md`。
+- **Schema 版本**：以 `src/infrastructure/db.py` 中的 `CURRENT_SCHEMA_VERSION` 为准，变更历史见 CHANGELOG.md。
+- **分支**：以 git 当前分支为准；UX 重构的权威计划是 `docs/ux-redesign-roadmap.md`。
 - **应用数据目录解析优先级**：`SCW_DATA_DIR` 环境变量 > 项目根 `data/` > `%LOCALAPPDATA%\SkyrimContentWorkbench\` > `~/.skyrimmodworkbench/`。默认位于项目根 `data/`（app.db、thumbnails/、exports/、logs/），`.gitignore` 已忽略 `/data/`。
 - **UI 单面板**：无浏览/整理模式切换，无暂存区，无快速插入。统一为目录树（左）+ 文件列表/卡片（中）+ 元数据/可钉住装配面板（右）。
 - **文件操作流程**：直接执行（move/rename/delete/new_folder），写入 operation_history，支持撤销。撤销不产生新记录，仅标记原记录 `undone_at`。

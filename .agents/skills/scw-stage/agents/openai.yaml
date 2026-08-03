@@ -1,0 +1,4 @@
+interface:
+  display_name: "SCW 阶段推进"
+  short_description: "按 SCW UX 路线图推进一个开发阶段：计划、确认、编码、验证、收尾。"
+  default_prompt: "用 $scw-stage 按路线图推进当前阶段并先生成实施计划。"

@@ -23,10 +23,10 @@ spec §7.2 / §10.3：右栏元数据面板，显示与编辑内容单元元数�
 - MetadataPanel 调用 ContentService.update_metadata + TagService.attach/detach。
 - 保存成功后通过 on_saved(unit) 信号回调 MainWindow 提交事务 + 刷新中栏。
 
-封面选择（决策 2）：
+封面选择（决策 2，操作便捷性6 修正 2026-08-03）：
 - 通过 on_pick_cover_requested(unit_id) 信号请求 MainWindow 弹 CoverPickerDialog。
-- MainWindow 选定后调用 set_cover_path(path) 更新表单（仅 UI 状态，未提交）。
-- 保存时把当前 cover_path 一并提交到 ContentService.update_metadata。
+- MainWindow 选定后调用 apply_cover(path) 立即写入数据库（不再等待「保存」按钮）。
+- 「清除封面」同样立即清空并保存。
 
 标签输入约束：
 - 不自动创建新标签。若用户输入的标签名不存在，弹 QMessageBox 提示
@@ -215,6 +215,8 @@ class MetadataPanel(QWidget):
     on_save_failed = Signal(str)  # 用户可读错误消息
     # 请求打开封面选择对话框
     on_pick_cover_requested = Signal(str)  # unit_id
+    # 封面即时保存成功（操作便捷性6，2026-08-03）：设置/清除封面立即落库后发射
+    on_cover_saved = Signal(object)  # ContentUnit
 
     def __init__(
         self,
@@ -520,15 +522,33 @@ class MetadataPanel(QWidget):
         """返回当前加载的 ContentUnit（供测试）。"""
         return self._current_unit
 
-    def set_cover_path(self, cover_path: str | None) -> None:
-        """由 CoverPickerDialog 选定封面后调用，更新表单中的封面字段。
+    def apply_cover(self, cover_path: str) -> None:
+        """封面即时保存（操作便捷性6，2026-08-03）。
 
-        仅更新 UI 状态；实际写入数据库由「保存」按钮触发。
+        由 CoverPickerDialog 选定（MetadataView 调用）或「清除封面」触发：
+        立即调用 update_metadata 写入 cover_path（空串 = 清空）→ 更新表单状态 →
+        提交事务 → 发射 on_cover_saved。不重载表单，未保存的标题/来源/备注保留。
+
+        失败时不改表单状态、不提交，弹错误提示（与 _apply_tag_toggle 一致）。
         """
         if self._current_unit is None:
             return
-        # 更新预览（基于 unit.path + cover_path）
-        self._refresh_cover_preview(cover_path)
+        unit_id = self._current_unit.id
+        try:
+            updated = self._content_service.update_metadata(unit_id, cover_path=cover_path)
+        except (ApplicationError, RepositoryError, sqlite3.Error) as e:
+            logger.warning("封面即时保存失败：%s", e)
+            self._show_error(ui.METADATA_PANEL_SAVE_FAILED, str(e))
+            return
+
+        # 更新内部状态（保留标题/来源/备注等未保存编辑）
+        self._current_unit = updated
+        self._refresh_cover_preview(updated.cover_path)
+
+        # 提交 + 通知调用方（刷新中栏封面图标/缩略图）
+        if self._commit_callback is not None:
+            self._commit_callback()
+        self.on_cover_saved.emit(updated)
 
     # --- 测试辅助接口 ---
 
@@ -545,7 +565,7 @@ class MetadataPanel(QWidget):
         """返回当前表单中显示的封面相对路径（如已加载）。"""
         if self._current_unit is None:
             return ""
-        # cover_path 由 load_unit 或 set_cover_path 设置后通过 _cover_value 显示
+        # cover_path 由 load_unit 或 apply_cover 设置后通过 _cover_value 显示
         # 使用 fullText() 获取完整文本（避免 elide 后的省略形式）
         if self._cover_value.fullText() == ui.METADATA_PANEL_COVER_NONE:
             return ""
@@ -926,10 +946,10 @@ class MetadataPanel(QWidget):
         self.on_pick_cover_requested.emit(self._current_unit.id)
 
     def _on_clear_cover_clicked(self) -> None:
-        """点击「清除封面」→ 清空表单中的封面字段（实际清空在保存时生效）。"""
+        """点击「清除封面」→ 立即清空并保存（操作便捷性6，2026-08-03）。"""
         if self._current_unit is None:
             return
-        self._refresh_cover_preview(None)
+        self.apply_cover("")
 
     def _on_save_clicked(self) -> None:
         """点击「保存」→ 调用 service 写入数据库。
@@ -955,7 +975,7 @@ class MetadataPanel(QWidget):
         self._save_button.setEnabled(False)
 
         try:
-            # 1. 更新元数据（cover_path 使用表单中当前显示的值，由 load_unit / set_cover_path 设置）
+            # 1. 更新元数据（cover_path 使用表单中当前显示的值，由 load_unit / apply_cover 设置）
             cover_path_value = self._get_form_cover_path()
             updated_unit = self._content_service.update_metadata(
                 unit.id,

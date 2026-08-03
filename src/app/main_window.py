@@ -401,6 +401,8 @@ class MainWindow(QMainWindow):
             dialog_parent=self,
         )
         self._metadata_view.saved.connect(self._on_metadata_saved)
+        # 操作便捷性6（2026-08-03）：封面即时保存成功 → 刷新中栏
+        self._metadata_view.cover_saved.connect(self._on_cover_saved)
         self._refresh_root_list()
         self._refresh_tree()
         # Stage 5 Task 4：注册键盘快捷键
@@ -3591,6 +3593,15 @@ class MainWindow(QMainWindow):
         # 同步元数据面板状态（updated_unit 包含最新字段）
         self._update_metadata(updated_unit)
         self.statusBar().showMessage(ui.METADATA_PANEL_SAVE_OK, 3000)
+
+    def _on_cover_saved(self, updated_unit: ContentUnit) -> None:
+        """封面即时保存成功（操作便捷性6，2026-08-03）→ 刷新中栏 + 状态栏提示。
+
+        仅刷新中栏（封面图标/缩略图变化），不重载元数据面板——
+        未保存的标题/来源/备注编辑保留在表单中。
+        """
+        self._refresh_content_list_for_current_mode()
+        self.statusBar().showMessage(ui.METADATA_PANEL_COVER_SAVED, 3000)
 
     def _on_batch_tag(self, entries: list[FileEntry]) -> None:
         """批量打标签：弹出 BatchTagDialog。

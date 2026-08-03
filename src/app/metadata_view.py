@@ -30,9 +30,13 @@ class MetadataView(QObject):
 
     信号：
     - ``saved(object)``：元数据保存成功（事务已提交），参数为更新后的 ContentUnit。
+    - ``cover_saved(object)``：封面即时保存成功（操作便捷性6，事务已提交），
+      参数为更新后的 ContentUnit。
     """
 
     saved = Signal(object)  # ContentUnit
+    # 封面即时保存成功（操作便捷性6，2026-08-03）：已提交事务
+    cover_saved = Signal(object)  # ContentUnit
 
     def __init__(
         self,
@@ -60,6 +64,8 @@ class MetadataView(QObject):
             self._panel.on_saved.connect(self._on_saved)
             self._panel.on_save_failed.connect(self._on_save_failed)
             self._panel.on_pick_cover_requested.connect(self._on_pick_cover_requested)
+            # 操作便捷性6（2026-08-03）：封面即时保存成功 → 转发给 MainWindow 刷新
+            self._panel.on_cover_saved.connect(self.cover_saved)
 
     def load_unit(self, unit: ContentUnit) -> None:
         """加载内容单元到元数据面板（含可见性切换；无面板时为空操作）。"""
@@ -81,8 +87,8 @@ class MetadataView(QObject):
     def _on_pick_cover_requested(self, unit_id: str) -> None:
         """面板请求设置封面 → 弹出 CoverPickerDialog。
 
-        选定后仅更新面板表单状态（set_cover_path），不立即保存；
-        用户点击「保存」按钮才提交数据库。
+        操作便捷性6（2026-08-03）：选定后立即保存（apply_cover），不再等待
+        「保存」按钮；提交与中栏刷新由 on_cover_saved → cover_saved 链路完成。
         """
         if self._panel is None:
             return
@@ -124,4 +130,4 @@ class MetadataView(QObject):
         rel_path = dialog.selected_relative_path()
         if rel_path is None:
             return
-        self._panel.set_cover_path(rel_path)
+        self._panel.apply_cover(rel_path)

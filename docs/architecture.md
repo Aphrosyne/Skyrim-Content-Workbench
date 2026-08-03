@@ -273,8 +273,8 @@ MetadataPanel 已加载内容单元 → 点击「设置封面」按钮
       - 用户在 IconMode 列表中切换选择
     → 用户点击「确定」 → dialog.selected_relative_path()
       - 返回 POSIX 风格相对路径（相对内容单元路径）
-    → MetadataPanel.set_cover_path(rel_path)（仅更新界面预览，不立即写库）
-    → 用户点击「保存」按钮 → 走元数据保存流程
+    → MetadataPanel.apply_cover(rel_path)（操作便捷性6：立即写库并提交事务）
+    → MetadataView 发 cover_saved → MainWindow 刷新中栏；「清除封面」同样立即清空
 ```
 
 **批量打标签流程（阶段 4 Task 2；2026-07-25 调整：预选标签 + 回车不关闭窗口）：**

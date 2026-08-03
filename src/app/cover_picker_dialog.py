@@ -14,7 +14,7 @@ UI：
   获取候选列表，传给本 dialog。
 - 用户选择 + 确定后，dialog.exec() 返回 Accepted。
 - MainWindow 调用 dialog.selected_relative_path() 获取相对路径，
-  再传给 MetadataPanel.set_cover_path()。
+  再传给 MetadataPanel.apply_cover()（操作便捷性6：立即保存）。
 
 设计决策 2：默认选中第一张图片。
 
