@@ -37,6 +37,8 @@ class MetadataView(QObject):
     saved = Signal(object)  # ContentUnit
     # 封面即时保存成功（操作便捷性6，2026-08-03）：已提交事务
     cover_saved = Signal(object)  # ContentUnit
+    # 重命名请求（UI合理性13）：unit_id + 新名称，由 MainWindow 执行文件重命名
+    rename_requested = Signal(str, str)
 
     def __init__(
         self,
@@ -66,6 +68,8 @@ class MetadataView(QObject):
             self._panel.on_pick_cover_requested.connect(self._on_pick_cover_requested)
             # 操作便捷性6（2026-08-03）：封面即时保存成功 → 转发给 MainWindow 刷新
             self._panel.on_cover_saved.connect(self.cover_saved)
+            # UI合理性13：重命名请求 → 转发给 MainWindow 执行文件操作
+            self._panel.rename_requested.connect(self.rename_requested)
 
     def load_unit(self, unit: ContentUnit) -> None:
         """加载内容单元到元数据面板（含可见性切换；无面板时为空操作）。"""

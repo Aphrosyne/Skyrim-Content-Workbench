@@ -403,6 +403,8 @@ class MainWindow(QMainWindow):
         self._metadata_view.saved.connect(self._on_metadata_saved)
         # 操作便捷性6（2026-08-03）：封面即时保存成功 → 刷新中栏
         self._metadata_view.cover_saved.connect(self._on_cover_saved)
+        # UI合理性13（2026-08-03）：面板重命名栏回车 → 执行文件重命名
+        self._metadata_view.rename_requested.connect(self._on_metadata_rename_requested)
         self._refresh_root_list()
         self._refresh_tree()
         # Stage 5 Task 4：注册键盘快捷键
@@ -3575,12 +3577,10 @@ class MainWindow(QMainWindow):
         Stage 5 Task 7 收尾：移除"整理状态"显示行。v13（UX 重构 Task 6）纯 DELETE
         模式下记录存在即已标记，能进入此方法的状态恒为已标记，显示无意义。
         """
-        title = unit.title or "（无标题）"
         source_url = unit.source_url or ui.METADATA_SOURCE_URL_EMPTY
         notes = unit.notes or ui.METADATA_NOTES_EMPTY
 
         lines = [
-            f"{ui.METADATA_TITLE_LABEL}：{title}",
             f"{ui.METADATA_PATH_LABEL}：{make_display_path_from_service(unit.path, self._service)}",
             f"{ui.METADATA_TYPE_LABEL}：{unit.content_type}",
             f"{ui.METADATA_SOURCE_URL_LABEL}：{source_url}",
@@ -3606,7 +3606,7 @@ class MainWindow(QMainWindow):
         UX 重构 Task 7 Step 4：事务提交由 MetadataView 在保存时完成，
         MainWindow 仅负责刷新联动。
         """
-        # 刷新中栏文件列表（标题可能在列表项中显示，封面图标也可能变化）
+        # 刷新中栏文件列表（名称/封面图标可能变化）
         self._refresh_content_list_for_current_mode()
         # 同步元数据面板状态（updated_unit 包含最新字段）
         self._update_metadata(updated_unit)
@@ -3616,10 +3616,41 @@ class MainWindow(QMainWindow):
         """封面即时保存成功（操作便捷性6，2026-08-03）→ 刷新中栏 + 状态栏提示。
 
         仅刷新中栏（封面图标/缩略图变化），不重载元数据面板——
-        未保存的标题/来源/备注编辑保留在表单中。
+        未保存的来源/备注编辑保留在表单中。
         """
         self._refresh_content_list_for_current_mode()
         self.statusBar().showMessage(ui.METADATA_PANEL_COVER_SAVED, 3000)
+
+    def _on_metadata_rename_requested(self, unit_id: str, new_name: str) -> None:
+        """元数据面板重命名栏回车（UI合理性13）→ 执行文件重命名。
+
+        复用 FileOperationService.rename 的既有链路（冲突/非法名处理、operation_history、
+        目录树与中栏刷新），成功后仅更新面板的当前 unit 与重命名栏文本
+        （不重载表单，保留未保存的来源/备注编辑，与 apply_cover 同策略）。
+        """
+        if self._file_operation_service is None or self._content_service is None:
+            return
+        unit = self._content_service.get_by_id(unit_id)
+        if unit is None:
+            return
+        old_path = Path(unit.path)
+        new_name = new_name.strip()
+        if not new_name or new_name == old_path.name:
+            return
+        dir_path = str(old_path.parent)
+        try:
+            self._file_operation_service.rename(old_path, new_name)
+            self._commit()
+            self._refresh_tree()
+            # 恢复中栏显示（rename 后 _refresh_tree 会清空列表）
+            self._restore_middle_after_tree_refresh(dir_path)
+            # 更新面板状态（保留未保存编辑）
+            updated = self._content_service.get_by_id(unit_id)
+            if updated is not None and self._metadata_panel is not None:
+                self._metadata_panel.apply_renamed_unit(updated)
+            self.statusBar().showMessage(ui.MENU_RENAME_SUCCESS.format(name=new_name), 3000)
+        except Exception as e:  # noqa: BLE001 - UI 边界统一兜底
+            self._handle_service_error(e, ui.MENU_OPERATION_FAILED.format(error=str(e)))
 
     def _on_batch_tag(self, entries: list[FileEntry]) -> None:
         """批量打标签：弹出 BatchTagDialog。

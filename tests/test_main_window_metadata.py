@@ -30,11 +30,13 @@ from app import ui_constants as ui  # noqa: E402
 from app.main_window import MainWindow  # noqa: E402
 from app.recent_tags import RecentTags  # noqa: E402
 from application.content_service import ContentService  # noqa: E402
+from application.file_operation_service import FileOperationService  # noqa: E402
 from application.folder_tree_service import FolderTreeService  # noqa: E402
 from application.managed_root_service import ManagedRootService  # noqa: E402
 from application.scan_service import ScanService  # noqa: E402
 from application.tag_service import TagService  # noqa: E402
 from infrastructure.db import get_connection, init_db  # noqa: E402
+from infrastructure.folder_cache_sync_helper import FolderCacheSyncHelper  # noqa: E402
 from infrastructure.repositories.content_unit import (  # noqa: E402
     ContentUnitRepository,
 )
@@ -46,6 +48,9 @@ from infrastructure.repositories.folder_cache import (  # noqa: E402
 )
 from infrastructure.repositories.managed_root import (  # noqa: E402
     ManagedRootRepository,
+)
+from infrastructure.repositories.operation_history import (  # noqa: E402
+    OperationHistoryRepository,
 )
 from infrastructure.repositories.tag import TagRepository  # noqa: E402
 from infrastructure.repositories.tag_category import (  # noqa: E402
@@ -274,7 +279,8 @@ def test_double_click_content_unit_loads_into_panel(qapp, main_window_with_tags)
     panel = window.metadata_panel()
     assert panel is not None
     assert panel.current_unit() is not None
-    assert panel.current_unit().title == "寒霜之心.7z"
+    assert panel.current_unit().title is None  # UI合理性13：扫描不再写 title
+    assert panel.rename_text() == "寒霜之心.7z"  # 重命名栏显示真实文件名
     assert panel.is_form_enabled()
 
 
@@ -314,7 +320,8 @@ def test_single_click_content_unit_loads_into_panel(qapp, main_window_with_tags)
     panel = window.metadata_panel()
     assert panel is not None
     assert panel.current_unit() is not None
-    assert panel.current_unit().title == "寒霜之心.7z"
+    assert panel.current_unit().title is None  # UI合理性13：扫描不再写 title
+    assert panel.rename_text() == "寒霜之心.7z"
     assert panel.is_form_enabled()
 
 
@@ -345,7 +352,7 @@ def test_single_click_non_content_unit_clears_panel(qapp, main_window_with_tags)
 
 
 def test_save_metadata_commits_and_shows_status(qapp, main_window_with_tags):
-    """编辑标题 + 保存 → 事务提交 + 状态栏显示「元数据已保存」。"""
+    """编辑备注 + 保存 → 事务提交 + 状态栏显示「元数据已保存」（title 不再写）。"""
     window, conn, _, _ = main_window_with_tags
     _select_root(qapp, window)
     _navigate_to_armor(qapp, window)
@@ -358,18 +365,59 @@ def test_save_metadata_commits_and_shows_status(qapp, main_window_with_tags):
     panel = window.metadata_panel()
     assert panel is not None
 
-    # 修改标题
-    panel._title_edit.setText("新标题")  # noqa: SLF001
+    # 修改备注
+    panel._notes_edit.setPlainText("新备注")  # noqa: SLF001
     panel.click_save_button()
     qapp.processEvents()
 
     # 状态栏应有提示
     assert "已保存" in window.statusBar().currentMessage()
 
-    # 数据库中的标题应已更新
+    # 数据库中的备注应已更新，title 保持 None
     unit_id = panel.current_unit().id
-    row = conn.execute("SELECT title FROM content_unit WHERE id = ?", (unit_id,)).fetchone()
-    assert row["title"] == "新标题"
+    row = conn.execute("SELECT title, notes FROM content_unit WHERE id = ?", (unit_id,)).fetchone()
+    assert row["title"] is None
+    assert row["notes"] == "新备注"
+
+
+def test_metadata_rename_request_renames_file(qapp, main_window_with_tags):
+    """UI合理性13：面板重命名栏回车 → 真实文件重命名 + DB 路径更新 + 面板刷新。"""
+    window, conn, _, _ = main_window_with_tags
+    _select_root(qapp, window)
+    _navigate_to_armor(qapp, window)
+
+    idx = _find_entry_index(window, "寒霜之心.7z")
+    window._on_entry_activated(window._content_list_model.index(idx, 0))  # noqa: SLF001
+    qapp.processEvents()
+
+    panel = window.metadata_panel()
+    assert panel is not None
+    unit = panel.current_unit()
+    assert unit is not None
+    old_path = Path(unit.path)
+
+    # 注入文件操作服务（fixture 未注入，重命名走 FileOperationService 链路）
+    window._file_operation_service = FileOperationService(  # noqa: SLF001
+        OperationHistoryRepository(conn),
+        folder_cache_helper=FolderCacheSyncHelper(FolderCacheRepository(conn)),
+        content_unit_repo=ContentUnitRepository(conn),
+    )
+
+    # 模拟重命名栏回车（信号链路：panel → MetadataView → MainWindow）
+    window._metadata_view.rename_requested.emit(unit.id, "新名字.7z")  # noqa: SLF001
+    qapp.processEvents()
+
+    new_path = old_path.parent / "新名字.7z"
+    assert new_path.is_file()
+    assert not old_path.exists()
+    updated = window._content_service.get_by_id(unit.id)  # noqa: SLF001
+    assert updated is not None
+    assert updated.path == str(new_path)
+    assert panel.rename_text() == "新名字.7z"
+    assert "已重命名" in window.statusBar().currentMessage()
+    # 操作历史已记录（undo 可用）
+    rows = conn.execute("SELECT operation_type FROM operation_history").fetchall()
+    assert any(r["operation_type"] == "rename" for r in rows)
 
 
 # === 设置封面 ===
@@ -664,5 +712,6 @@ def test_metadata_full_text_backward_compat(qapp, main_window_with_tags):
     qapp.processEvents()
 
     text = window.metadata_full_text()
-    assert "标题" in text
+    assert "标题" not in text  # UI合理性13：多行文本不再含标题行
+    assert "路径" in text
     assert "寒霜之心.7z" in text

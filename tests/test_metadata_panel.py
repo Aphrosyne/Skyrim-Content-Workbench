@@ -8,7 +8,7 @@
 - 保存失败：InvalidMetadataError 弹 QMessageBox
 - 封面即时保存（操作便捷性6）：on_pick_cover_requested 信号 + apply_cover 立即落库
 - 清除封面按钮（同样立即落库）
-- 测试接口：title_text / source_url_text / notes_text / cover_path_text / tag_chips
+- 测试接口：rename_text / source_url_text / notes_text / cover_path_text / tag_chips
 
 测试使用 tmp_path + init_db 构造真实 service。
 QMessageBox 通过 monkeypatch 替换为 lambda，避免模态阻塞。
@@ -98,7 +98,7 @@ def test_panel_initial_state(qapp, services):
     panel = MetadataPanel(content_service, tag_service)
 
     assert panel.current_unit() is None
-    assert panel.title_text() == ""
+    assert panel.rename_text() == ""
     assert panel.source_url_text() == ""
     assert panel.notes_text() == ""
     assert panel.tag_chips() == []
@@ -129,8 +129,8 @@ def test_panel_load_unit_fills_fields(qapp, unit_with_tags):
     panel.load_unit(unit)
     assert panel.current_unit() is not None
     assert panel.current_unit().id == unit.id
-    # mark_as_content_unit 默认 title = 文件夹名
-    assert panel.title_text() == "MyMod"
+    # 重命名栏显示真实文件名（UI合理性13）
+    assert panel.rename_text() == "MyMod"
     assert panel.is_form_enabled()
     assert panel.is_save_button_enabled()
     assert panel.is_pick_cover_button_enabled()
@@ -164,7 +164,7 @@ def test_panel_load_none_clears(qapp, unit_with_tags):
 
     panel.load_unit(None)
     assert panel.current_unit() is None
-    assert panel.title_text() == ""
+    assert panel.rename_text() == ""
     assert not panel.is_form_enabled()
 
 
@@ -179,7 +179,7 @@ def test_clear_panel_resets_all(qapp, unit_with_tags):
 
     panel.clear_panel()
     assert panel.current_unit() is None
-    assert panel.title_text() == ""
+    assert panel.rename_text() == ""
     assert panel.source_url_text() == ""
     assert panel.notes_text() == ""
     assert panel.tag_chips() == []
@@ -401,12 +401,11 @@ def test_completer_loaded_on_load_unit(qapp, unit_with_tags):
 
 
 def test_save_writes_metadata(qapp, unit_with_tags):
-    """保存 → ContentService.update_metadata 写入 title/source_url/notes。"""
+    """保存 → ContentService.update_metadata 写入 source_url/notes（title 不再写）。"""
     content_service, tag_service, _, _, unit, *_ = unit_with_tags
     panel = MetadataPanel(content_service, tag_service)
     panel.load_unit(unit)
 
-    panel._title_edit.setText("新标题")  # noqa: SLF001
     panel._source_url_edit.setText("https://example.com/mod")  # noqa: SLF001
     panel._notes_edit.setPlainText("测试备注")  # noqa: SLF001
 
@@ -415,7 +414,7 @@ def test_save_writes_metadata(qapp, unit_with_tags):
     # 从数据库重新查询验证
     updated = content_service.get_by_id(unit.id)
     assert updated is not None
-    assert updated.title == "新标题"
+    assert updated.title is None  # UI合理性13：保存不再写 title
     assert updated.source_url == "https://example.com/mod"
     assert updated.notes == "测试备注"
 
@@ -429,12 +428,12 @@ def test_save_emits_on_saved_signal(qapp, unit_with_tags):
     received: list[ContentUnit] = []
     panel.on_saved.connect(lambda u: received.append(u))
 
-    panel._title_edit.setText("信号测试")  # noqa: SLF001
+    panel._notes_edit.setPlainText("信号测试")  # noqa: SLF001
     panel.click_save_button()
 
     assert len(received) == 1
     assert received[0].id == unit.id
-    assert received[0].title == "信号测试"
+    assert received[0].notes == "信号测试"
 
 
 def test_save_attaches_new_tags(qapp, unit_with_tags):
@@ -478,8 +477,8 @@ def test_save_invalid_metadata_warns(qapp, unit_with_tags, monkeypatch):
     panel = MetadataPanel(content_service, tag_service)
     panel.load_unit(unit)
 
-    # 设置超长 title 触发 InvalidMetadataError（_TITLE_MAX_LENGTH = 200）
-    panel._title_edit.setText("x" * 300)  # noqa: SLF001
+    # 设置超长 source_url 触发 InvalidMetadataError（_URL_MAX_LENGTH = 2000）
+    panel._source_url_edit.setText("x" * 2001)  # noqa: SLF001
 
     warning_calls = []
     monkeypatch.setattr(
@@ -632,17 +631,17 @@ def test_save_clears_cover_when_form_empty(qapp, unit_with_tags):
 
 
 def test_apply_cover_keeps_unsaved_form_edits(qapp, unit_with_tags):
-    """操作便捷性6：封面即时保存不重载表单，未保存的标题编辑保留。"""
+    """操作便捷性6：封面即时保存不重载表单，未保存的来源/备注编辑保留。"""
     content_service, tag_service, _, _, unit, *_ = unit_with_tags
     panel = MetadataPanel(content_service, tag_service)
     panel.load_unit(unit)
-    panel._title_edit.setText("未保存的标题")  # noqa: SLF001
+    panel._notes_edit.setPlainText("未保存的备注")  # noqa: SLF001
 
     panel.apply_cover("cover.jpg")
 
-    assert panel.title_text() == "未保存的标题"
-    # 数据库标题未被封面保存改动
-    assert content_service.get_by_id(unit.id).title == "MyMod"
+    assert panel.notes_text() == "未保存的备注"
+    # 数据库备注未被封面保存改动
+    assert content_service.get_by_id(unit.id).notes is None
 
 
 def test_apply_cover_invalid_path_fails_without_changes(qapp, unit_with_tags, monkeypatch):
@@ -661,23 +660,91 @@ def test_apply_cover_invalid_path_fails_without_changes(qapp, unit_with_tags, mo
     assert saved_units == []
 
 
-# === 中文支持 ===
+# === 重命名栏（UI合理性13） ===
 
 
-def test_save_chinese_metadata(qapp, unit_with_tags):
-    """保存中文标题、URL、备注 → 正确写入。"""
+def test_rename_field_shows_real_filename(qapp, unit_with_tags):
+    """重命名栏显示真实文件名（path basename），而非 title。"""
     content_service, tag_service, _, _, unit, *_ = unit_with_tags
     panel = MetadataPanel(content_service, tag_service)
     panel.load_unit(unit)
 
-    panel._title_edit.setText("寒霜之心-汉化")  # noqa: SLF001
+    # unit 对应文件夹 MyMod（title 为 None），重命名栏显示文件名
+    assert unit.title is None
+    assert panel.rename_text() == "MyMod"
+
+
+def test_rename_return_emits_request(qapp, unit_with_tags):
+    """重命名栏回车 → 发射 rename_requested(unit_id, new_name)。"""
+    content_service, tag_service, _, _, unit, *_ = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+
+    received: list[tuple[str, str]] = []
+    panel.rename_requested.connect(lambda unit_id, name: received.append((unit_id, name)))
+
+    panel._rename_edit.setText("NewName")  # noqa: SLF001
+    panel._on_rename_return()  # noqa: SLF001
+
+    assert received == [(unit.id, "NewName")]
+
+
+def test_rename_return_ignores_empty_and_unchanged(qapp, unit_with_tags):
+    """重命名栏回车：空名称 / 名称未变化 → 不发射请求。"""
+    content_service, tag_service, _, _, unit, *_ = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+
+    received: list[tuple[str, str]] = []
+    panel.rename_requested.connect(lambda unit_id, name: received.append((unit_id, name)))
+
+    panel._rename_edit.setText("")  # noqa: SLF001
+    panel._on_rename_return()  # noqa: SLF001
+
+    # 与当前文件名相同 → 不发射
+    panel._rename_edit.setText("MyMod")  # noqa: SLF001
+    panel._on_rename_return()  # noqa: SLF001
+
+    assert received == []
+
+
+def test_apply_renamed_unit_updates_name_only(qapp, unit_with_tags):
+    """重命名成功后 apply_renamed_unit：更新文件名，保留未保存编辑。"""
+    content_service, tag_service, _, _, unit, *_ = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+    panel._notes_edit.setPlainText("未保存的备注")  # noqa: SLF001
+
+    renamed = ContentUnit(
+        id=unit.id,
+        path=str(Path(unit.path).parent / "Renamed"),
+        content_type=unit.content_type,
+        created_at=unit.created_at,
+        updated_at=unit.updated_at,
+    )
+    panel.apply_renamed_unit(renamed)
+
+    assert panel.rename_text() == "Renamed"
+    assert panel.notes_text() == "未保存的备注"
+    assert panel.current_unit().path == renamed.path
+
+
+# === 中文支持 ===
+
+
+def test_save_chinese_metadata(qapp, unit_with_tags):
+    """保存中文 URL、备注 → 正确写入（title 不再写）。"""
+    content_service, tag_service, _, _, unit, *_ = unit_with_tags
+    panel = MetadataPanel(content_service, tag_service)
+    panel.load_unit(unit)
+
     panel._notes_edit.setPlainText("这是一个中文备注")  # noqa: SLF001
 
     panel.click_save_button()
 
     updated = content_service.get_by_id(unit.id)
     assert updated is not None
-    assert updated.title == "寒霜之心-汉化"
+    assert updated.title is None  # UI合理性13：title 不再被写入
     assert updated.notes == "这是一个中文备注"
 
 

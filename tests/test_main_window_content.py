@@ -275,12 +275,12 @@ def test_double_click_content_unit_shows_metadata(qapp, main_window_env) -> None
     qapp.processEvents()
 
     metadata = window.metadata_full_text()
-    assert "标题" in metadata
+    assert "标题" not in metadata  # UI合理性13：多行文本不再含标题行
     assert "路径" in metadata
     assert "类型" in metadata
     # Stage 5 Task 7 收尾：移除"整理状态"行（status 简化为两态，显示无意义）
     assert "整理状态" not in metadata
-    # 标题应为压缩包文件名（含扩展名）
+    # 文件名（含扩展名）出现在路径行
     assert "寒霜之心.7z" in metadata
 
 
@@ -305,14 +305,14 @@ def test_double_click_non_content_unit_file_no_response(qapp, main_window_env) -
     idx_archive = _find_entry_index(window, "寒霜之心.7z")
     window._on_entry_activated(window._content_list_model.index(idx_archive, 0))  # noqa: SLF001
     qapp.processEvents()
-    assert "标题" in window.metadata_full_text()
+    assert "路径" in window.metadata_full_text()
 
     # 同目录内双击 readme.txt（非内容单元文件），元数据面板应保持不变
     idx_readme = _find_entry_index(window, "readme.txt")
     window._on_entry_activated(window._content_list_model.index(idx_readme, 0))  # noqa: SLF001
     qapp.processEvents()
-    # 元数据面板保持上一次状态（标题仍在，不响应）
-    assert "标题" in window.metadata_full_text()
+    # 元数据面板保持上一次状态（不响应非内容单元）
+    assert "路径" in window.metadata_full_text()
     assert "寒霜之心.7z" in window.metadata_full_text()
 
 
@@ -341,7 +341,7 @@ def test_double_click_non_content_unit_dir_no_response(qapp, main_window_env) ->
     idx_archive = _find_entry_index(window, "寒霜之心.7z")
     window._on_entry_activated(window._content_list_model.index(idx_archive, 0))  # noqa: SLF001
     qapp.processEvents()
-    assert "标题" in window.metadata_full_text()
+    assert "路径" in window.metadata_full_text()
 
     # 双击"预览图"文件夹 → 进入该目录，中栏列表切换到子目录内容
     idx_preview = _find_entry_index(window, "预览图")
@@ -434,7 +434,7 @@ def test_single_click_content_unit_shows_metadata(qapp, main_window_env) -> None
     qapp.processEvents()
 
     metadata = window.metadata_full_text()
-    assert "标题" in metadata
+    assert "路径" in metadata
     assert "寒霜之心.7z" in metadata
 
 
@@ -462,7 +462,7 @@ def test_single_click_non_content_unit_clears_metadata(qapp, main_window_env) ->
     sm.select(content_idx_archive, sm.SelectionFlag.ClearAndSelect)
     window._content_view.setCurrentIndex(content_idx_archive)  # noqa: SLF001
     qapp.processEvents()
-    assert "标题" in window.metadata_full_text()
+    assert "路径" in window.metadata_full_text()
 
     # 再选中非内容单元 readme.txt → 元数据应清空
     idx_readme = _find_entry_index(window, "readme.txt")

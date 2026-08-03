@@ -3,7 +3,7 @@
 spec §7.2 / §10.3：右栏元数据面板，显示与编辑内容单元元数据。
 
 字段：
-- 标题（中文别名）→ QLineEdit
+- 重命名栏（UI合理性13：显示真实文件名，回车即重命名，不参与元数据保存）→ QLineEdit
 - 路径、类型、创建时间 → 只读 QLabel
 - 标签 → chip 列表（QListWidget wrap）+ 独立输入框（QLineEdit + QCompleter）
 - 来源 URL → QLineEdit
@@ -13,6 +13,9 @@ spec §7.2 / §10.3：右栏元数据面板，显示与编辑内容单元元数�
 
 交互（用户确认设计决策 1/5/6）：
 - 显式「保存」按钮：用户点击后才写入数据库。
+- UI合理性13（2026-08-03）：原「标题」输入框改为「重命名」栏——显示真实文件名，
+  回车通过 rename_requested(unit_id, new_name) 信号交给 MainWindow 执行文件重命名，
+  不走元数据「保存」按钮；保存按钮仅负责来源 URL / 备注。
 - chip + 独立输入框：QLineEdit 输入回车 → 添加到 chip 列表；chip 单击 → 移除。
 - 标签前缀匹配自动补全：QCompleter + TagService.search_tags。
 - 标签预选区域：标签输入框下方显示所有已有标签（排除已在 chip 列表的），
@@ -20,7 +23,8 @@ spec §7.2 / §10.3：右栏元数据面板，显示与编辑内容单元元数�
 - 2026-07-19 决策修正：统一面板下 MetadataPanel 常驻右栏（原"整理模式隐藏"决策被推翻）。
 
 事务边界（与现有 Service 一致）：
-- MetadataPanel 调用 ContentService.update_metadata + TagService.attach/detach。
+- MetadataPanel 调用 ContentService.update_metadata（source_url/notes/cover_path）
+  + TagService.attach/detach；重命名通过 FileOperationService（由 MainWindow 执行）。
 - 保存成功后通过 on_saved(unit) 信号回调 MainWindow 提交事务 + 刷新中栏。
 
 封面选择（决策 2，操作便捷性6 修正 2026-08-03）：
@@ -218,6 +222,8 @@ class MetadataPanel(QWidget):
     on_pick_cover_requested = Signal(str)  # unit_id
     # 封面即时保存成功（操作便捷性6，2026-08-03）：设置/清除封面立即落库后发射
     on_cover_saved = Signal(object)  # ContentUnit
+    # 重命名请求（UI合理性13）：unit_id + 新名称，由 MainWindow 执行文件重命名
+    rename_requested = Signal(str, str)
 
     def __init__(
         self,
@@ -276,12 +282,14 @@ class MetadataPanel(QWidget):
 
         # === 表单字段 ===
 
-        # 标题
-        self._title_label = QLabel(ui.METADATA_TITLE_LABEL)
-        layout.addWidget(self._title_label)
-        self._title_edit = QLineEdit()
-        self._title_edit.setPlaceholderText(ui.METADATA_PANEL_TITLE_PLACEHOLDER)
-        layout.addWidget(self._title_edit)
+        # 重命名栏（UI合理性13：显示真实文件名，回车触发重命名请求）
+        self._rename_label = QLabel(ui.METADATA_RENAME_LABEL)
+        layout.addWidget(self._rename_label)
+        self._rename_edit = QLineEdit()
+        self._rename_edit.setPlaceholderText(ui.METADATA_PANEL_RENAME_PLACEHOLDER)
+        self._rename_edit.setToolTip(ui.METADATA_PANEL_RENAME_TOOLTIP)
+        self._rename_edit.returnPressed.connect(self._on_rename_return)
+        layout.addWidget(self._rename_edit)
 
         # 路径（只读，ElideMiddle 省略显示，不撑大右栏）
         self._path_label = QLabel(ui.METADATA_PATH_LABEL)
@@ -455,8 +463,8 @@ class MetadataPanel(QWidget):
         self._current_unit = unit
         self._hint_label.setVisible(False)
 
-        # 填充字段
-        self._title_edit.setText(unit.title or "")
+        # 填充字段（重命名栏显示真实文件名，UI合理性13 不再读 title）
+        self._rename_edit.setText(Path(unit.path).name)
         # 路径简化显示（UX 重构 Phase 2 Task 5 修复：从受管理根目录开始显示）
         display_path = (
             make_display_path_from_service(unit.path, self._managed_root_service)
@@ -490,7 +498,7 @@ class MetadataPanel(QWidget):
         self._preset_collapsed = set()
 
         self._hint_label.setVisible(True)
-        self._title_edit.clear()
+        self._rename_edit.clear()
         self._path_value.setText("")
         self._type_value.setText("")
         self._created_value.setText("")
@@ -561,7 +569,7 @@ class MetadataPanel(QWidget):
 
         由 CoverPickerDialog 选定（MetadataView 调用）或「清除封面」触发：
         立即调用 update_metadata 写入 cover_path（空串 = 清空）→ 更新表单状态 →
-        提交事务 → 发射 on_cover_saved。不重载表单，未保存的标题/来源/备注保留。
+        提交事务 → 发射 on_cover_saved。不重载表单，未保存的来源/备注保留。
 
         失败时不改表单状态、不提交，弹错误提示（与 _apply_tag_toggle 一致）。
         """
@@ -575,7 +583,7 @@ class MetadataPanel(QWidget):
             self._show_error(ui.METADATA_PANEL_SAVE_FAILED, str(e))
             return
 
-        # 更新内部状态（保留标题/来源/备注等未保存编辑）
+        # 更新内部状态（保留来源/备注等未保存编辑）
         self._current_unit = updated
         self._refresh_cover_preview(updated.cover_path)
 
@@ -586,8 +594,18 @@ class MetadataPanel(QWidget):
 
     # --- 测试辅助接口 ---
 
-    def title_text(self) -> str:
-        return self._title_edit.text()
+    def rename_text(self) -> str:
+        """返回重命名栏当前文本（UI合理性13 替代原 title_text）。"""
+        return self._rename_edit.text()
+
+    def apply_renamed_unit(self, unit: ContentUnit) -> None:
+        """重命名成功后更新面板状态（UI合理性13）。
+
+        由 MainWindow 在文件重命名成功后调用：只更新当前 unit 与重命名栏文本，
+        不重载表单，保留未保存的来源/备注编辑（与 apply_cover 同策略）。
+        """
+        self._current_unit = unit
+        self._rename_edit.setText(Path(unit.path).name)
 
     def source_url_text(self) -> str:
         return self._source_url_edit.text()
@@ -683,7 +701,7 @@ class MetadataPanel(QWidget):
 
     def is_form_enabled(self) -> bool:
         """返回表单是否处于可编辑状态（已加载 unit 时为 True）。"""
-        return self._title_edit.isEnabled()
+        return self._rename_edit.isEnabled()
 
     def add_tag_via_input(self, tag_name: str) -> None:
         """程序化设置输入框并触发回车（供测试）。"""
@@ -710,7 +728,7 @@ class MetadataPanel(QWidget):
     def _set_form_enabled(self, enabled: bool) -> None:
         """启用/禁用表单所有控件。"""
         for w in (
-            self._title_edit,
+            self._rename_edit,
             self._source_url_edit,
             self._notes_edit,
             self._tag_input,
@@ -992,11 +1010,12 @@ class MetadataPanel(QWidget):
         """点击「保存」→ 调用 service 写入数据库。
 
         步骤：
-        1. 调用 ContentService.update_metadata 更新 title/source_url/notes/cover_path。
+        1. 调用 ContentService.update_metadata 更新 source_url/notes/cover_path。
         2. 发射 on_saved(unit) 信号通知 MainWindow 提交事务 + 刷新中栏。
 
         操作便捷性4（2026-08-02）：标签已改为即时保存（chip 增删立即 attach/detach），
         「保存」按钮不再处理标签 diff，仅负责元数据字段。
+        UI合理性13（2026-08-03）：重命名走 rename_requested，保存按钮不再含 title。
 
         异常处理（Stage 4.5 M18 修复）：
         - InvalidMetadataError / CoverImageNotFoundError → 弹 QMessageBox 提示。
@@ -1016,7 +1035,6 @@ class MetadataPanel(QWidget):
             cover_path_value = self._get_form_cover_path()
             updated_unit = self._content_service.update_metadata(
                 unit.id,
-                title=self._title_edit.text(),
                 source_url=self._source_url_edit.text(),
                 notes=self._notes_edit.toPlainText(),
                 cover_path=cover_path_value,
@@ -1038,6 +1056,21 @@ class MetadataPanel(QWidget):
         finally:
             self._save_button.setText(ui.METADATA_PANEL_SAVE_BUTTON)
             self._save_button.setEnabled(True)
+
+    def _on_rename_return(self) -> None:
+        """重命名栏回车 → 请求 MainWindow 执行文件重命名（UI合理性13）。
+
+        仅做基础校验（非空、有变化），实际文件操作与冲突/非法名处理由 MainWindow
+        通过 FileOperationService 完成；面板自身不触碰文件系统。
+        """
+        if self._current_unit is None:
+            return
+        new_name = self._rename_edit.text().strip()
+        if not new_name:
+            return
+        if new_name == Path(self._current_unit.path).name:
+            return
+        self.rename_requested.emit(self._current_unit.id, new_name)
 
     def _get_form_cover_path(self) -> str | None:
         """返回表单中当前封面字段的值。
