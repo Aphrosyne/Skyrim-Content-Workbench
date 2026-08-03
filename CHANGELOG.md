@@ -63,6 +63,14 @@
   - MainWindow 恢复 `_card_thumbnail_provider` 接线（256 档），缓存失效/GC 复用
     既有 Service 链路（[main_window.py](src/app/main_window.py)）
 
+- **移除未使用的 contain 缩略图渲染模式（清理）**：生成器与应用侧不再支持
+  `mode="contain"`（宽高比缩放 + 透明填充 + 圆角）——该模式自 UI合理性16 起
+  已无任何调用方与测试依赖；`generate_thumbnail` / `ThumbnailService.generate`
+  统一为方形居中裁剪，删除圆角/透明填充辅助代码与对应测试
+  （[thumbnail_generator.py](src/infrastructure/thumbnail_generator.py) /
+  [thumbnail_service.py](src/application/thumbnail_service.py) /
+  [test_thumbnail_generator.py](tests/test_thumbnail_generator.py)）
+
 ## [0.50.4] - 2026-08-03
 
 全量 pytest 原生崩溃修复（测试稳定性1）。

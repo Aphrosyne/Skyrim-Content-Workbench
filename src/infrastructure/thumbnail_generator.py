@@ -1,11 +1,12 @@
 """缩略图生成器。spec §9。
 
-使用 Pillow 只读加载源图，缩放并应用圆角，写入应用缓存目录。
+使用 Pillow 只读加载源图，方形居中裁剪并写入应用缓存目录。
 不修改、不压缩、不覆盖原始图片。
 
 输出格式：WebP（Task 1a：相比 PNG 节省约 65% 磁盘占用，Qt6/Pillow 均原生支持）。
 输出尺寸：调用方指定（默认 256x256，Task 1a 卡片视图基础档位）。
-contain 模式保持宽高比缩放，不足部分透明填充；cover 模式居中放大裁剪填满方形。
+方形居中放大裁剪填满 size×size（UI合理性16 起卡片视图唯一渲染模式；
+contain 圆角/透明填充模式已删除，见 CHANGELOG v0.50.7）。
 
 异常分类（供 ThumbnailService 转换为 status）：
 - FileNotFoundError → status='missing'
@@ -25,9 +26,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Literal
 
-from PIL import Image, ImageDraw, ImageFilter, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +35,6 @@ logger = logging.getLogger(__name__)
 SUPPORTED_EXTENSIONS = frozenset(
     {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".ico"}
 )
-
-# 圆角半径占尺寸的比例
-_CORNER_RADIUS_RATIO = 0.18
 
 # WebP 编码质量（Task 1a：质量=90，体积/质量平衡）
 _WEBP_QUALITY = 90
@@ -60,33 +57,10 @@ def _is_supported(source_path: Path) -> bool:
     return source_path.suffix.lower() in SUPPORTED_EXTENSIONS
 
 
-def _apply_rounded_corners(img: Image.Image, size: int) -> Image.Image:
-    """对图像应用圆角遮罩。
-
-    创建一个 size x size 的圆角遮罩，用 L 模式广播到 RGBA。
-    """
-    radius = max(1, int(size * _CORNER_RADIUS_RATIO))
-    # 创建圆角遮罩（L 模式，白色圆角矩形在黑色背景上）
-    mask = Image.new("L", (size, size), 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=255)
-    # 抗锯齿：先在大尺寸绘制再缩放（简单近似：直接使用 rounded_rectangle）
-    mask = mask.filter(ImageFilter.SMOOTH)
-
-    # 输出 RGBA（保证透明通道）
-    img = img.convert("RGBA")
-    # 创建透明背景
-    output = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    # 使用 mask 作为 alpha 通道
-    output.paste(img, (0, 0), mask)
-    return output
-
-
 def generate_thumbnail(
     source_path: Path,
     cache_path: Path,
     size: int = 256,
-    mode: Literal["contain", "cover"] = "contain",
 ) -> None:
     """从源图生成缩略图并写入 cache_path。
 
@@ -96,11 +70,8 @@ def generate_thumbnail(
     - 其他异常向上传播
 
     输出 WebP 格式（quality=90），不修改源图（仅只读打开 + stat）。
-
-    mode：
-    - "contain"（默认）：宽高比缩放 + 透明填充 + 圆角遮罩（Q2: C）。
-    - "cover"：居中放大裁剪填满 size×size，无透明条、无圆角
-      （UI合理性16：卡片视图 256 档缓存，与卡片方形居中裁剪视觉一致）。
+    方形居中放大裁剪填满 size×size（无透明条、无圆角，
+    UI合理性16：卡片视图 256 档缓存，与卡片方形居中裁剪视觉一致）。
 
     若 cache_path 已存在则覆盖。
     """
@@ -120,23 +91,13 @@ def generate_thumbnail(
         # 损坏的图片文件
         raise ThumbnailSourceCorruptError(f"图片损坏或无法解码：{source_path}") from e
 
-    if mode == "cover":
-        # 居中放大裁剪填满方形（与卡片视图 _crop_to_square 一致的视觉）
-        thumb = ImageOps.fit(
-            original,
-            (size, size),
-            method=Image.Resampling.LANCZOS,
-            centering=(0.5, 0.5),
-        )
-    else:
-        # 保持宽高比缩放，不足尺寸用透明填充
-        original.thumbnail((size, size), Image.Resampling.LANCZOS)
-        thumb = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        # 居中粘贴
-        offset = ((size - original.width) // 2, (size - original.height) // 2)
-        thumb.paste(original, offset)
-        # 应用圆角
-        thumb = _apply_rounded_corners(thumb, size)
+    # 居中放大裁剪填满方形（与卡片视图 _crop_to_square 一致的视觉）
+    thumb = ImageOps.fit(
+        original,
+        (size, size),
+        method=Image.Resampling.LANCZOS,
+        centering=(0.5, 0.5),
+    )
 
     # 确保输出目录存在
     cache_path.parent.mkdir(parents=True, exist_ok=True)
