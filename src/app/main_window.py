@@ -79,6 +79,7 @@ from app.assembly_panel import AssemblyPanel
 from app.batch_tag_dialog import BatchTagDialog
 from app.card_list_model import CardListModel
 from app.content_filter import filter_entries
+from app.content_unit_delegate import ContentUnitStripeDelegate
 from app.file_list_model import (
     COL_MODIFIED,
     COL_NAME,
@@ -794,6 +795,11 @@ class MainWindow(QMainWindow):
         self._content_view.horizontalHeader().setStretchLastSection(False)
         self._content_view.horizontalHeader().setSectionsClickable(True)
         self._content_view.setModel(self._content_list_model)
+        # UI合理性13（2026-08-04）：内容单元行左侧淡紫色色条 + 行首 🔗 徽章
+        # （名称列专用 delegate，仅负责绘制预留区内容，其余渲染交给基类）
+        self._content_view.setItemDelegateForColumn(
+            COL_NAME, ContentUnitStripeDelegate(self._content_view)
+        )
         # UI合理性2 + 验收反馈（2026-08-03）：setModel 会重置表头 resize 模式，
         # 须在 setModel 之后设置。四列全部 Interactive 固定默认宽度（Explorer 风格）：
         # 右侧留出空白供 rubber band 框选；列不随滚动条出现/消失而横移（中栏不跳）。

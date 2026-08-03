@@ -19,6 +19,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QSettings  # noqa: E402
 
 from app import ui_constants as ui  # noqa: E402
+from app.content_unit_delegate import ContentUnitStripeDelegate  # noqa: E402
 from app.file_list_model import COL_MODIFIED, COL_NAME, COL_SIZE, COL_TYPE  # noqa: E402
 from app.main_menu_bar import MainMenuBar  # noqa: E402
 from app.main_window import VIEW_INDEX_CARD, VIEW_INDEX_LIST, MainWindow  # noqa: E402
@@ -148,6 +149,15 @@ def test_menu_bar_created(qapp, tmp_path: Path) -> None:
         titles = [action.text() for action in menu_bar.actions()]
         assert ui.MENU_BAR_VIEW in titles
         assert ui.MENU_BAR_TOOLS in titles
+    finally:
+        window.close()
+
+
+def test_content_unit_stripe_delegate_installed(qapp, tmp_path: Path) -> None:
+    window = _build_window(tmp_path)
+    try:
+        delegate = window._content_view.itemDelegateForColumn(COL_NAME)  # noqa: SLF001
+        assert isinstance(delegate, ContentUnitStripeDelegate)
     finally:
         window.close()
 

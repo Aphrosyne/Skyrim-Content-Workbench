@@ -189,14 +189,15 @@ class TestDisplayRole:
         idx = model.index(0, COL_NAME)
         assert model.data(idx, Qt.DisplayRole) == "readme.txt"
 
-    def test_name_column_content_unit_marker(self, qapp) -> None:  # noqa: ANN001
+    def test_name_column_content_unit_plain_name(self, qapp) -> None:  # noqa: ANN001
         from PySide6.QtCore import Qt
 
         unit = _make_unit()
         model = FileListModel()
         model.refresh([_make_entry("armor", "/mods/armor", is_dir=True, content_unit=unit)])
         idx = model.index(0, COL_NAME)
-        assert model.data(idx, Qt.DisplayRole) == f"{ui.CONTENT_UNIT_MARKER} armor"
+        # UI合理性13（2026-08-04）：🔗 徽章由 delegate 绘制，DisplayRole 为纯文件名
+        assert model.data(idx, Qt.DisplayRole) == "armor"
 
     def test_type_column_directory(self, qapp) -> None:  # noqa: ANN001
         from PySide6.QtCore import Qt

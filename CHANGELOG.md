@@ -8,6 +8,19 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+- **内容单元标记改版：行首 🔗 徽章 + 左侧色条（UI合理性13，v0.50.11）**：
+  - 名称前 `--` 文本标记改为**行首位图徽章**：🔗 不再拼进 DisplayRole 文本
+    （emoji 字体回退抬高行高度量——实测 "armor" 15.23px vs "🔗 armor" 15.98px，
+    垂直居中导致文字下移约 1px），改为名称列 delegate 在预留区绘制缓存位图
+  - 新增左侧淡紫色色条（3px，`#B39DDB`）辅助区分；所有行内容统一右移
+    预留宽度（色条+徽章+间距），有/无标记行的图标与文字对齐
+  - 拆离：色条/徽章绘制抽为 `ContentUnitStripeDelegate`（名称列专用，
+    含可测试的几何/颜色纯函数），MainWindow 仅一行接线
+  - 已知瑕疵（用户确认不修）：默认 19px 行高下 16px 图标底部偶发 1px 裁切
+  （[content_unit_delegate.py](src/app/content_unit_delegate.py) /
+  [file_list_model.py](src/app/file_list_model.py) /
+  [ui_constants.py](src/app/ui_constants.py) / [main_window.py](src/app/main_window.py)）
+
 - **列表封面区分/筛选 + 导航记忆 + 标签反选（UI合理性5 / 操作便捷性5 / 操作便捷性7 / UI合理性16，v0.50.10）**：
   - UI合理性5：文件夹类内容单元有封面 → 列表视图复用现有 256 封面缓存缩放到 64×64
     作为图标（只读查询，不产生新缓存、无圆角）；无缓存回退标准文件夹图标

@@ -65,7 +65,27 @@ COL_TYPE_FILE = "文件"
 # unmarked 不显示标记，故仅需一个统一标记。
 # UI合理性12（2026-08-03）：标记前置 + 缩写为 --（双短横线，验收反馈逐次调整），
 # 长文件名截断时标记不被遮挡。
-CONTENT_UNIT_MARKER = "--"
+# UI合理性13（2026-08-04）：-- 改为 🔗（链节图标，用户选型 B），
+# 显示模板固定为「标记 + 空格 + 名称」，避免图标与名字贴太近。
+CONTENT_UNIT_MARKER = "🔗"
+
+# 内容单元行左侧淡紫色色条（UI合理性13 方案 C，辅助区分）
+CONTENT_UNIT_STRIPE_COLOR = "#B39DDB"
+CONTENT_UNIT_STRIPE_WIDTH = 3
+# 行首 🔗 徽章（UI合理性13 方案 B，2026-08-04）：
+# 🔗 不拼进名称文本（emoji 字体回退会抬高行高度量，导致文字垂直偏移约 1px），
+# 改为 delegate 在预留区绘制位图徽章。
+CONTENT_UNIT_BADGE_SIZE = 14
+CONTENT_UNIT_BADGE_LEADING_GAP = 2  # 色条 → 徽章
+CONTENT_UNIT_BADGE_TRAILING_GAP = 4  # 徽章 → 图标
+# 预留区总宽：所有行（含非内容单元）内容统一右移该像素数，
+# 色条/徽章独占最左侧，图标/文字行与行对齐（2026-08-04 验收反馈）。
+CONTENT_UNIT_STRIPE_RESERVED_WIDTH = (
+    CONTENT_UNIT_STRIPE_WIDTH
+    + CONTENT_UNIT_BADGE_LEADING_GAP
+    + CONTENT_UNIT_BADGE_SIZE
+    + CONTENT_UNIT_BADGE_TRAILING_GAP
+)
 
 # 右键菜单
 CONTEXT_MENU_COPY_PATH = "复制路径"

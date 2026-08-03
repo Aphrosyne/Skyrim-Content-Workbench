@@ -65,16 +65,15 @@ CoverIconProvider = Callable[[str, str], QIcon | None]
 
 
 def _display_name(entry: FileEntry) -> str:
-    """构造名称列 DisplayRole 文本：内容单元标记 + 名称。
+    """构造名称列 DisplayRole 文本：纯文件名。
 
     Stage 5 Task 7 收尾：status 简化为两态（organized / unmarked），
-    unmarked 视为无内容单元（不在 UI 显示标记），故仅 organized 显示统一标记。
-    UI合理性12（2026-08-03）：标记前置（-- 名称），长文件名截断时标记不被遮挡。
+    unmarked 视为无内容单元（不在 UI 显示标记）。
+    UI合理性12（2026-08-03）：曾用 -- 文本前缀标记内容单元。
+    UI合理性13（2026-08-04）：🔗 徽章改为 delegate 绘制位图（emoji 拼进
+    文本会改变行高度量导致 1px 垂直偏移），DisplayRole 保持纯文件名。
     """
-    unit = entry.content_unit
-    if unit is None:
-        return entry.name
-    return f"{ui.CONTENT_UNIT_MARKER} {entry.name}"
+    return entry.name
 
 
 def _type_text(entry: FileEntry) -> str:
