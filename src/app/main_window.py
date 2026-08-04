@@ -42,14 +42,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSettings, QSize, Qt
-from PySide6.QtGui import QFontMetrics, QIcon, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QButtonGroup,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,  # noqa: F401 - 测试以 app.main_window.QInputDialog 命名空间补丁拦截对话框
@@ -79,6 +78,7 @@ from app.content_unit_marker_config import ContentUnitMarkerConfig
 from app.content_unit_marker_dialog import ContentUnitMarkerDialog
 from app.content_views import _DragDropListView, _RubberBandTableView
 from app.context_menu_builder import ContextMenuBuilder
+from app.entry_dialogs import show_create_mod_group_dialog, show_rename_dialog
 from app.file_list_model import (
     COL_MODIFIED,
     COL_NAME,
@@ -93,18 +93,19 @@ from app.file_list_model import (
 from app.file_operations_controller import FileOperationsController
 from app.folder_tree_model import FolderTreeModel
 from app.main_menu_bar import MainMenuBar
+from app.metadata_helpers import elide_label_lines, format_metadata_lines
 from app.metadata_panel import MetadataPanel
 from app.metadata_view import MetadataView
 from app.navigation_controller import NavigationController
-from app.path_display import make_display_path_from_service
 from app.recent_move_targets import RecentMoveTargets
 from app.recent_tags import RecentTags
 from app.scan_controller import ScanController
+from app.scan_ui_state import ScanUiState
 from app.search_controller import SearchController
 from app.selection_memory import SelectionMemory
+from app.shortcut_registry import ShortcutRegistry
 from app.splitter_state import SplitterStateHelper
 from app.tag_filter import TagFilterBar
-from app.tag_manager_dialog import TagManagerDialog
 from app.thumbnail_coordinator import ThumbnailCoordinator
 from app.transaction_scope import TransactionScope
 from app.tree_roots_controller import TreeRootsController
@@ -215,6 +216,20 @@ class MainWindow(QMainWindow):
         self.resize(ui.WINDOW_DEFAULT_WIDTH, ui.WINDOW_DEFAULT_HEIGHT)
 
         self._setup_ui()
+        # TD-M21 阶段 8：扫描 UI 状态联动（按钮/状态栏/刷新）
+        self._scan_ui_state = ScanUiState(
+            self._scan_button,
+            self._scan_full_button,
+            self._add_button,
+            self._remove_button,
+            self._tree_view,
+            self._tree_model,
+            self._scan_controller,
+            selected_root_id=self._selected_root_id,
+            set_status=self._set_status,
+            refresh_tree=self._refresh_tree,
+            refresh_content_list=self._refresh_content_list,
+        )
         # TD-M21 阶段 2：导航历史与视图状态控制器（状态归控制器，MainWindow 镜像/委托）
         self._navigation_controller = NavigationController(
             self._tree_model,
@@ -302,6 +317,7 @@ class MainWindow(QMainWindow):
             tree_view=self._tree_view,
             tree_model=self._tree_model,
             tree_service=self._tree_service,
+            content_service=self._content_service,
             managed_root_service=self._service,
             assembly_panel=self._assembly_panel,
             transaction_scope=self._transaction_scope,
@@ -492,6 +508,55 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self) -> None:
         # === 顶部工具栏（UX 重构 Phase 1 Task 1：移除模式切换按钮） ===
+        top_bar = self._build_top_bar()
+
+        # === 三栏 Splitter（UI合理性2：尺寸保存/恢复由 SplitterStateHelper 管理） ===
+        self._splitter = QSplitter(Qt.Horizontal, self)
+        splitter = self._splitter
+        splitter.addWidget(self._build_left_panel())
+        splitter.addWidget(self._build_middle_panel())
+        splitter.addWidget(self._build_right_panel())
+
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 1)
+        # UI合理性2 固化（2026-08-03 验收反馈）：拖动分隔线即实时保存，
+        # 重启保留；closeEvent 保存作为兜底。setSizes 不触发 splitterMoved，无回环。
+        self._splitter.splitterMoved.connect(
+            lambda *_: self._splitter_state.save(self._splitter, ui.QSETTINGS_KEY_SPLITTER_MAIN)
+        )
+        self._right_splitter.splitterMoved.connect(
+            lambda *_: self._splitter_state.save(
+                self._right_splitter, ui.QSETTINGS_KEY_SPLITTER_RIGHT
+            )
+        )
+
+        # 主布局：顶部模式栏 + 三栏 splitter
+        central = QWidget(self)
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(top_bar)
+        central_layout.addWidget(splitter, stretch=1)
+        self.setCentralWidget(central)
+
+        # UI合理性3：顶部菜单栏（独立 view，MainWindow 仅接线）
+        self._menu_bar = MainMenuBar(self)
+        self._menu_bar.layout_reset_requested.connect(self._on_layout_reset)
+        self._menu_bar.switch_view_requested.connect(self._on_menu_view_switch)
+        self._menu_bar.marker_config_requested.connect(self._on_marker_config_clicked)
+        self._menu_bar.tag_manager_requested.connect(self._on_tag_manager_clicked)
+        self._menu_bar.operation_history_requested.connect(self._on_operation_history_clicked)
+        # 工具菜单项按注入服务开关（与工具栏按钮可见性一致）
+        self._menu_bar.set_tag_manager_visible(self._tag_service is not None)
+        self._menu_bar.set_operation_history_visible(self._undo_service is not None)
+        self.setMenuBar(self._menu_bar)
+
+        # UX 重构 Phase 2 Task 5（Q7=A）：状态栏统一到 QStatusBar
+        self._setup_status_bar()
+
+    def _build_top_bar(self) -> QWidget:
+        """构建顶部工具栏（搜索框 + 标签管理按钮 + 操作历史按钮）。"""
         # 修复3：所有容器 QWidget/QSplitter 创建时传入 self 作为 parent，
         # 避免短暂成为顶层窗口导致 Windows 上启动时小窗口闪烁。
         top_bar = QWidget(self)
@@ -527,11 +592,10 @@ class MainWindow(QMainWindow):
         self._operation_history_button.clicked.connect(self._on_operation_history_clicked)
         self._operation_history_button.setVisible(self._undo_service is not None)
         top_layout.addWidget(self._operation_history_button)
+        return top_bar
 
-        # === 三栏 Splitter（UI合理性2：尺寸保存/恢复由 SplitterStateHelper 管理） ===
-        self._splitter = QSplitter(Qt.Horizontal, self)
-        splitter = self._splitter
-
+    def _build_left_panel(self) -> QWidget:
+        """构建左栏（受管理根目录 + 扫描控制 + 目录树 + 详情）。"""
         # === 左栏：受管理根目录 + 扫描控制 + 目录树 + 详情 ===
         left = QWidget(self)
         left_layout = QVBoxLayout(left)
@@ -616,9 +680,10 @@ class MainWindow(QMainWindow):
         self._detail_full_text = ui.DETAIL_NOT_SELECTED
         detail_layout.addWidget(self._detail_label)
         left_layout.addWidget(self._detail_group, stretch=1)
+        return left
 
-        splitter.addWidget(left)
-
+    def _build_middle_panel(self) -> QWidget:
+        """构建中栏（视图切换/排序/缩放 + 标签筛选 + 文件列表）。"""
         # === 中栏：文件列表（UX 重构 Phase 1 Task 2：装配面板迁至右栏） ===
         middle = QWidget(self)
         middle_layout = QVBoxLayout(middle)
@@ -847,9 +912,10 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self._content_empty_hint)
 
         middle_layout.addWidget(self._content_group)
+        return middle
 
-        splitter.addWidget(middle)
-
+    def _build_right_panel(self) -> QWidget:
+        """构建右栏（元数据面板（上）+ 装配面板（下））。"""
         # === 右栏：元数据（上）+ 装配面板（下），垂直分割（UX 重构 Phase 1 Task 2） ===
         right = QWidget(self)
         right_layout = QVBoxLayout(right)
@@ -907,46 +973,7 @@ class MainWindow(QMainWindow):
             self._assembly_panel = None  # type: ignore[assignment]
 
         right_layout.addWidget(self._right_splitter)
-
-        splitter.addWidget(right)
-
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 1)
-        # UI合理性2 固化（2026-08-03 验收反馈）：拖动分隔线即实时保存，
-        # 重启保留；closeEvent 保存作为兜底。setSizes 不触发 splitterMoved，无回环。
-        self._splitter.splitterMoved.connect(
-            lambda *_: self._splitter_state.save(self._splitter, ui.QSETTINGS_KEY_SPLITTER_MAIN)
-        )
-        self._right_splitter.splitterMoved.connect(
-            lambda *_: self._splitter_state.save(
-                self._right_splitter, ui.QSETTINGS_KEY_SPLITTER_RIGHT
-            )
-        )
-
-        # 主布局：顶部模式栏 + 三栏 splitter
-        central = QWidget(self)
-        central_layout = QVBoxLayout(central)
-        central_layout.setContentsMargins(0, 0, 0, 0)
-        central_layout.setSpacing(0)
-        central_layout.addWidget(top_bar)
-        central_layout.addWidget(splitter, stretch=1)
-        self.setCentralWidget(central)
-
-        # UI合理性3：顶部菜单栏（独立 view，MainWindow 仅接线）
-        self._menu_bar = MainMenuBar(self)
-        self._menu_bar.layout_reset_requested.connect(self._on_layout_reset)
-        self._menu_bar.switch_view_requested.connect(self._on_menu_view_switch)
-        self._menu_bar.marker_config_requested.connect(self._on_marker_config_clicked)
-        self._menu_bar.tag_manager_requested.connect(self._on_tag_manager_clicked)
-        self._menu_bar.operation_history_requested.connect(self._on_operation_history_clicked)
-        # 工具菜单项按注入服务开关（与工具栏按钮可见性一致）
-        self._menu_bar.set_tag_manager_visible(self._tag_service is not None)
-        self._menu_bar.set_operation_history_visible(self._undo_service is not None)
-        self.setMenuBar(self._menu_bar)
-
-        # UX 重构 Phase 2 Task 5（Q7=A）：状态栏统一到 QStatusBar
-        self._setup_status_bar()
+        return right
 
     def _setup_status_bar(self) -> None:
         """统一状态栏（Q7=A）。
@@ -1215,40 +1242,8 @@ class MainWindow(QMainWindow):
         self._content_list_controller.on_create_mod_group(entries)
 
     def _show_create_mod_group_dialog(self, pure_name: str, full_name: str) -> str | None:
-        """弹出创建 Mod 组对话框，返回用户选择的名称；取消返回 None。
-
-        下拉框直接以名称作为显示文本（不带"纯 Mod 名："等前缀），
-        避免前缀被写入最终名称。若 pure_name == full_name 只添加一项。
-        """
-        dialog = QDialog(self)
-        dialog.setWindowTitle(ui.CREATE_MOD_GROUP_DIALOG_TITLE)
-        layout = QVBoxLayout(dialog)
-
-        label = QLabel(ui.CREATE_MOD_GROUP_DIALOG_LABEL)
-        layout.addWidget(label)
-
-        combo = QComboBox()
-        combo.setEditable(True)
-        # 显示文本直接用名称，data 也存名称；选择后编辑框即为纯名称
-        combo.addItem(pure_name, pure_name)
-        if full_name != pure_name:
-            combo.addItem(full_name, full_name)
-        combo.setCurrentIndex(0)
-        # 设置编辑框初始文本为纯 Mod 名
-        combo.setEditText(pure_name)
-        layout.addWidget(combo)
-
-        button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box)
-
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            # 优先返回用户编辑后的文本
-            return combo.currentText().strip()
-        return None
+        """弹出创建 Mod 组对话框（委托 entry_dialogs.show_create_mod_group_dialog）。"""
+        return show_create_mod_group_dialog(self, pure_name, full_name)
 
     def _on_mark_content_unit(self, entry: FileEntry) -> None:
         """标记单个条目为内容单元（委托 ContentListController）。"""
@@ -1289,53 +1284,8 @@ class MainWindow(QMainWindow):
         self._file_operations_controller.new_folder_in_dir(dir_path)
 
     def _show_rename_dialog(self, old_name: str) -> tuple[str, bool]:
-        """弹出重命名对话框，预填当前名称，选中文件名部分（不含扩展名）。
-
-        UX 重构 Phase 1 Task 2 修复2：避免重命名时误改后缀，
-        初始选区忽略扩展名（如 "readme.txt" 只选中 "readme"）。
-
-        Returns:
-            (new_name, ok)：new_name 为去空白后的名称；ok 为是否确认。
-        """
-        dialog = QDialog(self)
-        dialog.setWindowTitle(ui.MENU_RENAME_DIALOG_TITLE)
-        layout = QVBoxLayout(dialog)
-
-        label = QLabel(ui.MENU_RENAME_DIALOG_LABEL)
-        layout.addWidget(label)
-
-        edit = QLineEdit(old_name)
-        layout.addWidget(edit)
-
-        button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box)
-
-        # 选中文件名部分（不含扩展名）
-        # .gitignore 等以点开头的文件 suffix 为整个名称，此时全选
-        old_path = Path(old_name)
-        suffix = old_path.suffix
-        if suffix and len(suffix) < len(old_name):
-            select_len = len(old_name) - len(suffix)
-        else:
-            select_len = len(old_name)
-        if 0 < select_len < len(old_name):
-            edit.setSelection(0, select_len)
-        else:
-            edit.selectAll()
-        edit.setFocus()
-
-        # UI合理性6（2026-08-02）：重命名弹窗适当调宽（约为默认宽度的 3/2）
-        dialog.adjustSize()
-        hint = dialog.sizeHint()
-        dialog.resize(int(hint.width() * 1.5), hint.height())
-
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            return edit.text().strip(), True
-        return "", False
+        """弹出重命名对话框（委托 entry_dialogs.show_rename_dialog）。"""
+        return show_rename_dialog(self, old_name)
 
     def _rename_entry_core(self, entry: FileEntry, refresh_middle: bool = True) -> bool:
         """重命名核心逻辑（委托 FileOperationsController）。"""
@@ -1567,84 +1517,18 @@ class MainWindow(QMainWindow):
             self._copy_path_to_clipboard(entries[0].path)
 
     def _on_tag_manager_clicked(self) -> None:
-        """打开标签管理对话框（阶段 4 Task 1）。
-
-        - 仅当注入了 tag_service 时响应（按钮可见性已通过 __init__ 控制，
-          此处为防御性二次校验）。
-        - Dialog 持有 TransactionScope 的 commit / rollback 引用，每次增删改操作
-          后立即提交（事务边界由 Dialog 内部控制）。
-        - Dialog 关闭后无需刷新目录树（标签不影响文件系统）。
-        """
-        if self._tag_service is None:
-            return
-        dialog = TagManagerDialog(
-            self._tag_service,
-            commit_callback=self._transaction_scope.commit,
-            rollback_callback=self._transaction_scope.rollback,
-            parent=self,
-        )
-        dialog.exec()
-        # Stage 4 Task 3：标签库可能变更，刷新 TagFilterBar 可选标签。
-        # refresh_categories 会自动剔除已删除的已选标签并重新筛选。
-        self._refresh_tag_filter_bar()
-        # BugFix2 验收反馈：标签库可能变更，刷新元数据面板当前单元的标签显示
-        # （refresh_tags 不触碰表单字段，保留未保存的来源/备注编辑）
-        if self._metadata_panel is not None:
-            self._metadata_panel.refresh_tags()
+        """打开标签管理对话框（委托 ContentListController）。"""
+        self._content_list_controller.tag_manager_clicked()
 
     # === Stage 5 Task 6：操作历史与撤销 ===
 
     def _on_operation_history_clicked(self) -> None:
-        """打开操作历史对话框。
-
-        - 仅当注入了 undo_service 时响应（按钮可见性已通过 __init__ 控制）。
-        - Dialog 内部完成 undo 流程（反向文件操作 + 同步 + 写 undo 记录 + mark_undone），
-          但不自提交；由 MainWindow 在 dialog.exec() 返回后 commit。
-        - Dialog 撤销成功后通过 callback 通知 MainWindow 刷新中栏/目录树。
-        - 失败时（UndoSafetyError 等）Dialog 内部已弹窗提示，MainWindow 仅 rollback。
-        """
-        if self._undo_service is None:
-            return
-
-        had_undone = [False]  # 闭包变量，记录是否发生过撤销
-
-        def _on_undone() -> None:
-            had_undone[0] = True
-
-        from app.operation_history_dialog import OperationHistoryDialog  # noqa: PLC0415
-
-        dialog = OperationHistoryDialog(self._undo_service, parent=self, limit=100)
-        # UX 重构 Phase 2 Task 5：注入 managed_root_service 用于路径简化显示
-        dialog.set_managed_root_service(self._service)
-        dialog.set_on_undone_callback(_on_undone)
-        dialog.exec()
-
-        if had_undone[0]:
-            # 发生过撤销：commit + 刷新 UI
-            self._commit()
-            self._refresh_tree()
-            self._refresh_content_list_for_current_mode()
-            self.statusBar().showMessage("已撤销操作", 3000)
+        """打开操作历史对话框（委托 FileOperationsController）。"""
+        self._file_operations_controller.operation_history_clicked()
 
     def _on_refresh_current(self) -> None:
-        """刷新当前目录（UX 重构 Phase 2 Task 5，Q5=B + Q6=A）。
-
-        - 仅刷新中栏当前显示的目录 + 目录树对应节点，不触发全量扫描
-        - 若受影响目录与装配面板钉住文件夹相同，同步刷新装配面板（Q6=A）
-        - 外部修改文件后 F5 能看到变化
-
-        实现说明：FolderTreeService 无单节点刷新接口，使用 _refresh_tree（从 DB 重载
-        目录树，不触发扫描）+ _restore_middle_after_tree_refresh 恢复中栏。
-        _restore_middle_after_tree_refresh 已含 _refresh_assembly_if_affected。
-        """
-        current_dir = self._current_displayed_dir()
-        if current_dir is None:
-            self.statusBar().showMessage(ui.REFRESH_NO_DIR, 2000)
-            return
-        # 刷新目录树（从 DB 重载，不触发扫描）+ 恢复中栏选中 + 同步装配面板
-        self._refresh_tree()
-        self._restore_middle_after_tree_refresh(current_dir)
-        self.statusBar().showMessage(ui.REFRESH_DONE, 2000)
+        """刷新当前目录（委托 ContentListController）。"""
+        self._content_list_controller.refresh_current()
 
     # === Stage 5 Task 4：键盘快捷键 ===
 
@@ -1653,99 +1537,8 @@ class MainWindow(QMainWindow):
         return self._content_list_controller.get_selected_entries()
 
     def _setup_shortcuts(self) -> None:
-        """注册键盘快捷键。
-
-        Q5=A：context=WidgetShortcut，仅在该控件聚焦时生效。
-        用户补充（Task 3b）：目录树支持全部快捷键（F2/Delete/Ctrl+C/X/V）。
-
-        快捷键列表：
-        - F2（中栏）：重命名选中条目（Q1=A：多选取第一个）
-        - F2（目录树）：重命名选中目录树节点
-        - Delete（中栏/目录树）：删除选中条目
-        - Ctrl+Z：撤销最近可撤销操作（Q2=A 二次确认；Q3=B 跳过不可撤销/已撤销）
-        - Ctrl+A（中栏）：全选
-        - Ctrl+C/X/V（中栏/目录树）：复制/剪切/粘贴（Task 3b 接入真实逻辑）
-        """
-        # 中栏 Ctrl+A 始终注册
-        self._shortcut_select_all = QShortcut(QKeySequence("Ctrl+A"), self._content_view)
-        self._shortcut_select_all.setContext(Qt.ShortcutContext.WidgetShortcut)
-        self._shortcut_select_all.activated.connect(self._on_shortcut_select_all)
-
-        # Ctrl+Z：窗口级（任意位置聚焦均可触发，因为撤销是全局操作）
-        # 仅在注入 UndoService 时注册
-        if self._undo_service is not None:
-            self._shortcut_undo = QShortcut(QKeySequence("Ctrl+Z"), self)
-            self._shortcut_undo.setContext(Qt.ShortcutContext.WindowShortcut)
-            self._shortcut_undo.activated.connect(self._on_shortcut_undo)
-
-        # F2 / Delete 依赖 FileOperationService
-        if self._file_operation_service is not None:
-            # 中栏 F2 重命名（Q1=A：多选取第一个）
-            self._shortcut_rename = QShortcut(QKeySequence("F2"), self._content_view)
-            self._shortcut_rename.setContext(Qt.ShortcutContext.WidgetShortcut)
-            self._shortcut_rename.activated.connect(self._on_shortcut_rename_content)
-
-            # 中栏 Delete 删除
-            self._shortcut_delete = QShortcut(QKeySequence("Delete"), self._content_view)
-            self._shortcut_delete.setContext(Qt.ShortcutContext.WidgetShortcut)
-            self._shortcut_delete.activated.connect(self._on_shortcut_delete)
-
-            # 目录树 F2 / Delete（用户补充：目录树也支持 F2/Delete）
-            self._shortcut_rename_tree = QShortcut(QKeySequence("F2"), self._tree_view)
-            self._shortcut_rename_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
-            self._shortcut_rename_tree.activated.connect(self._on_shortcut_rename_tree)
-
-            self._shortcut_delete_tree = QShortcut(QKeySequence("Delete"), self._tree_view)
-            self._shortcut_delete_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
-            self._shortcut_delete_tree.activated.connect(self._on_shortcut_delete_tree)
-
-            # Stage 5 Task 5：Ctrl+M 移动到...（Q3=B 中栏 + 目录树 WidgetShortcut）
-            self._shortcut_move_to = QShortcut(QKeySequence("Ctrl+M"), self._content_view)
-            self._shortcut_move_to.setContext(Qt.ShortcutContext.WidgetShortcut)
-            self._shortcut_move_to.activated.connect(self._on_shortcut_move_to)
-
-            self._shortcut_move_to_tree = QShortcut(QKeySequence("Ctrl+M"), self._tree_view)
-            self._shortcut_move_to_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
-            self._shortcut_move_to_tree.activated.connect(self._on_shortcut_move_to_tree)
-
-            # 操作便捷性3：Ctrl+Q 移动到最近目标（窗口级，任意位置可触发）。
-            # 默认快捷键暂定 Ctrl+Q，后续做自定义快捷键菜单时再开放配置。
-            self._shortcut_move_to_latest = QShortcut(QKeySequence("Ctrl+Q"), self)
-            self._shortcut_move_to_latest.setContext(Qt.ShortcutContext.WindowShortcut)
-            self._shortcut_move_to_latest.activated.connect(self._on_shortcut_move_to_latest)
-
-        # Ctrl+C / Ctrl+X / Ctrl+V 依赖 FileOperationService + ClipboardService
-        if self._file_operation_service is not None and self._clipboard_service is not None:
-            # 中栏 Ctrl+C / Ctrl+X / Ctrl+V（Task 3b 真实逻辑）
-            self._shortcut_copy = QShortcut(QKeySequence("Ctrl+C"), self._content_view)
-            self._shortcut_copy.setContext(Qt.ShortcutContext.WidgetShortcut)
-            self._shortcut_copy.activated.connect(self._on_shortcut_copy)
-
-            self._shortcut_cut = QShortcut(QKeySequence("Ctrl+X"), self._content_view)
-            self._shortcut_cut.setContext(Qt.ShortcutContext.WidgetShortcut)
-            self._shortcut_cut.activated.connect(self._on_shortcut_cut)
-
-            self._shortcut_paste = QShortcut(QKeySequence("Ctrl+V"), self._content_view)
-            self._shortcut_paste.setContext(Qt.ShortcutContext.WidgetShortcut)
-            self._shortcut_paste.activated.connect(self._on_shortcut_paste)
-
-            # 目录树 Ctrl+C / Ctrl+X / Ctrl+V（用户补充：目录树也支持复制/剪切/粘贴）
-            self._shortcut_copy_tree = QShortcut(QKeySequence("Ctrl+C"), self._tree_view)
-            self._shortcut_copy_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
-            self._shortcut_copy_tree.activated.connect(self._on_shortcut_copy_tree)
-
-            self._shortcut_cut_tree = QShortcut(QKeySequence("Ctrl+X"), self._tree_view)
-            self._shortcut_cut_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
-            self._shortcut_cut_tree.activated.connect(self._on_shortcut_cut_tree)
-
-            self._shortcut_paste_tree = QShortcut(QKeySequence("Ctrl+V"), self._tree_view)
-            self._shortcut_paste_tree.setContext(Qt.ShortcutContext.WidgetShortcut)
-            self._shortcut_paste_tree.activated.connect(self._on_shortcut_paste_tree)
-
-        # UX 重构 Phase 2 Task 5（Q5=B）：F5 刷新当前目录（窗口级，任意位置聚焦可触发）
-        self._shortcut_refresh = QShortcut(QKeySequence("F5"), self)
-        self._shortcut_refresh.setContext(Qt.ShortcutContext.WindowShortcut)
-        self._shortcut_refresh.activated.connect(self._on_refresh_current)
+        """注册键盘快捷键（委托 ShortcutRegistry，_shortcut_* 属性挂在窗口上）。"""
+        ShortcutRegistry(self).register()
 
     def _on_shortcut_rename_content(self) -> None:
         """F2：重命名中栏选中条目（委托 FileOperationsController）。"""
@@ -1895,18 +1688,8 @@ class MainWindow(QMainWindow):
         Stage 5 Task 7 收尾：移除"整理状态"显示行。v13（UX 重构 Task 6）纯 DELETE
         模式下记录存在即已标记，能进入此方法的状态恒为已标记，显示无意义。
         """
-        source_url = unit.source_url or ui.METADATA_SOURCE_URL_EMPTY
-        notes = unit.notes or ui.METADATA_NOTES_EMPTY
-
-        lines = [
-            f"{ui.METADATA_PATH_LABEL}：{make_display_path_from_service(unit.path, self._service)}",
-            f"{ui.METADATA_TYPE_LABEL}：{unit.content_type}",
-            f"{ui.METADATA_SOURCE_URL_LABEL}：{source_url}",
-            f"{ui.METADATA_NOTES_LABEL}：{notes}",
-            f"{ui.METADATA_CREATED_AT_LABEL}：{unit.created_at}",
-        ]
         # 兼容旧测试：缓存多行文本（metadata_full_text()）
-        self._metadata_full_text = "\n".join(lines)
+        self._metadata_full_text = format_metadata_lines(unit, self._service)
         # 切换显示：若有 MetadataPanel，隐藏 label 显示 panel
         if self._metadata_panel is not None:
             self._metadata_label.setVisible(False)
@@ -1940,35 +1723,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(ui.METADATA_PANEL_COVER_SAVED, 3000)
 
     def _on_metadata_rename_requested(self, unit_id: str, new_name: str) -> None:
-        """元数据面板重命名栏回车（UI合理性13）→ 执行文件重命名。
-
-        复用 FileOperationService.rename 的既有链路（冲突/非法名处理、operation_history、
-        目录树与中栏刷新），成功后仅更新面板的当前 unit 与重命名栏文本
-        （不重载表单，保留未保存的来源/备注编辑，与 apply_cover 同策略）。
-        """
-        if self._file_operation_service is None or self._content_service is None:
-            return
-        unit = self._content_service.get_by_id(unit_id)
-        if unit is None:
-            return
-        old_path = Path(unit.path)
-        new_name = new_name.strip()
-        if not new_name or new_name == old_path.name:
-            return
-        dir_path = str(old_path.parent)
-        try:
-            self._file_operation_service.rename(old_path, new_name)
-            self._commit()
-            self._refresh_tree()
-            # 恢复中栏显示（rename 后 _refresh_tree 会清空列表）
-            self._restore_middle_after_tree_refresh(dir_path)
-            # 更新面板状态（保留未保存编辑）
-            updated = self._content_service.get_by_id(unit_id)
-            if updated is not None and self._metadata_panel is not None:
-                self._metadata_panel.apply_renamed_unit(updated)
-            self.statusBar().showMessage(ui.MENU_RENAME_SUCCESS.format(name=new_name), 3000)
-        except Exception as e:  # noqa: BLE001 - UI 边界统一兜底
-            self._handle_service_error(e, ui.MENU_OPERATION_FAILED.format(error=str(e)))
+        """元数据面板重命名栏回车（委托 FileOperationsController）。"""
+        self._file_operations_controller.metadata_rename_requested(unit_id, new_name)
 
     def _on_batch_tag(self, entries: list[FileEntry]) -> None:
         """批量打标签：弹出 BatchTagDialog。
@@ -2021,53 +1777,9 @@ class MainWindow(QMainWindow):
         self._apply_elide()
 
     def _apply_elide(self) -> None:
-        """对详情区、元数据面板的路径行应用 ElideMiddle。
-
-        多行文本按 \\n 拆分，仅对路径行（"路径：..." / "完整路径：..." / "目标：..."）
-        做值部分省略，其他行原样保留。文本超长时用 QFontMetrics.elidedText 替换为中间省略形式。
-        同时设置 Tooltip 显示完整文本，便于鼠标悬停查看。
-        """
-        self._elide_label_lines(self._detail_label, self._detail_full_text)
-        self._elide_label_lines(self._metadata_label, self._metadata_full_text)
-
-    def _elide_label_lines(self, label: QLabel, full_text: str) -> None:
-        """对 label 的多行文本逐行 Elide，并设置 Tooltip 显示完整文本。"""
-        if not full_text:
-            label.setText("")
-            label.setToolTip("")
-            return
-
-        fm = QFontMetrics(label.font())
-        # 减去内边距，预留 16px 余量
-        max_width = max(50, label.width() - 16)
-
-        lines = full_text.split("\n")
-        out: list[str] = []
-        for line in lines:
-            elided_line = self._elide_single_line(line, fm, max_width)
-            out.append(elided_line)
-        label.setText("\n".join(out))
-        # Tooltip 显示完整原文（统一路径显示策略：Elide + 悬停查看完整路径）
-        label.setToolTip(full_text)
-
-    def _elide_single_line(self, line: str, fm: QFontMetrics, max_width: int) -> str:
-        """对单行文本应用 Elide。
-
-        识别路径前缀（"路径：" / "完整路径：" / "目标："），对值部分 ElideMiddle；
-        其他行若超宽则整体 ElideMiddle。
-        """
-        for prefix_str in self._ELIDE_PATH_PREFIXES:
-            if prefix_str in line:
-                idx = line.index(prefix_str)
-                prefix = line[: idx + len(prefix_str)]
-                value = line[idx + len(prefix_str) :]
-                available = max_width - fm.horizontalAdvance(prefix)
-                elided = fm.elidedText(value, Qt.TextElideMode.ElideMiddle, available)
-                return prefix + elided
-        # 非路径行：若仍超宽，整体 ElideMiddle
-        if fm.horizontalAdvance(line) > max_width:
-            return fm.elidedText(line, Qt.TextElideMode.ElideMiddle, max_width)
-        return line
+        """对详情区、元数据面板的路径行应用 ElideMiddle（委托 metadata_helpers）。"""
+        elide_label_lines(self._detail_label, self._detail_full_text)
+        elide_label_lines(self._metadata_label, self._metadata_full_text)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         """窗口尺寸变化时重新 Elide。"""
@@ -2089,88 +1801,36 @@ class MainWindow(QMainWindow):
     # --- 扫描 ---
 
     def _on_scan(self, incremental: bool = True) -> None:
-        """启动后台扫描。扫描期间禁用扫描入口。"""
-        if self._scan_controller.is_scanning():
-            return
-        root_id = self._selected_root_id()
-        if root_id is None:
-            self._set_status(ui.ERR_NO_ROOT_SELECTED)
-            return
-
-        self._begin_scanning()
-        # UX 重构 Task 7 Step 2：线程生命周期由 ScanController 管理
-        self._scan_controller.start_scan(root_id, incremental=incremental)
+        """启动后台扫描（委托 ScanUiState）。"""
+        self._scan_ui_state.on_scan(incremental)
 
     def _begin_scanning(self) -> None:
-        """扫描开始：禁用扫描入口与根目录操作按钮（UI 状态）。"""
-        self._scan_button.setText(ui.SCAN_BUTTON_SCANNING)
-        self._scan_button.setEnabled(False)
-        self._scan_full_button.setEnabled(False)
-        self._add_button.setEnabled(False)
-        self._remove_button.setEnabled(False)
-        self._set_status(ui.STATUS_SCANNING)
+        """扫描开始（委托 ScanUiState）。"""
+        self._scan_ui_state.begin()
 
     def _end_scanning(self) -> None:
-        """恢复按钮状态。"""
-        self._scan_button.setText(ui.SCAN_BUTTON)
-        self._add_button.setEnabled(True)
-        has_selection = self._selected_root_id() is not None
-        self._scan_button.setEnabled(has_selection)
-        self._scan_full_button.setEnabled(has_selection)
-        self._remove_button.setEnabled(has_selection)
+        """恢复按钮状态（委托 ScanUiState）。"""
+        self._scan_ui_state.end()
 
     def _on_scan_started(self) -> None:
-        self._set_status(ui.STATUS_SCANNING)
+        """扫描开始信号（委托 ScanUiState）。"""
+        self._scan_ui_state.on_started()
 
     def _on_scan_progress(self, text: str) -> None:
-        """TD-M13：扫描进度文本 → 状态栏（ScanWorker 当前仅发送"正在扫描…"）。"""
-        self._set_status(text)
+        """扫描进度文本（委托 ScanUiState）。"""
+        self._scan_ui_state.on_progress(text)
 
     def _on_scan_finished(self, summary: ScanSummary) -> None:
-        """扫描完成：展示摘要、刷新目录树、刷新当前中栏文件列表。
-
-        扫描联动（roadmap 阶段 2 Task 5 验收项 5）：
-        - 若当前选中目录树节点，刷新该目录的文件列表，
-          使新扫描出的压缩包文件立即显示 -- 标记。
-        """
-        text = ui.format_scan_summary(
-            scanned_dirs=summary.scanned_dirs,
-            content_units_found=summary.content_units_found,
-            skipped_unchanged=summary.skipped_unchanged,
-            errors=len(summary.errors),
-        )
-        if summary.errors:
-            lines = [text, ""]
-            lines.append(f"错误摘要（前 {MAX_ERROR_SUMMARY_LINES} 条）：")
-            for err in summary.errors[:MAX_ERROR_SUMMARY_LINES]:
-                lines.append(f"• {err}")
-            if len(summary.errors) > MAX_ERROR_SUMMARY_LINES:
-                lines.append(f"…（共 {len(summary.errors)} 个错误）")
-            text = "\n".join(lines)
-        self._set_status(f"{ui.STATUS_SCAN_COMPLETE}\n{text}")
-        self._end_scanning()
-        # 扫描完成 → 刷新目录树
-        self._refresh_tree()
-        # 扫描完成 → 刷新当前中栏文件列表（扫描联动）
-        self._refresh_content_list_after_scan()
+        """扫描完成（委托 ScanUiState）。"""
+        self._scan_ui_state.on_finished(summary)
 
     def _refresh_content_list_after_scan(self) -> None:
-        """扫描完成后刷新中栏文件列表（扫描联动）。
-
-        UX 重构 Phase 1 Task 1：移除模式分支，统一为原 browse 行为。
-        若目录树有选中节点，重新读取该目录文件列表；否则无操作。
-        """
-        sm = self._tree_view.selectionModel()
-        indexes = sm.selectedIndexes() if sm is not None else []
-        if not indexes:
-            return
-        node = self._tree_model.node_at(indexes[0])
-        if node is not None:
-            self._refresh_content_list(node.real_path)
+        """扫描完成后刷新中栏文件列表（委托 ScanUiState）。"""
+        self._scan_ui_state.refresh_content_list_after_scan()
 
     def _on_scan_failed(self, message: str) -> None:
-        self._set_status(f"{ui.STATUS_SCAN_FAILED}\n{message}")
-        self._end_scanning()
+        """扫描失败（委托 ScanUiState）。"""
+        self._scan_ui_state.on_failed(message)
 
     # --- 状态 ---
 

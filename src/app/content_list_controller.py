@@ -25,6 +25,7 @@ from app.metadata_panel import MetadataPanel
 from app.metadata_view import MetadataView
 from app.selection_memory import SelectionMemory
 from app.tag_filter import TagFilterBar
+from app.tag_manager_dialog import TagManagerDialog
 from app.transaction_scope import TransactionScope
 from application.content_service import ContentService
 from application.content_unit_creation_service import ContentUnitCreationService
@@ -235,6 +236,52 @@ class ContentListController(QObject):
         """刷新 TagFilterBar 的可选标签（标签管理对话框关闭后调用）。"""
         if self._tag_filter_bar is not None:
             self._tag_filter_bar.refresh_categories()
+
+    def refresh_current(self) -> None:
+        """刷新当前目录（UX 重构 Phase 2 Task 5，Q5=B + Q6=A）。
+
+        - 仅刷新中栏当前显示的目录 + 目录树对应节点，不触发全量扫描
+        - 若受影响目录与装配面板钉住文件夹相同，同步刷新装配面板（Q6=A）
+        - 外部修改文件后 F5 能看到变化
+
+        实现说明：FolderTreeService 无单节点刷新接口，使用 _refresh_tree（从 DB 重载
+        目录树，不触发扫描）+ _restore_middle_after_tree_refresh 恢复中栏。
+        _restore_middle_after_tree_refresh 已含装配面板受影响刷新。
+        """
+        current_dir = self.current_displayed_dir()
+        if current_dir is None:
+            self._status_bar.showMessage(ui.REFRESH_NO_DIR, 2000)
+            return
+        # 刷新目录树（从 DB 重载，不触发扫描）+ 恢复中栏选中 + 同步装配面板
+        self._host._refresh_tree()
+        self._host._restore_middle_after_tree_refresh(current_dir)
+        self._status_bar.showMessage(ui.REFRESH_DONE, 2000)
+
+    def tag_manager_clicked(self) -> None:
+        """打开标签管理对话框（阶段 4 Task 1）。
+
+        - 仅当注入了 tag_service 时响应（按钮可见性已通过 __init__ 控制，
+          此处为防御性二次校验）。
+        - Dialog 持有 TransactionScope 的 commit / rollback 引用，每次增删改操作
+          后立即提交（事务边界由 Dialog 内部控制）。
+        - Dialog 关闭后无需刷新目录树（标签不影响文件系统）。
+        """
+        if self._tag_service is None:
+            return
+        dialog = TagManagerDialog(
+            self._tag_service,
+            commit_callback=self._tx.commit,
+            rollback_callback=self._tx.rollback,
+            parent=self._dialog_parent,
+        )
+        dialog.exec()
+        # Stage 4 Task 3：标签库可能变更，刷新 TagFilterBar 可选标签。
+        # refresh_categories 会自动剔除已删除的已选标签并重新筛选。
+        self.refresh_tag_filter_bar()
+        # BugFix2 验收反馈：标签库可能变更，刷新元数据面板当前单元的标签显示
+        # （refresh_tags 不触碰表单字段，保留未保存的来源/备注编辑）
+        if self._metadata_panel is not None:
+            self._metadata_panel.refresh_tags()
 
     # --- 文件条目交互 ---
 

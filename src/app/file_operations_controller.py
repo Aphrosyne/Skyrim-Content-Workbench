@@ -23,6 +23,7 @@ from app.file_list_model import FileListModel
 from app.folder_tree_model import FolderTreeModel
 from app.transaction_scope import TransactionScope
 from application.clipboard_service import ClipboardService
+from application.content_service import ContentService
 from application.errors import (
     ConflictError,
     CrossDriveError,
@@ -49,6 +50,7 @@ class FileOperationsController(QObject):
         tree_view: QTreeView,
         tree_model: FolderTreeModel,
         tree_service: FolderTreeService,
+        content_service: ContentService,
         managed_root_service: ManagedRootService,
         assembly_panel,
         transaction_scope: TransactionScope,
@@ -79,6 +81,7 @@ class FileOperationsController(QObject):
         self._tree_view = tree_view
         self._tree_model = tree_model
         self._tree_service = tree_service
+        self._content_service = content_service
         self._service = managed_root_service
         self._assembly_panel = assembly_panel
         self._tx = transaction_scope
@@ -611,6 +614,73 @@ class FileOperationsController(QObject):
                 ui.SHORTCUT_UNDO_CONFIRM_TITLE,
                 ui.SHORTCUT_UNDO_FAILED.format(error=str(e)),
             )
+
+    def operation_history_clicked(self) -> None:
+        """打开操作历史对话框。
+
+        - 仅当注入了 undo_service 时响应（按钮可见性已通过 __init__ 控制）。
+        - Dialog 内部完成 undo 流程（反向文件操作 + 同步 + 写 undo 记录 + mark_undone），
+          但不自提交；由 MainWindow 在 dialog.exec() 返回后 commit。
+        - Dialog 撤销成功后通过 callback 通知 MainWindow 刷新中栏/目录树。
+        - 失败时（UndoSafetyError 等）Dialog 内部已弹窗提示，MainWindow 仅 rollback。
+        """
+        if self._undo_service is None:
+            return
+
+        had_undone = [False]  # 闭包变量，记录是否发生过撤销
+
+        def _on_undone() -> None:
+            had_undone[0] = True
+
+        from app.operation_history_dialog import OperationHistoryDialog  # noqa: PLC0415
+
+        dialog = OperationHistoryDialog(self._undo_service, parent=self._dialog_parent, limit=100)
+        # UX 重构 Phase 2 Task 5：注入 managed_root_service 用于路径简化显示
+        dialog.set_managed_root_service(self._service)
+        dialog.set_on_undone_callback(_on_undone)
+        dialog.exec()
+
+        if had_undone[0]:
+            # 发生过撤销：commit + 刷新 UI
+            self._tx.commit()
+            self._refresh_tree()
+            self._refresh_middle_current()
+            self._status_bar.showMessage("已撤销操作", 3000)
+
+    def metadata_rename_requested(self, unit_id: str, new_name: str) -> None:
+        """元数据面板重命名栏回车（UI合理性13）→ 执行文件重命名。
+
+        复用 FileOperationService.rename 的既有链路（冲突/非法名处理、operation_history、
+        目录树与中栏刷新），成功后仅更新面板的当前 unit 与重命名栏文本
+        （不重载表单，保留未保存的来源/备注编辑，与 apply_cover 同策略）。
+
+        注：文件操作服务经 host 运行时读取，兼容测试在构造后替换
+        ``window._file_operation_service`` 的场景。
+        """
+        file_operation_service = self._host._file_operation_service
+        if file_operation_service is None or self._content_service is None:
+            return
+        unit = self._content_service.get_by_id(unit_id)
+        if unit is None:
+            return
+        old_path = Path(unit.path)
+        new_name = new_name.strip()
+        if not new_name or new_name == old_path.name:
+            return
+        dir_path = str(old_path.parent)
+        try:
+            file_operation_service.rename(old_path, new_name)
+            self._tx.commit()
+            self._refresh_tree()
+            # 恢复中栏显示（rename 后 _refresh_tree 会清空列表）
+            self.restore_middle_after_tree_refresh(dir_path)
+            # 更新面板状态（保留未保存编辑）
+            updated = self._content_service.get_by_id(unit_id)
+            if updated is not None and self._host._metadata_panel is not None:
+                self._host._metadata_panel.apply_renamed_unit(updated)
+            self._status_bar.showMessage(ui.MENU_RENAME_SUCCESS.format(name=new_name), 3000)
+        except Exception as e:  # noqa: BLE001 - UI 边界统一兜底
+            self._handle_error(e, ui.MENU_OPERATION_FAILED.format(error=str(e)))
 
     # === 移动到（对话框 + 冲突解决 + 最近目标） ===
 
