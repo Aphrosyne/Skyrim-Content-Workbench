@@ -1,10 +1,10 @@
 r"""Task 0.5 app_paths 路径决策与目录创建测试。
 
 覆盖：
-- 路径优先级（环境变量 > 项目根 data/ > AppData 回退）
+- 路径优先级（环境变量 > 项目根 data/ > 程序目录 data/ 回退）
 - _find_project_root 定位
 - 目录创建（ensure_app_directories）
-- 旧目录检测提示代码已移除（UX 重构 Task 6），AppData 回退保留
+- 2026-08-04（用户反馈）：不再回退 LOCALAPPDATA / 用户主目录
 - 中文路径 / 空格路径
 """
 
@@ -42,26 +42,31 @@ def test_project_root_data_dir_in_dev(tmp_path: Path, monkeypatch: pytest.Monkey
     assert result == tmp_path / "data"
 
 
-def test_fallback_to_appdata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """无环境变量 + 无项目根 → 回退 AppData。"""
+def test_fallback_to_program_dir_ignores_appdata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """无环境变量 + 无项目根 → 回退程序目录 data/；即使有 LOCALAPPDATA 也不使用。"""
     monkeypatch.delenv("SCW_DATA_DIR", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
 
     with patch.object(app_paths, "_find_project_root", return_value=None):
         result = app_paths.get_app_data_root()
 
-    assert result == tmp_path / "appdata" / app_paths.APP_DATA_DIR_NAME
+    expected = Path(app_paths.__file__).resolve().parent.parent.parent / "data"
+    assert result == expected
 
 
-def test_fallback_to_home_on_non_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """无环境变量 + 无项目根 + 无 LOCALAPPDATA → 回退 ~/.skyrimmodworkbench/。"""
+def test_no_fallback_to_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """无项目根 + 无 LOCALAPPDATA → 仍回退程序目录 data/，不使用用户主目录。"""
     monkeypatch.delenv("SCW_DATA_DIR", raising=False)
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
 
     with patch.object(app_paths, "_find_project_root", return_value=None):
         result = app_paths.get_app_data_root()
 
-    assert result == Path.home() / f".{app_paths.APP_DATA_DIR_NAME.lower()}"
+    expected = Path(app_paths.__file__).resolve().parent.parent.parent / "data"
+    assert result == expected
+    assert result != Path.home() / f".{app_paths.APP_DATA_DIR_NAME.lower()}"
 
 
 def test_find_project_root_finds_pyproject(tmp_path: Path) -> None:

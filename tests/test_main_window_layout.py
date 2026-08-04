@@ -19,6 +19,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QSettings  # noqa: E402
 
 from app import ui_constants as ui  # noqa: E402
+from app.app_paths import get_app_settings_path  # noqa: E402
 from app.content_unit_delegate import ContentUnitStripeDelegate  # noqa: E402
 from app.file_list_model import COL_MODIFIED, COL_NAME, COL_SIZE, COL_TYPE  # noqa: E402
 from app.main_menu_bar import MainMenuBar  # noqa: E402
@@ -70,7 +71,7 @@ _DB_COUNTER = {"n": 0}
 @pytest.fixture(autouse=True)
 def _clear_layout_settings():
     """每个测试前后清除布局/视图 QSettings，避免测试间持久化干扰。"""
-    s = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+    s = QSettings(str(get_app_settings_path()), QSettings.Format.IniFormat)
     for key in _ALL_KEYS:
         s.remove(key)
     s.sync()
@@ -222,7 +223,7 @@ def test_menu_reset_layout_restores_defaults(qapp, tmp_path: Path) -> None:
     window = _build_window(tmp_path)
     try:
         # 预置存档：主栏/右栏分割线 + 操作历史列宽
-        settings = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+        settings = QSettings(str(get_app_settings_path()), QSettings.Format.IniFormat)
         window._splitter_state.save(window._splitter, ui.QSETTINGS_KEY_SPLITTER_MAIN)  # noqa: SLF001
         window._splitter_state.save(  # noqa: SLF001
             window._right_splitter,
@@ -354,9 +355,9 @@ def test_splitter_state_persists_across_restart(qapp, tmp_path: Path) -> None:
         window2.close()
 
 
-def test_splitter_restores_registry_string_sizes(qapp, tmp_path: Path) -> None:
-    """Windows 注册表字符串列表尺寸也能恢复（固化修复，2026-08-03）。"""
-    settings = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+def test_splitter_restores_settings_file_string_sizes(qapp, tmp_path: Path) -> None:
+    """设置文件中的字符串列表尺寸也能恢复（固化修复，2026-08-03）。"""
+    settings = QSettings(str(get_app_settings_path()), QSettings.Format.IniFormat)
     settings.setValue(ui.QSETTINGS_KEY_SPLITTER_MAIN, ["300", "420", "300"])
     settings.sync()
 
@@ -379,7 +380,7 @@ def test_splitter_drag_saves_immediately(qapp, tmp_path: Path) -> None:
         window._splitter.setSizes([200, 500, 300])  # noqa: SLF001
         window._splitter.splitterMoved.emit(1, 500)  # noqa: SLF001 模拟用户拖动
 
-        settings = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+        settings = QSettings(str(get_app_settings_path()), QSettings.Format.IniFormat)
         assert settings.contains(ui.QSETTINGS_KEY_SPLITTER_MAIN)
     finally:
         window.close()

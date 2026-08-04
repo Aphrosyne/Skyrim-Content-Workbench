@@ -2,14 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings
-
-from app import ui_constants as ui
 from app.shortcut_config import SHORTCUT_IDS, ShortcutConfig, shortcut_definitions
-
-
-def _settings() -> QSettings:
-    return QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
 
 
 class TestShortcutConfig:
@@ -19,12 +12,12 @@ class TestShortcutConfig:
         assert cfg.key_for("select_all") == "Ctrl+A"
         assert len(cfg.keys) == len(SHORTCUT_IDS)
 
-    def test_load_empty_returns_defaults(self) -> None:
-        cfg = ShortcutConfig.load(_settings())
+    def test_load_empty_returns_defaults(self, settings_ini) -> None:
+        cfg = ShortcutConfig.load(settings_ini)
         assert cfg == ShortcutConfig.defaults()
 
-    def test_save_and_load_roundtrip(self) -> None:
-        settings = _settings()
+    def test_save_and_load_roundtrip(self, settings_ini) -> None:
+        settings = settings_ini
         custom = ShortcutConfig.defaults()
         custom.set_key("rename", "Ctrl+E")
         custom.set_key("paste", "")  # 禁用
@@ -34,8 +27,8 @@ class TestShortcutConfig:
         assert loaded.key_for("rename") == "Ctrl+E"
         assert loaded.key_for("paste") == ""
 
-    def test_invalid_value_falls_back_to_default(self) -> None:
-        settings = _settings()
+    def test_invalid_value_falls_back_to_default(self, settings_ini) -> None:
+        settings = settings_ini
         settings.setValue("shortcut/rename", "NotAKey")
         cfg = ShortcutConfig.load(settings)
         assert cfg.key_for("rename") == "F2"

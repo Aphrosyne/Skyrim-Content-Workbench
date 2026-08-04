@@ -2,41 +2,35 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings
-
 from app import file_type_icon_colors as config
 from app import ui_constants as ui
 
 
-def _settings() -> QSettings:
-    return QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+def _clear_all(settings) -> None:
+    config.clear_colors(settings)
 
 
-def _clear_all() -> None:
-    config.clear_colors(_settings())
-
-
-def test_load_returns_defaults_when_nothing_saved() -> None:
-    _clear_all()
-    colors = config.load_colors(_settings())
+def test_load_returns_defaults_when_nothing_saved(settings_ini) -> None:
+    _clear_all(settings_ini)
+    colors = config.load_colors(settings_ini)
     assert colors == ui.FILE_TYPE_ICON_COLORS
 
 
-def test_save_and_load_roundtrip() -> None:
-    _clear_all()
+def test_save_and_load_roundtrip(settings_ini) -> None:
+    _clear_all(settings_ini)
     custom = {
         "folder": "#111111",
         "archive": "#222222",
         "image": "#333333",
         "document": "#444444",
     }
-    config.save_colors(_settings(), custom)
-    assert config.load_colors(_settings()) == custom
+    config.save_colors(settings_ini, custom)
+    assert config.load_colors(settings_ini) == custom
 
 
-def test_partial_save_falls_back_to_defaults() -> None:
-    _clear_all()
-    settings = _settings()
+def test_partial_save_falls_back_to_defaults(settings_ini) -> None:
+    _clear_all(settings_ini)
+    settings = settings_ini
     settings.setValue(ui.QSETTINGS_KEY_ICON_COLOR_FOLDER, "#abcdef")
     colors = config.load_colors(settings)
     assert colors["folder"] == "#abcdef"
@@ -45,9 +39,9 @@ def test_partial_save_falls_back_to_defaults() -> None:
     assert colors["document"] == ui.FILE_TYPE_ICON_COLORS["document"]
 
 
-def test_clear_removes_all_saved_keys() -> None:
-    _clear_all()
-    settings = _settings()
+def test_clear_removes_all_saved_keys(settings_ini) -> None:
+    _clear_all(settings_ini)
+    settings = settings_ini
     settings.setValue(ui.QSETTINGS_KEY_ICON_COLOR_FOLDER, "#abcdef")
     settings.setValue(ui.QSETTINGS_KEY_ICON_COLOR_ARCHIVE, "#123456")
     config.clear_colors(settings)

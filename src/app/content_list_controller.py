@@ -14,10 +14,11 @@ from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlencode
 
-from PySide6.QtCore import QObject, QSettings
+from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QLabel, QMessageBox, QStatusBar
 
 from app import ui_constants as ui
+from app.app_paths import get_app_settings
 from app.card_list_model import CardListModel
 from app.content_filter import filter_entries
 from app.content_views import _DragDropListView, _RubberBandTableView
@@ -524,7 +525,7 @@ class ContentListController(QObject):
         返回 True 表示已写入；无法识别或失败返回 False（调用方静默跳过，
         绝不允许"前缀+空值"）。
         """
-        config = UrlSettingsConfig.load(QSettings())
+        config = UrlSettingsConfig.load(get_app_settings())
         url = build_nexus_url(Path(unit.path), config.nexus_url_prefix)
         if url is None:
             return False
@@ -550,7 +551,7 @@ class ContentListController(QObject):
 
     def on_browser_search(self, entry: FileEntry) -> None:
         """右键「浏览器搜索」：前缀 + extract_mod_name(名字)（_/-→空格）。"""
-        config = UrlSettingsConfig.load(QSettings())
+        config = UrlSettingsConfig.load(get_app_settings())
         query = mod_search_query(entry.name, config.search_prefix)
         if not query:
             return  # 静默

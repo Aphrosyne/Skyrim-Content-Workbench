@@ -22,6 +22,7 @@ from PySide6.QtCore import QSettings, Qt  # noqa: E402
 from PySide6.QtWidgets import QListView  # noqa: E402
 
 from app import ui_constants as ui  # noqa: E402
+from app.app_paths import get_app_settings_path  # noqa: E402
 from app.main_window import (  # noqa: E402
     VIEW_INDEX_CARD,
     VIEW_INDEX_LIST,
@@ -40,7 +41,7 @@ from infrastructure.repositories.managed_root import ManagedRootRepository  # no
 @pytest.fixture(autouse=True)
 def _clear_qsettings():
     """每个测试前清除 QSettings，避免视图模式/缩放值在测试间持久化干扰。"""
-    s = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+    s = QSettings(str(get_app_settings_path()), QSettings.Format.IniFormat)
     s.remove(ui.QSETTINGS_KEY_VIEW_MODE)
     s.remove(ui.QSETTINGS_KEY_ZOOM)
     s.remove(ui.QSETTINGS_KEY_LIST_ICON_SIZE)
@@ -291,7 +292,7 @@ def test_list_icon_size_persists_across_restart(main_window_env) -> None:
 
     window, _, _ = main_window_env
     window.set_list_icon_size_for_test(32)
-    settings = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+    settings = QSettings(str(get_app_settings_path()), QSettings.Format.IniFormat)
     assert settings.value(ui.QSETTINGS_KEY_LIST_ICON_SIZE, type=int) == 32
 
 

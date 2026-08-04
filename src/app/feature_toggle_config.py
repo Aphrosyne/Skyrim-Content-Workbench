@@ -65,7 +65,7 @@ class FeatureToggleConfig:
             raw = settings.value(_key(feature_id))
             if raw is None:
                 continue
-            # QSettings 存储形式可能是 "true"/"false"（INI）或 Python bool（注册表）
+            # QSettings INI 中存储为 "true"/"false" 字符串
             enabled[feature_id] = str(raw).strip().lower() in ("true", "1", "yes")
         return cls(enabled=enabled)
 

@@ -2,14 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings
-
-from app import ui_constants as ui
 from app.feature_toggle_config import FEATURE_TOGGLE_IDS, FeatureToggleConfig
-
-
-def _settings() -> QSettings:
-    return QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
 
 
 class TestFeatureToggleConfig:
@@ -18,12 +11,12 @@ class TestFeatureToggleConfig:
         assert len(cfg.enabled) == len(FEATURE_TOGGLE_IDS)
         assert all(cfg.is_enabled(fid) for fid in FEATURE_TOGGLE_IDS)
 
-    def test_load_empty_returns_defaults(self) -> None:
-        cfg = FeatureToggleConfig.load(_settings())
+    def test_load_empty_returns_defaults(self, settings_ini) -> None:
+        cfg = FeatureToggleConfig.load(settings_ini)
         assert cfg == FeatureToggleConfig.defaults()
 
-    def test_save_and_load_roundtrip(self) -> None:
-        settings = _settings()
+    def test_save_and_load_roundtrip(self, settings_ini) -> None:
+        settings = settings_ini
         custom = FeatureToggleConfig.defaults()
         custom.toggle("browser_search", False)
         custom.toggle("strip", False)

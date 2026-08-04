@@ -2,14 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings
-
-from app import ui_constants as ui
 from app.url_settings import UrlSettingsConfig, UrlSettingsDialog
-
-
-def _default_settings() -> QSettings:
-    return QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
 
 
 class TestUrlSettingsConfig:
@@ -19,13 +12,13 @@ class TestUrlSettingsConfig:
         assert cfg.search_engine_url == "https://www.bing.com/search"
         assert cfg.search_prefix == "skyrim "
 
-    def test_load_empty_returns_defaults(self) -> None:
-        settings = _default_settings()
+    def test_load_empty_returns_defaults(self, settings_ini) -> None:
+        settings = settings_ini
         cfg = UrlSettingsConfig.load(settings)
         assert cfg == UrlSettingsConfig.defaults()
 
-    def test_save_and_load_roundtrip(self) -> None:
-        settings = _default_settings()
+    def test_save_and_load_roundtrip(self, settings_ini) -> None:
+        settings = settings_ini
         custom = UrlSettingsConfig(
             nexus_url_prefix="https://www.nexusmods.com/skyrim/mods/",
             search_engine_url="https://www.google.com/search?q=",

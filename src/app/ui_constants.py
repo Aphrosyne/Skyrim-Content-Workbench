@@ -635,8 +635,6 @@ SEARCH_MATCHED_FIELD_NOTES = "备注"
 SEARCH_JUMP_TOOLTIP = "双击跳转到所在目录"
 
 # === QSettings 配置键（UI合理性2/3，2026-08-03 从 main_window 迁移至此） ===
-QSETTINGS_ORGANIZATION = "SkyrimContentWorkbench"
-QSETTINGS_APPLICATION = "SkyrimContentWorkbench"
 QSETTINGS_KEY_ZOOM = "view/card_icon_size"
 QSETTINGS_KEY_LIST_ICON_SIZE = "view/list_icon_size"
 QSETTINGS_KEY_VIEW_MODE = "view/current_mode"  # "list" | "card"

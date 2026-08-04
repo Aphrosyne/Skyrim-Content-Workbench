@@ -41,7 +41,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QSettings, QSize, Qt
+from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -68,6 +68,7 @@ from PySide6.QtWidgets import (
 
 from app import file_type_icon_colors, file_type_icons
 from app import ui_constants as ui
+from app.app_paths import get_app_settings
 from app.archive_settings import ArchiveSettings
 from app.assembly_controller import AssemblyController
 from app.assembly_panel import AssemblyPanel
@@ -216,7 +217,8 @@ class MainWindow(QMainWindow):
 
         # Stage 5 Task 1：QSettings 持久化缩放值与视图模式（Q1=A）
         # UI合理性2：分割线状态 helper（键与默认值见 ui_constants）
-        self._qsettings = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+        # 2026-08-04（用户反馈）：QSettings 文件化（settings.ini），不写 Windows 注册表
+        self._qsettings = get_app_settings()
         self._splitter_state = SplitterStateHelper(self._qsettings)
         # UI合理性4 二期：文件类型图标颜色配置（自定义颜色启动即生效）
         file_type_icons.set_type_colors(file_type_icon_colors.load_colors(self._qsettings))

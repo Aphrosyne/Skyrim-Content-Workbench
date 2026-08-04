@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import ui_constants as ui
+from app.app_paths import get_app_settings
 from app.path_display import make_display_path_from_service
 from app.splitter_state import SplitterStateHelper
 from application.errors import (
@@ -133,7 +134,7 @@ class OperationHistoryDialog(QDialog):
         # UX 重构 Phase 2 Task 5：受管理根目录服务，用于路径简化显示
         self._managed_root_service = None
         # UI合理性2：列宽持久化（测试可注入 ini 隔离实例）
-        self._settings = settings or QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+        self._settings = settings or get_app_settings()
         self._splitter_state = SplitterStateHelper(self._settings)
 
         self.setWindowTitle(ui.OPERATION_HISTORY_DIALOG_TITLE)
