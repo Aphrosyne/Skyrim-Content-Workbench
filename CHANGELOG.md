@@ -98,6 +98,22 @@
   [shortcut_registry.py](src/app/shortcut_registry.py) /
   [test_content_views_drop_highlight.py](tests/test_content_views_drop_highlight.py)）
 
+**排序下拉框修复（BugFix3，2026-08-04）**：
+  - 修复"点击排序项要点两次 / 快速滑动时排序与下拉框显示不一致"：新增
+    `PressSelectComboBox`——监听弹窗视图 `pressed` 信号鼠标按下即选中，
+    release 的 activated 去重（键盘路径保留），release 覆盖 currentIndex 时
+    恢复"按下即选中"项；按下即排序后控制器立即同步下拉框显示
+  - 排序下拉框内置升降序项（升序 ▲ / 降序 ▼，资源管理器式）：方向项保持当前
+    字段仅切方向，选择后显示恢复为字段项；移除独立 ▲/▼ 按钮
+    （方向仍由列表列头 ▲/▼ 指示）
+  （[sort_combo_box.py](src/app/sort_combo_box.py) /
+  [view_state_controller.py](src/app/view_state_controller.py) /
+  [main_window.py](src/app/main_window.py) /
+  [file_list_model.py](src/app/file_list_model.py) /
+  [ui_constants.py](src/app/ui_constants.py) /
+  [test_sort_combo_box.py](tests/test_sort_combo_box.py) /
+  [test_main_window_view_switch.py](tests/test_main_window_view_switch.py)）
+
 ## [0.50.12] - 2026-08-04
 
 **内容单元标记可配置（UI合理性21）**：
