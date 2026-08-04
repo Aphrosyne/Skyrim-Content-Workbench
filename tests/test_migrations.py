@@ -10,6 +10,8 @@ v6→v7 thumbnail_cache 新增 size 列 + 复合主键 (content_unit_id, size)�
 v8→v9 operation_history.operation_type CHECK 约束扩展 'copy'（Stage 5 Task 3b）。
 v11→v12 删除 staging_area 表（UX 重构 Phase 1 Task 1 Commit 2：暂存区功能移除）。
 v12→v13 移除 content_unit.is_marked 字段（UX 重构 Task 6：回归纯 DELETE 模式）。
+v13→v14 operation_history.operation_type CHECK 约束扩展 'strip'
+（操作便捷性1：提取内容/剥离操作）。
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from infrastructure.migrations import (
     migrate_v8_to_v9,
     migrate_v11_to_v12,
     migrate_v12_to_v13,
+    migrate_v13_to_v14,
 )
 
 
@@ -51,11 +54,12 @@ def test_migrations_sorted_by_target() -> None:
     assert MIGRATIONS[10][0] == 11
     assert MIGRATIONS[11][0] == 12
     assert MIGRATIONS[12][0] == 13
+    assert MIGRATIONS[13][0] == 14
 
 
-def test_current_schema_version_is_thirteen() -> None:
-    """UX 重构 Task 6：当前 schema 版本应为 13（移除 is_marked 字段）。"""
-    assert CURRENT_SCHEMA_VERSION == 13
+def test_current_schema_version_is_fourteen() -> None:
+    """操作便捷性1：当前 schema 版本应为 14（operation_type 扩展 'strip'）。"""
+    assert CURRENT_SCHEMA_VERSION == 14
 
 
 def test_migrate_v0_to_v1_idempotent() -> None:
@@ -516,7 +520,7 @@ def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
     db_path = tmp_path / "test.db"
     version = init_db(db_path)
     assert version == CURRENT_SCHEMA_VERSION
-    assert version == 13
+    assert version == 14
 
     # v7 后 managed_root 表仍存在
     conn = sqlite3.connect(str(db_path))
@@ -610,9 +614,9 @@ def test_init_db_migrates_v3_db_to_v6(tmp_path) -> None:
     finally:
         conn.close()
 
-    # init_db 应识别 v3 并依次应用 v3→v4→...→v13
+    # init_db 应识别 v3 并依次应用 v3→v4→...→v14
     version = init_db(db_path)
-    assert version == 13
+    assert version == 14
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -1108,5 +1112,102 @@ def test_migrate_v12_to_v13_idempotent() -> None:
         )
         migrate_v12_to_v13(conn)
         migrate_v12_to_v13(conn)
+    finally:
+        conn.close()
+
+
+# --- v13 → v14 迁移测试（操作便捷性1：提取内容） ---
+
+
+def _apply_v0_to_v13(conn: sqlite3.Connection) -> None:
+    """辅助：将内存数据库迁移到 v13 状态（通过迁移注册表按序应用）。"""
+    for version, fn in MIGRATIONS:
+        if version <= 13:
+            fn(conn)
+
+
+def test_migrate_v13_to_v14_allows_strip_operation_type() -> None:
+    """v13→v14 迁移后 operation_history 应接受 operation_type='strip'。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v13(conn)
+        migrate_v13_to_v14(conn)
+
+        # 'strip' 类型应可写入（不违反 CHECK 约束）
+        conn.execute(
+            "INSERT INTO operation_history (id, operation_type, source_path, "
+            "target_path, created_at, can_undo) VALUES "
+            "('h-strip', 'strip', 'D:/flat', 'D:/', '2026-08-04T00:00:00Z', 0)"
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT operation_type FROM operation_history WHERE id = 'h-strip'"
+        ).fetchone()
+        assert row["operation_type"] == "strip"
+    finally:
+        conn.close()
+
+
+def test_migrate_v13_to_v14_preserves_existing_history() -> None:
+    """v13→v14 迁移应保留既有 operation_history 数据。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v13(conn)
+        conn.execute(
+            "INSERT INTO operation_history (id, operation_type, source_path, "
+            "target_path, created_at, can_undo) VALUES "
+            "('h-old', 'move', 'D:/a.txt', 'D:/b.txt', '2026-08-01T00:00:00Z', 1)"
+        )
+        conn.commit()
+
+        migrate_v13_to_v14(conn)
+
+        row = conn.execute("SELECT * FROM operation_history WHERE id = 'h-old'").fetchone()
+        assert row is not None
+        assert row["operation_type"] == "move"
+        assert row["source_path"] == "D:/a.txt"
+        assert row["target_path"] == "D:/b.txt"
+        assert row["undone_at"] is None
+    finally:
+        conn.close()
+
+
+def test_migrate_v13_to_v14_idempotent() -> None:
+    """v13→v14 迁移函数本身幂等（重复调用不报错，'strip' 约束保持）。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v13(conn)
+        migrate_v13_to_v14(conn)
+        # 再次调用应跳过（CHECK 约束已含 'strip'）
+        migrate_v13_to_v14(conn)
+
+        conn.execute(
+            "INSERT INTO operation_history (id, operation_type, source_path, "
+            "target_path, created_at, can_undo) VALUES "
+            "('h2', 'strip', 'D:/s', 'D:/', '2026-08-04T00:00:00Z', 0)"
+        )
+        conn.commit()
+        assert (
+            conn.execute("SELECT COUNT(*) FROM operation_history WHERE id = 'h2'").fetchone()[0]
+            == 1
+        )
+    finally:
+        conn.close()
+
+
+def test_migrate_v13_to_v14_skips_when_table_absent() -> None:
+    """operation_history 表不存在时迁移应跳过（不报错）。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        # 不应用任何迁移，operation_history 表不存在
+        migrate_v13_to_v14(conn)
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='operation_history'"
+        ).fetchone()
+        assert row is None
     finally:
         conn.close()

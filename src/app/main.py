@@ -26,6 +26,7 @@ from application.file_operation_service import FileOperationService
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from application.search_service import SearchService
+from application.strip_service import StripService
 from application.tag_service import TagService
 from application.thumbnail_service import ThumbnailService
 from application.undo_service import UndoService
@@ -132,10 +133,24 @@ def main() -> int:
         folder_cache_helper=folder_cache_helper,
         content_unit_repo=content_unit_repo,
     )
+    # 标签服务（阶段 4 Task 1）：标签分类 / 标签 CRUD + JSON 导入导出 + 预置加载
+    tag_service = TagService(
+        TagCategoryRepository(conn),
+        TagRepository(conn),
+        ContentUnitTagRepository(conn),
+    )
+
     # Stage 4.5 H4：ContentUnitCreationService 不再需要 folder_cache_repo，
     # folder_cache 同步由 FileOperationService 内部的 helper 自动完成。
+    # 操作合理性5（2026-08-04）：注入 tag_service，创建 Mod 组时继承源单元元数据。
     content_unit_creation_service = ContentUnitCreationService(
-        file_operation_service, content_service, uow=uow
+        file_operation_service, content_service, uow=uow, tag_service=tag_service
+    )
+    # 操作便捷性1（2026-08-04）：剥离（提取内容）
+    strip_service = StripService(
+        file_operation_service,
+        content_service,
+        OperationHistoryRepository(conn),
     )
     # 装配服务（阶段 3 Task 4）：使用同一个 file_operation_service 和 content_unit_repo
     # Stage 4.5 H4：folder_cache mtime 同步由 FileOperationService 内部 helper 自动完成，
@@ -143,12 +158,6 @@ def main() -> int:
     assembly_service = AssemblyService(
         file_operation_service,
         content_unit_repo,
-    )
-    # 标签服务（阶段 4 Task 1）：标签分类 / 标签 CRUD + JSON 导入导出 + 预置加载
-    tag_service = TagService(
-        TagCategoryRepository(conn),
-        TagRepository(conn),
-        ContentUnitTagRepository(conn),
     )
 
     # Stage 5 Task 6：操作历史撤销服务
@@ -207,6 +216,7 @@ def main() -> int:
         file_operation_service=file_operation_service,
         undo_service=undo_service,
         clipboard_service=clipboard_service,
+        strip_service=strip_service,
         search_service=search_service,
     )
     window.show()

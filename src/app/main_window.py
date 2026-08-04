@@ -122,6 +122,7 @@ from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
 from application.scan_service import ScanSummary
 from application.search_service import SearchService
+from application.strip_service import StripService
 from application.tag_service import TagService
 from application.undo_service import UndoService
 from domain.models import ContentUnit, FileEntry
@@ -164,6 +165,7 @@ class MainWindow(QMainWindow):
         file_operation_service: FileOperationService | None = None,
         undo_service: UndoService | None = None,
         clipboard_service: ClipboardService | None = None,
+        strip_service: StripService | None = None,
         search_service: SearchService | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -188,6 +190,8 @@ class MainWindow(QMainWindow):
         self._undo_service = undo_service
         # Stage 5 Task 3b：应用内剪贴板服务（Q3=A 不与系统剪贴板混用）
         self._clipboard_service = clipboard_service
+        # 操作便捷性1（2026-08-04）：剥离（提取内容）
+        self._strip_service = strip_service
         # Stage 5 Task 7：全局搜索服务
         self._search_service = search_service
         # Stage 4 Task 4：缩略图调度器（可选注入，便于测试）
@@ -297,6 +301,7 @@ class MainWindow(QMainWindow):
             assembly_panel=self._assembly_panel,
             file_operation_service=self._file_operation_service,
             clipboard_service=self._clipboard_service,
+            strip_service=self._strip_service,
             content_view=self._content_view,
             card_view=self._card_view,
             content_list_model=self._content_list_model,
@@ -320,6 +325,7 @@ class MainWindow(QMainWindow):
             content_service=self._content_service,
             managed_root_service=self._service,
             assembly_panel=self._assembly_panel,
+            strip_service=self._strip_service,
             transaction_scope=self._transaction_scope,
             status_bar=self.statusBar(),
             refresh_tree=self._refresh_tree,
@@ -1630,6 +1636,10 @@ class MainWindow(QMainWindow):
     def _on_move_to_recent(self, src_paths: list[Path], target: str) -> None:
         """执行移动到最近目标（委托 FileOperationsController）。"""
         self._file_operations_controller.on_move_to_recent(src_paths, target)
+
+    def _on_strip_folder(self, entry: FileEntry) -> None:
+        """中栏右键「提取内容」入口（委托 FileOperationsController）。"""
+        self._file_operations_controller.on_strip_folder(entry)
 
     def _insert_recent_move_submenu(self, menu, src_paths: list[Path]) -> None:
         """插入「移动到最近目录」子菜单（委托 ContextMenuBuilder）。"""

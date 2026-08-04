@@ -31,7 +31,7 @@ import logging
 import os
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from application.content_service import ContentService
@@ -42,12 +42,26 @@ from application.errors import (
     SourceNotInStagingError,
 )
 from application.file_operation_service import FileOperationService
+from application.tag_service import TagService
 from domain.models import ContentUnit
 from infrastructure.path_utils import make_path_key
 from infrastructure.repositories.errors import RepositoryError
 from infrastructure.unit_of_work import UnitOfWork
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _InheritedMetadata:
+    """从源内容单元快照的待继承元数据（操作合理性5，2026-08-04）。"""
+
+    source_url: str | None = None
+    notes: str | None = None
+    tag_ids: list[str] = field(default_factory=list)
+
+    @property
+    def has_any(self) -> bool:
+        return self.source_url is not None or self.notes is not None or bool(self.tag_ids)
 
 
 @dataclass
@@ -168,6 +182,7 @@ class ContentUnitCreationService:
         file_op_service: FileOperationService,
         content_service: ContentService,
         uow: UnitOfWork | None = None,
+        tag_service: TagService | None = None,
     ) -> None:
         """初始化 ContentUnitCreationService。
 
@@ -178,10 +193,14 @@ class ContentUnitCreationService:
             uow: 事务边界管理器（可选）。Stage 4.5 H6 修复：
                 注入后 create_content_unit_from_file 的多步写操作在事务内执行，保证原子性。
                 None 时保持原行为（调用方控制事务边界）。
+            tag_service: 标签服务（可选）。操作合理性5（2026-08-04）：
+                注入后创建 Mod 组时把源文件内容单元的标签继承到新文件夹单元。
+                None 时跳过标签继承（向后兼容）。
         """
         self._file_op = file_op_service
         self._content = content_service
         self._uow = uow
+        self._tag_service = tag_service
 
     def create_content_unit_from_file(
         self,
@@ -295,6 +314,11 @@ class ContentUnitCreationService:
         # 步骤 1：创建新文件夹（若已存在抛 ConflictError，由调用方处理）
         self._file_op.new_folder(target_folder)
 
+        # 步骤 2 前置：快照源单元元数据（操作合理性5，2026-08-04）
+        # move 会由 FileOperationService 改写 ContentUnit.path，且后续 mark 文件夹会
+        # 级联删除子项记录（父子不可同时标记），必须在任何移动前收集。
+        inherited = self._collect_metadata_from_paths(source_files)
+
         # 步骤 2：逐个移入源文件（容错：失败记日志不中断）
         success_count = 0
         failure_count = 0
@@ -328,6 +352,10 @@ class ContentUnitCreationService:
             )
             raise FileOperationError(f"创建 ContentUnit 失败：{create_err}") from create_err
 
+        # 步骤 5：继承源单元元数据（来源 URL / 备注 / 标签并集）
+        if inherited.has_any:
+            unit = self._apply_inherited_metadata(unit, inherited)
+
         return CreateContentUnitResult(
             unit=unit, success_count=success_count, failure_count=failure_count
         )
@@ -353,6 +381,15 @@ class ContentUnitCreationService:
         # 若文件夹已存在，FileOperationService.new_folder 抛 ConflictError
         self._file_op.new_folder(target_folder)
 
+        # 步骤 1.5：快照源单元元数据（操作合理性5，2026-08-04）
+        # move 会改写 ContentUnit.path，旧路径查询将失效，必须在移动前收集。
+        old_unit = self._content.get_by_path(str(source_file))
+        inherited = (
+            self._collect_metadata_from_units([old_unit])
+            if old_unit is not None
+            else _InheritedMetadata()
+        )
+
         # 步骤 2：移入源文件
         # 若 move 失败，回滚：删除刚创建的空文件夹（仅当为空时）
         # folder_cache 记录由 UoW 回滚自动撤销
@@ -365,7 +402,6 @@ class ContentUnitCreationService:
         # 步骤 3：取消源文件的旧 ContentUnit 标记（若存在）
         # 源文件已移动，旧路径的 ContentUnit 记录设为 "unmarked"（不可见，
         # 扫描不会重建），避免用户看到悬挂标记。
-        old_unit = self._content.get_by_path(str(source_file))
         if old_unit is not None:
             try:
                 self._content.unmark_content_unit(old_unit.id)
@@ -376,7 +412,7 @@ class ContentUnitCreationService:
         # 使用 mark_as_content_unit（spec §5.4：标记文件夹时取消子项标记），
         # 默认 title=path.name（即文件夹名 == name）。
         try:
-            return self._content.mark_as_content_unit(target_folder)
+            unit = self._content.mark_as_content_unit(target_folder)
         except (ApplicationError, RepositoryError, sqlite3.Error) as create_err:
             # ContentUnit 创建失败不回滚文件操作（文件已移动，无法自动复原）
             # 记日志，由用户手动处理
@@ -385,6 +421,72 @@ class ContentUnitCreationService:
                 target_folder,
             )
             raise FileOperationError(f"创建 ContentUnit 失败：{create_err}") from create_err
+
+        # 步骤 5：继承源单元元数据（来源 URL / 备注 / 标签）
+        if inherited.has_any:
+            unit = self._apply_inherited_metadata(unit, inherited)
+        return unit
+
+    # === 操作合理性5（2026-08-04）：创建 Mod 组继承元数据 ===
+
+    def _collect_metadata_from_paths(self, source_files: list[Path]) -> _InheritedMetadata:
+        """从多个源路径收集元数据（tags 并集；source_url/notes 取第一个非空）。"""
+        units: list[ContentUnit] = []
+        for path in source_files:
+            unit = self._content.get_by_path(str(path))
+            if unit is not None:
+                units.append(unit)
+        return self._collect_metadata_from_units(units)
+
+    def _collect_metadata_from_units(self, units: list[ContentUnit]) -> _InheritedMetadata:
+        """收集并合并多个源单元的元数据。"""
+        merged = _InheritedMetadata()
+        for unit in units:
+            single = _InheritedMetadata(source_url=unit.source_url, notes=unit.notes)
+            if self._tag_service is not None:
+                try:
+                    for _category, tags in self._tag_service.list_tags_of_content_unit(unit.id):
+                        single.tag_ids.extend(t.id for t in tags)
+                except (ApplicationError, RepositoryError, sqlite3.Error):
+                    logger.exception("读取源内容单元标签失败：unit_id=%s", unit.id)
+            merged = self._merge_inherited(merged, single)
+        return merged
+
+    def _merge_inherited(
+        self, base: _InheritedMetadata, other: _InheritedMetadata
+    ) -> _InheritedMetadata:
+        """合并两个元数据快照：首个非空优先，标签取并集（保序去重）。"""
+        merged = _InheritedMetadata(
+            source_url=base.source_url if base.source_url is not None else other.source_url,
+            notes=base.notes if base.notes is not None else other.notes,
+        )
+        seen: set[str] = set(base.tag_ids)
+        merged.tag_ids = list(base.tag_ids)
+        for tag_id in other.tag_ids:
+            if tag_id not in seen:
+                seen.add(tag_id)
+                merged.tag_ids.append(tag_id)
+        return merged
+
+    def _apply_inherited_metadata(
+        self, unit: ContentUnit, inherited: _InheritedMetadata
+    ) -> ContentUnit:
+        """把快照的元数据应用到新文件夹单元（来源 URL / 备注 / 标签）。"""
+        updated = unit
+        if inherited.source_url is not None or inherited.notes is not None:
+            try:
+                updated = self._content.update_metadata(
+                    unit.id, source_url=inherited.source_url, notes=inherited.notes
+                )
+            except (ApplicationError, RepositoryError, sqlite3.Error):
+                logger.exception("继承来源/备注失败：unit_id=%s", unit.id)
+        if self._tag_service is not None:
+            for tag_id in inherited.tag_ids:
+                try:
+                    self._tag_service.attach_tag_to_unit(unit.id, tag_id)
+                except (ApplicationError, RepositoryError, sqlite3.Error):
+                    logger.exception("继承标签失败：unit_id=%s tag_id=%s", unit.id, tag_id)
+        return updated
 
 
 def _is_in_directory(file_path: Path, dir_path: Path) -> bool:

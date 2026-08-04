@@ -34,8 +34,10 @@ from application.errors import (
 from application.file_operation_service import FileOperationService
 from application.folder_tree_service import FolderTreeService
 from application.managed_root_service import ManagedRootService
+from application.strip_service import StripService
 from application.undo_service import UndoService
 from domain.models import FileEntry
+from infrastructure.path_utils import make_path_key
 
 
 class FileOperationsController(QObject):
@@ -66,6 +68,7 @@ class FileOperationsController(QObject):
         handle_error: Callable[[Exception, str], None],
         dialog_parent: QWidget,
         host: object,
+        strip_service: StripService | None = None,
         parent: QObject | None = None,
     ) -> None:
         """初始化文件操作控制器。
@@ -85,6 +88,7 @@ class FileOperationsController(QObject):
         self._content_service = content_service
         self._service = managed_root_service
         self._assembly_panel = assembly_panel
+        self._strip_service = strip_service
         self._tx = transaction_scope
         self._status_bar = status_bar
         self._refresh_tree = refresh_tree
@@ -900,3 +904,94 @@ class FileOperationsController(QObject):
                 fail_title,
                 partial_msg.format(ok=ok_count, fail=fail_count) + "\n\n" + "\n".join(errors[:5]),
             )
+
+    # === 操作便捷性1（2026-08-04）：剥离（提取内容） ===
+
+    def on_strip_folder(self, entry: FileEntry) -> None:
+        """中栏右键「提取内容」：确认 + 冲突解决 + 执行 + 刷新。
+
+        流程与 perform_move_to 一致：复用 ConflictResolutionService 冲突扫描与
+        ConflictResolutionDialog 决策（重命名/跳过/覆盖），随后由 StripService
+        逐个移动子项并删除空文件夹，最后提交事务并刷新目录树/中栏/装配面板。
+        """
+        from app.conflict_resolution_dialog import ConflictResolutionDialog  # noqa: PLC0415
+        from app.path_display import make_display_path_from_service  # noqa: PLC0415
+        from application.conflict_resolution_service import (  # noqa: PLC0415
+            has_conflict,
+        )
+
+        if self._strip_service is None:
+            return
+        folder = Path(entry.path)
+
+        # 前置校验 + 冲突扫描（校验失败给出用户可读错误）
+        try:
+            plan = self._strip_service.prepare(folder)
+        except FileOperationError as e:
+            self._status_bar.showMessage(ui.MENU_OPERATION_FAILED.format(error=str(e)), 4000)
+            return
+
+        # 确认对话框（AGENTS 规则 2：文件操作须用户确认）
+        parent_display = make_display_path_from_service(folder.parent, self._service)
+        answer = QMessageBox.question(
+            self._dialog_parent,
+            ui.STRIP_CONFIRM_TITLE,
+            ui.STRIP_CONFIRM_TEXT.format(
+                name=folder.name, count=plan.child_count, parent=parent_display
+            ),
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return  # 用户取消
+
+        # 冲突解决（Q5=A 复用 ConflictResolutionDialog）
+        if has_conflict(plan.conflicts):
+            conflict_dialog = ConflictResolutionDialog(plan.conflicts, self._dialog_parent)
+            if conflict_dialog.exec() != QDialog.DialogCode.Accepted:
+                return  # 用户取消
+            decisions = conflict_dialog.decisions()
+        else:
+            # 无冲突，全部用默认目标路径（与 perform_move_to 一致）
+            decisions = ["overwrite"] * len(plan.conflicts)
+
+        try:
+            result = self._strip_service.strip(folder, decisions)
+        except FileOperationError as e:
+            self._handle_error(e, ui.STRIP_FAILED)
+            return
+
+        # 提交事务 + 刷新 UI（源文件夹与上级目录均受影响）
+        self._tx.commit()
+        self._refresh_tree()
+        self._refresh_middle_current()
+        self._refresh_assembly_if_affected(folder.parent)
+        # 验收反馈（2026-08-04）：文件夹预览正透视被剥离文件夹 → 解绑（钉住则一并取消）
+        self._unbind_assembly_if_stripped(folder)
+
+        # 状态栏/错误汇总
+        if result.failure_count == 0:
+            self._status_bar.showMessage(ui.STRIP_OK.format(n=result.moved_count), 3000)
+        else:
+            msg = ui.STRIP_PARTIAL.format(ok=result.moved_count, fail=result.failure_count)
+            if result.errors:
+                msg += "\n\n" + "\n".join(result.errors[:5])
+            QMessageBox.information(self._dialog_parent, ui.STRIP_FAILED, msg)
+
+    def _unbind_assembly_if_stripped(self, folder: Path) -> None:
+        """文件夹预览正透视被剥离文件夹时解绑并取消钉住。
+
+        与 MainWindow 装配面板「移动自身」的 A3-1/A4 决策一致：
+        - 钉住 → force_unpin_and_clear（取消钉住 + 清空面板）
+        - 未钉住 → bind_folder(None)（解绑显空状态）
+        """
+        panel = self._assembly_panel
+        if panel is None:
+            return
+        current = panel.current_folder_path()
+        if current is None:
+            return
+        if make_path_key(current) != make_path_key(folder):
+            return
+        if panel.is_pinned():
+            panel.force_unpin_and_clear()
+        else:
+            panel.bind_folder(None)

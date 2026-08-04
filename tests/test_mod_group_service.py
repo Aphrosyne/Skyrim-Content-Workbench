@@ -31,10 +31,14 @@ from application.errors import (
     SourceNotInStagingError,
 )
 from application.file_operation_service import FileOperationService
+from application.tag_service import TagService
 from domain.models import ContentUnit
 from infrastructure.db import get_connection, init_db
 from infrastructure.repositories.content_unit import ContentUnitRepository
+from infrastructure.repositories.content_unit_tag import ContentUnitTagRepository
 from infrastructure.repositories.operation_history import OperationHistoryRepository
+from infrastructure.repositories.tag import TagRepository
+from infrastructure.repositories.tag_category import TagCategoryRepository
 
 # === 文件名提取规则 ===
 
@@ -142,6 +146,45 @@ def mod_group_env(tmp_path: Path):
     conn.close()
 
 
+@pytest.fixture
+def mod_group_env_with_tags(tmp_path: Path):
+    """构造注入 TagService 的 ContentUnitCreationService 测试环境（操作合理性5）。"""
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    conn = get_connection(db_path)
+    conn.row_factory = sqlite3.Row
+
+    counter = {"n": 0}
+
+    def fake_uuid() -> str:
+        counter["n"] += 1
+        return f"uuid-{counter['n']}"
+
+    file_op = FileOperationService(
+        OperationHistoryRepository(conn),
+        now_provider=lambda: "2026-08-04T00:00:00Z",
+        uuid_provider=fake_uuid,
+    )
+    content_svc = ContentService(
+        ContentUnitRepository(conn),
+        now_provider=lambda: "2026-08-04T00:00:00Z",
+        uuid_provider=fake_uuid,
+    )
+    tag_svc = TagService(
+        TagCategoryRepository(conn),
+        TagRepository(conn),
+        ContentUnitTagRepository(conn),
+    )
+    mod_group_svc = ContentUnitCreationService(file_op, content_svc, tag_service=tag_svc)
+
+    staging = tmp_path / "Stash"
+    staging.mkdir()
+
+    yield mod_group_svc, content_svc, tag_svc, conn, staging
+
+    conn.close()
+
+
 class TestCreateModGroup:
     def test_creates_folder_and_moves_file(self, mod_group_env, tmp_path: Path) -> None:
         """完整流程：建文件夹 + 移文件。"""
@@ -178,6 +221,88 @@ class TestCreateModGroup:
         types = [r["operation_type"] for r in rows]
         assert "new_folder" in types
         assert "move" in types
+
+
+class TestCreateModGroupInheritMetadata:
+    """操作合理性5（2026-08-04）：创建 Mod 组继承源单元元数据。"""
+
+    def test_single_source_inherits_url_notes_and_tags(
+        self, mod_group_env_with_tags, tmp_path: Path
+    ) -> None:
+        """单源：来源 URL / 备注 / 标签全部继承，旧单元记录被删除。"""
+        svc, content_svc, tag_svc, conn, staging = mod_group_env_with_tags
+        src = staging / "Alt-Tab Fix-148466-1-0-0-1745430887.zip"
+        src.write_bytes(b"mod")
+
+        category = tag_svc.create_category("类型")
+        tag = tag_svc.create_tag("修复", category.id)
+        unit = content_svc.mark_as_content_unit(src)
+        content_svc.update_metadata(
+            unit.id,
+            source_url="https://www.nexusmods.com/skyrimspecialedition/mods/148466",
+            notes="测试备注",
+        )
+        tag_svc.attach_tag_to_unit(unit.id, tag.id)
+        conn.commit()
+
+        new_unit = svc.create_content_unit_from_file(src, staging)
+        conn.commit()
+
+        target_folder = staging / "Alt-Tab Fix"
+        assert new_unit.path == str(target_folder)
+        assert new_unit.source_url == "https://www.nexusmods.com/skyrimspecialedition/mods/148466"
+        assert new_unit.notes == "测试备注"
+        tags = tag_svc.list_tags_of_content_unit(new_unit.id)
+        tag_ids = [t.id for _cat, group in tags for t in group]
+        assert tag_ids == [tag.id]
+        # 旧单元记录不存在（取消标记 + 文件夹标记级联删除）
+        assert content_svc.get_by_path(str(src)) is None
+
+    def test_multiple_sources_union_tags_first_nonempty_fields(
+        self, mod_group_env_with_tags, tmp_path: Path
+    ) -> None:
+        """多源：标签并集；source_url/notes 取显示顺序第一个非空。"""
+        svc, content_svc, tag_svc, conn, staging = mod_group_env_with_tags
+        f1 = staging / "BDOR Black Knight 1.0.7z"
+        f2 = staging / "SkyUI 5.1 SE.zip"
+        f1.write_bytes(b"1")
+        f2.write_bytes(b"2")
+
+        cat = tag_svc.create_category("类型")
+        tag_a = tag_svc.create_tag("材质", cat.id)
+        tag_b = tag_svc.create_tag("UI", cat.id)
+        unit1 = content_svc.mark_as_content_unit(f1)
+        unit2 = content_svc.mark_as_content_unit(f2)
+        content_svc.update_metadata(unit1.id, source_url="https://a.example.com", notes="备注A")
+        content_svc.update_metadata(unit2.id, source_url="https://b.example.com", notes="备注B")
+        tag_svc.attach_tag_to_unit(unit1.id, tag_a.id)
+        tag_svc.attach_tag_to_unit(unit2.id, tag_b.id)
+        conn.commit()
+
+        result = svc.create_content_unit_from_files([f1, f2], staging, name="Combined")
+        conn.commit()
+
+        new_unit = result.unit
+        assert new_unit.source_url == "https://a.example.com"  # 第一个非空
+        assert new_unit.notes == "备注A"
+        tags = tag_svc.list_tags_of_content_unit(new_unit.id)
+        tag_ids = {t.id for _cat, group in tags for t in group}
+        assert tag_ids == {tag_a.id, tag_b.id}
+
+    def test_unmarked_source_inherits_nothing(
+        self, mod_group_env_with_tags, tmp_path: Path
+    ) -> None:
+        """源文件未标记：不继承任何元数据，不报错。"""
+        svc, content_svc, tag_svc, conn, staging = mod_group_env_with_tags
+        src = staging / "plain.zip"
+        src.write_bytes(b"x")
+
+        new_unit = svc.create_content_unit_from_file(src, staging)
+        conn.commit()
+
+        assert new_unit.source_url is None
+        assert new_unit.notes is None
+        assert tag_svc.list_tags_of_content_unit(new_unit.id) == []
 
     def test_rejects_existing_folder_name(self, mod_group_env) -> None:
         """同名文件夹已存在抛 ConflictError。"""

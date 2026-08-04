@@ -92,6 +92,9 @@ def _format_history_description(history: OperationHistory, managed_root_service)
         return ui.HISTORY_DESC_DELETE.format(source=source)
     if op == "copy":
         return ui.HISTORY_DESC_COPY.format(source=source, target=target)
+    if op == "strip":
+        # 操作便捷性1（2026-08-04）：剥离（提取内容）
+        return ui.HISTORY_DESC_STRIP.format(source=source, target=target)
     return ui.HISTORY_DESC_UNKNOWN.format(op=op)
 
 

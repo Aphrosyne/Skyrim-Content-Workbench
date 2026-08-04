@@ -123,6 +123,18 @@ MENU_NEW_FOLDER_SUCCESS = "已创建文件夹：{name}"
 MENU_RENAME_SUCCESS = "已重命名为：{name}"
 MENU_OPERATION_FAILED = "操作失败：{error}"
 
+# 操作便捷性1（2026-08-04）：剥离（提取内容）
+MENU_STRIP_FOLDER = "提取内容"
+STRIP_CONFIRM_TITLE = "确认提取内容"
+STRIP_CONFIRM_TEXT = (
+    "将把「{name}」内的 {count} 个条目提取到上级目录「{parent}」。\n"
+    "提取完成后该文件夹（已为空）将移至回收站。\n"
+    "此操作不可撤销。\n是否继续？"
+)
+STRIP_FAILED = "提取内容失败"
+STRIP_OK = "已提取 {n} 个条目到上级目录"
+STRIP_PARTIAL = "提取内容完成：成功 {ok} 项，失败 {fail} 项"
+
 # === Stage 5 Task 6：操作历史与撤销 ===
 TOOLBAR_OPERATION_HISTORY = "操作历史"
 OPERATION_HISTORY_DIALOG_TITLE = "操作历史"
@@ -140,6 +152,8 @@ HISTORY_DESC_RENAME = "重命名：{source} → {target}"
 HISTORY_DESC_MOVE = "移动：{source} → {target}"
 HISTORY_DESC_DELETE = "删除：{source}（不可撤销）"
 HISTORY_DESC_COPY = "复制：{source} → {target}（不可撤销）"
+# 操作便捷性1（2026-08-04）：剥离（提取内容）
+HISTORY_DESC_STRIP = "提取内容：{source} → {target}（不可撤销）"
 HISTORY_DESC_UNKNOWN = "未知操作：{op}"
 # 操作类型中文名映射（操作历史对话框操作列显示）
 HISTORY_OP_LABELS = {
@@ -148,6 +162,7 @@ HISTORY_OP_LABELS = {
     "move": "移动",
     "delete": "删除",
     "copy": "复制",
+    "strip": "提取内容",
 }
 # 状态显示
 HISTORY_STATUS_CAN_UNDO = "可撤销"
@@ -233,6 +248,8 @@ CREATE_MOD_GROUP_DEFAULT_OK = "已创建 Mod 组：{name}"
 CREATE_MOD_GROUP_MULTI_OK = "已创建 Mod 组「{name}」，共 {count} 个文件移入"
 CREATE_MOD_GROUP_MULTI_PARTIAL = "创建 Mod 组完成：成功 {ok} 个，失败 {fail} 个"
 CREATE_MOD_GROUP_FAILED = "创建 Mod 组失败"
+# 操作合理性5（2026-08-04）：创建 Mod 组继承源单元元数据
+CREATE_MOD_GROUP_INHERITED_HINT = "（已继承来源/备注/标签）"
 
 # 标记/取消标记状态提示
 MARK_CONTENT_UNIT_OK = "已标记为内容单元"

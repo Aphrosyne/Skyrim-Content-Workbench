@@ -558,15 +558,22 @@ class ContentListController(QObject):
                 self._bind_assembly_panel(result.unit)
             # 状态栏汇总
             if result.failure_count == 0:
+                inherited_hint = (
+                    ui.CREATE_MOD_GROUP_INHERITED_HINT
+                    if (self._has_inherited_metadata(result.unit))
+                    else ""
+                )
                 if result.success_count == 1:
                     self._status_bar.showMessage(
-                        ui.CREATE_MOD_GROUP_DEFAULT_OK.format(name=chosen_name), 3000
+                        ui.CREATE_MOD_GROUP_DEFAULT_OK.format(name=chosen_name) + inherited_hint,
+                        3000,
                     )
                 else:
                     self._status_bar.showMessage(
                         ui.CREATE_MOD_GROUP_MULTI_OK.format(
                             name=chosen_name, count=result.success_count
-                        ),
+                        )
+                        + inherited_hint,
                         5000,
                     )
             else:
@@ -578,6 +585,19 @@ class ContentListController(QObject):
                 )
         except Exception as e:  # noqa: BLE001
             self._handle_error(e, ui.CREATE_MOD_GROUP_FAILED, rollback=False)
+
+    def _has_inherited_metadata(self, unit: ContentUnit) -> bool:
+        """判断新 Mod 组单元是否继承了来源/备注/标签（操作合理性5）。"""
+        if unit.source_url or unit.notes:
+            return True
+        if self._tag_service is not None:
+            try:
+                for _category, tags in self._tag_service.list_tags_of_content_unit(unit.id):
+                    if tags:
+                        return True
+            except Exception:  # noqa: BLE001 - 提示性判断失败不影响主流程
+                return False
+        return False
 
     def on_mark_content_unit(self, entry: FileEntry) -> None:
         """标记单个条目为内容单元。"""

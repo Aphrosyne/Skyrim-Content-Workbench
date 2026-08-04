@@ -105,6 +105,11 @@ class OperationHistory:
     Stage 5 Task 3b：
     - 新增 operation_type='copy'：复制操作记录，source_path=原路径，target_path=新路径，
       can_undo=False（复制不可撤销，避免撤销=删除副本的语义模糊，Q4=A）。
+
+    操作便捷性1（2026-08-04）：
+    - 新增 operation_type='strip'：剥离操作记录（提取文件夹内容到上级），
+      source_path=被剥离文件夹，target_path=上级目录，can_undo=False
+      （多子项移动 + 空文件夹回收站删除的组合无法安全单条撤销，与 copy/delete 一致）。
     """
 
     id: str
@@ -117,7 +122,7 @@ class OperationHistory:
     undone_at: str | None = None
 
     VALID_OPERATION_TYPES: ClassVar[frozenset[str]] = frozenset(
-        {"move", "delete", "rename", "new_folder", "undo", "copy"}
+        {"move", "delete", "rename", "new_folder", "undo", "copy", "strip"}
     )
 
     def __post_init__(self) -> None:
@@ -133,8 +138,8 @@ class OperationHistory:
         if not self.created_at:
             raise ValueError("OperationHistory.created_at 不能为空")
         # TD-H1：operation_type 与 target_path 一致性校验
-        # move/rename/new_folder/copy 必须有 target_path；delete/undo 不允许 target_path
-        if self.operation_type in ("move", "rename", "new_folder", "copy"):
+        # move/rename/new_folder/copy/strip 必须有 target_path；delete/undo 不允许 target_path
+        if self.operation_type in ("move", "rename", "new_folder", "copy", "strip"):
             if not self.target_path:
                 raise ValueError(
                     f"OperationHistory.operation_type={self.operation_type} 要求 target_path 非空"
@@ -151,6 +156,11 @@ class OperationHistory:
         # Stage 5 Task 3b：copy 不可撤销（Q4=A，避免撤销=删除副本的语义模糊）
         if self.operation_type == "copy" and self.can_undo:
             raise ValueError("OperationHistory.operation_type=copy 不可撤销，can_undo 必须为 False")
+        # 操作便捷性1：strip（提取内容）不可撤销（组合操作无法安全单条撤销）
+        if self.operation_type == "strip" and self.can_undo:
+            raise ValueError(
+                "OperationHistory.operation_type=strip 不可撤销，can_undo 必须为 False"
+            )
         # Stage 5 Task 6：undo 记录本身不可再撤销（避免无限循环）
         if self.operation_type == "undo" and self.can_undo:
             raise ValueError(

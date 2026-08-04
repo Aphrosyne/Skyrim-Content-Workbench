@@ -26,6 +26,7 @@ from application.clipboard_service import ClipboardService
 from application.content_unit_creation_service import ContentUnitCreationService
 from application.errors import ApplicationError
 from application.file_operation_service import FileOperationService
+from application.strip_service import StripService
 from application.tag_service import TagService
 from domain.models import FileEntry
 from infrastructure.path_utils import make_path_key
@@ -46,6 +47,7 @@ class ContextMenuBuilder:
         assembly_panel,
         file_operation_service: FileOperationService | None,
         clipboard_service: ClipboardService | None,
+        strip_service: StripService | None = None,
         *,
         content_view: _RubberBandTableView,
         card_view: _DragDropListView,
@@ -70,6 +72,7 @@ class ContextMenuBuilder:
         self._assembly_panel = assembly_panel
         self._file_operation_service = file_operation_service
         self._clipboard_service = clipboard_service
+        self._strip_service = strip_service
         self._content_view = content_view
         self._card_view = card_view
         self._content_list_model = content_list_model
@@ -456,6 +459,21 @@ class ContextMenuBuilder:
                 actions.append((ui.MENU_PASTE, self._host._on_shortcut_paste, has_clipboard))
             # Stage 5 Task 5：移动到...（Q4=A 中栏 + 目录树均添加）
             actions.append((ui.MENU_MOVE_TO, lambda: self._host._on_move_to(entries), True))
+            # 操作便捷性1（2026-08-04）：剥离（提取内容）
+            # 单选普通文件夹（未标记内容单元）+ 注入 StripService 时显示
+            if (
+                self._strip_service is not None
+                and len(entries) == 1
+                and entries[0].is_dir
+                and entries[0].content_unit is None
+            ):
+                actions.append(
+                    (
+                        ui.MENU_STRIP_FOLDER,
+                        lambda: self._host._on_strip_folder(entries[0]),
+                        True,
+                    )
+                )
             # 删除：单选或批量
             actions.append((ui.MENU_DELETE, lambda: self._host._on_delete_entries(entries), True))
 

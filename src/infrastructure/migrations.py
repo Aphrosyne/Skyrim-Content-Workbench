@@ -768,6 +768,72 @@ def migrate_v12_to_v13(conn: sqlite3.Connection) -> None:
     logger.info("迁移 v12 → v13 完成")
 
 
+def migrate_v13_to_v14(conn: sqlite3.Connection) -> None:
+    """v13 → v14：operation_history.operation_type CHECK 约束扩展为包含 'strip'
+    （操作便捷性1，2026-08-04：提取内容/剥离操作）。
+
+    变更：
+    - operation_type CHECK 约束扩展为包含 'strip'
+      （strip 记录由 StripService 写入，source_path=被剥离文件夹，
+       target_path=上级目录，can_undo=0）
+
+    实现说明：
+    - SQLite 不支持直接修改 CHECK 约束，需重建表
+    - 旧数据全部保留，无新列
+
+    幂等性：通过检查 operation_history 的 CHECK 约束是否已包含 'strip' 判断是否已迁移。
+    """
+    # 幂等检查：读取当前 operation_history 表的 sql，若已含 'strip' 则跳过
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='operation_history'"
+    ).fetchone()
+    if row is None:
+        # 表不存在（全新数据库走 init_db 建表路径），无需迁移
+        return
+    current_sql = row["sql"] if isinstance(row, sqlite3.Row) else row[0]
+    if current_sql and "'strip'" in current_sql:
+        logger.info("v14 迁移已应用，跳过")
+        return
+
+    # 1. 创建新表（CHECK 约束扩展 'strip'）
+    conn.executescript(
+        """
+        CREATE TABLE operation_history_new (
+            id TEXT PRIMARY KEY,
+            operation_type TEXT NOT NULL CHECK(operation_type IN (
+                'move','delete','rename','new_folder','undo','copy','strip'
+            )),
+            source_path TEXT NOT NULL,
+            target_path TEXT,
+            created_at TEXT NOT NULL,
+            can_undo INTEGER NOT NULL DEFAULT 1,
+            undone_at TEXT
+        );
+        """
+    )
+
+    # 2. 迁移旧数据
+    conn.execute(
+        """
+        INSERT INTO operation_history_new
+            (id, operation_type, source_path, target_path, created_at, can_undo, undone_at)
+        SELECT id, operation_type, source_path, target_path, created_at, can_undo, undone_at
+        FROM operation_history
+        """
+    )
+
+    # 3. 替换旧表 + 重建索引
+    conn.executescript(
+        """
+        DROP TABLE operation_history;
+        ALTER TABLE operation_history_new RENAME TO operation_history;
+        CREATE INDEX IF NOT EXISTS idx_operation_history_created
+            ON operation_history(created_at);
+        """
+    )
+    logger.info("迁移 v13 → v14 完成")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -784,4 +850,5 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (11, migrate_v10_to_v11),
     (12, migrate_v11_to_v12),
     (13, migrate_v12_to_v13),
+    (14, migrate_v13_to_v14),
 ]
