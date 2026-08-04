@@ -331,6 +331,42 @@ class ContentService:
             raise ContentUnitNotFoundError(f"内容单元不存在：{unit_id}")
         self._repo.delete(unit_id)
 
+    def unmark_path_and_descendants(self, path: Path) -> int:
+        """删除路径自身及其所有子项的内容单元记录（功能增加1 归档，2026-08-04）。
+
+        语义（简化版决策，用户确认 2026-08-04）：
+        - 归档根目录标记时与归档移动后调用，保证归档目录内不再保留任何
+          内容单元标记（"取消标记 = 删除记录"，纯 DELETE 模式）。
+        - ContentUnitRepository.delete 级联清理 content_unit_tag 与
+          thumbnail_cache 记录。**不删除真实文件**。
+        - 路径前缀匹配使用 make_path_key() 归一化（list_by_path_prefix_normalized），
+          含 path 自身。
+
+        Args:
+            path: 待清除标记的路径（含自身及其子项）。
+
+        Returns:
+            删除的记录数。
+
+        Raises:
+            RepositoryError / sqlite3.Error: 任一删除失败时抛出，调用方回滚。
+        """
+
+        def _core() -> int:
+            units = self._repo.list_by_path_prefix_normalized(str(path))
+            count = 0
+            for unit in units:
+                self._repo.delete(unit.id)
+                count += 1
+            return count
+
+        # 与 mark_as_content_unit 一致：注入 UoW 时在事务内执行（支持嵌套），
+        # 保证多步删除原子性。
+        if self._uow is not None:
+            with self._uow.transaction():
+                return _core()
+        return _core()
+
     def list_directory_entries(self, dir_path: str) -> list[FileEntry]:
         """返回 dir_path 下所有文件和文件夹条目，并关联 content_unit。
 

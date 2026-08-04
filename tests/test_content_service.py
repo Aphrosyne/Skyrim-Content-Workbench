@@ -827,6 +827,103 @@ class TestUnmarkContentUnit:
             svc.unmark_content_unit("nonexistent-id")
 
 
+class TestUnmarkPathAndDescendants:
+    """unmark_path_and_descendants（功能增加1 归档，2026-08-04）。"""
+
+    def test_deletes_path_and_descendants(self, db_connection, tmp_path: Path) -> None:
+        """删除路径自身及其子项记录；无关路径记录保留。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        counter = {"n": 0}
+
+        def fake_uuid() -> str:
+            counter["n"] += 1
+            return f"uuid-archive-{counter['n']}"
+
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-08-04T00:00:00Z",
+            uuid_provider=fake_uuid,
+        )
+        archive_root = tmp_path / "99_归档"
+        archive_root.mkdir()
+        (archive_root / "子目录").mkdir()
+        outside = tmp_path / "其他"
+        outside.mkdir()
+
+        root_unit = svc.create_content_unit(archive_root)
+        child_unit = svc.create_content_unit(archive_root / "child.7z")
+        nested_unit = svc.create_content_unit(archive_root / "子目录" / "nested.zip")
+        outside_unit = svc.create_content_unit(outside / "keep.7z")
+
+        count = svc.unmark_path_and_descendants(archive_root)
+
+        assert count == 3
+        assert svc._repo.get_by_id(root_unit.id) is None  # noqa: SLF001
+        assert svc._repo.get_by_id(child_unit.id) is None  # noqa: SLF001
+        assert svc._repo.get_by_id(nested_unit.id) is None  # noqa: SLF001
+        # 归档根之外的记录不受影响
+        assert svc._repo.get_by_id(outside_unit.id) is not None  # noqa: SLF001
+
+    def test_deletes_file_unit_itself(self, db_connection, tmp_path: Path) -> None:
+        """对单个文件路径调用时仅删除该文件记录（含自身）。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-08-04T00:00:00Z",
+            uuid_provider=lambda: "uuid-archive-file",
+        )
+        mod = tmp_path / "mod.7z"
+        mod.write_bytes(b"data")
+        unit = svc.create_content_unit(mod)
+
+        count = svc.unmark_path_and_descendants(mod)
+
+        assert count == 1
+        assert svc._repo.get_by_id(unit.id) is None  # noqa: SLF001
+        # 不删除真实文件
+        assert mod.exists()
+
+    def test_cascades_tags(self, db_connection, tmp_path: Path) -> None:
+        """删除记录级联清理 content_unit_tag。"""
+        from application.content_service import ContentService
+        from infrastructure.repositories.content_unit import ContentUnitRepository
+
+        svc = ContentService(
+            ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-08-04T00:00:00Z",
+            uuid_provider=lambda: "uuid-archive-tag",
+        )
+        archive_root = tmp_path / "99_归档"
+        archive_root.mkdir()
+        unit = svc.create_content_unit(archive_root / "mod.7z")
+        db_connection.execute(
+            "INSERT INTO tag_category (id, name, color_hue) VALUES (?, ?, ?)",
+            ("cat-archive", "测试分类", 0),
+        )
+        db_connection.execute(
+            "INSERT INTO tag (id, name, category_id) VALUES (?, ?, ?)",
+            ("tag-archive", "测试标签", "cat-archive"),
+        )
+        db_connection.execute(
+            "INSERT INTO content_unit_tag (content_unit_id, tag_id) VALUES (?, ?)",
+            (unit.id, "tag-archive"),
+        )
+        db_connection.commit()
+
+        svc.unmark_path_and_descendants(archive_root)
+        db_connection.commit()
+
+        rows = db_connection.execute(
+            "SELECT * FROM content_unit_tag WHERE content_unit_id = ?",
+            (unit.id,),
+        ).fetchall()
+        assert len(rows) == 0
+
+
 class TestListByPathPrefixNormalized:
     """TD-H7 修复回归测试。
 
