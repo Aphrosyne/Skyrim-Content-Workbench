@@ -43,10 +43,20 @@ def _clear_qsettings():
     s = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
     s.remove(ui.QSETTINGS_KEY_VIEW_MODE)
     s.remove(ui.QSETTINGS_KEY_ZOOM)
+    s.remove(ui.QSETTINGS_KEY_LIST_ICON_SIZE)
+    s.remove(ui.QSETTINGS_KEY_ICON_COLOR_FOLDER)
+    s.remove(ui.QSETTINGS_KEY_ICON_COLOR_ARCHIVE)
+    s.remove(ui.QSETTINGS_KEY_ICON_COLOR_IMAGE)
+    s.remove(ui.QSETTINGS_KEY_ICON_COLOR_DOCUMENT)
     s.sync()
     yield
     s.remove(ui.QSETTINGS_KEY_VIEW_MODE)
     s.remove(ui.QSETTINGS_KEY_ZOOM)
+    s.remove(ui.QSETTINGS_KEY_LIST_ICON_SIZE)
+    s.remove(ui.QSETTINGS_KEY_ICON_COLOR_FOLDER)
+    s.remove(ui.QSETTINGS_KEY_ICON_COLOR_ARCHIVE)
+    s.remove(ui.QSETTINGS_KEY_ICON_COLOR_IMAGE)
+    s.remove(ui.QSETTINGS_KEY_ICON_COLOR_DOCUMENT)
     s.sync()
 
 
@@ -198,9 +208,10 @@ def test_card_tooltip_includes_status(qapp, main_window_env) -> None:
 
 
 def test_zoom_combo_changes_card_icon_size(main_window_env) -> None:
-    """缩放下拉框改变卡片图标尺寸（Task 1b 修正：预选尺寸，默认 160）。"""
+    """UI合理性19：卡片视图缩放下拉框改变卡片图标尺寸（预选尺寸，默认 160）。"""
     window, _, _ = main_window_env
-    # 默认 160
+    # 切到卡片视图：下拉框显示卡片档位，默认 160
+    window.switch_view_for_test(VIEW_INDEX_CARD)
     assert window.card_icon_size() == 160
     assert window.zoom_combo_value() == 160
     # 改为 96
@@ -213,8 +224,9 @@ def test_zoom_combo_changes_card_icon_size(main_window_env) -> None:
 
 
 def test_zoom_combo_only_accepts_preset_sizes(main_window_env) -> None:
-    """Task 1b 修正：下拉框仅接受预选尺寸，非预选值无效。"""
+    """UI合理性19：下拉框仅接受各自视图预选尺寸，非预选值无效。"""
     window, _, _ = main_window_env
+    window.switch_view_for_test(VIEW_INDEX_CARD)
     # 非预选值（如 100）→ 无效，不改变
     window.set_card_icon_size_for_test(100)
     assert window.card_icon_size() == 160  # 保持默认
@@ -223,6 +235,112 @@ def test_zoom_combo_only_accepts_preset_sizes(main_window_env) -> None:
     assert window.card_icon_size() == 96
     window.set_card_icon_size_for_test(256)
     assert window.card_icon_size() == 256
+
+
+def test_list_zoom_combo_uses_list_presets(main_window_env) -> None:
+    """UI合理性19：列表视图下拉框显示列表档位（默认 16），与卡片档位互不干扰。"""
+    window, _, _ = main_window_env
+    # 默认列表视图：下拉框为列表档位
+    assert window.list_icon_size() == 16
+    assert window.zoom_combo_value() == 16
+    # 列表档位不含卡片尺寸（96），卡片档位不含列表尺寸（16）
+    combo = window._zoom_combo  # noqa: SLF001
+    assert combo.findData(96) < 0
+    assert combo.findData(16) >= 0
+
+
+def test_zoom_combo_presets_switch_with_view(main_window_env) -> None:
+    """UI合理性19：切换视图时缩放下拉框档位随之切换，两视图尺寸各自记忆。"""
+    window, _, _ = main_window_env
+    # 列表视图设置列表档位 32
+    window.set_list_icon_size_for_test(32)
+    assert window.list_icon_size() == 32
+
+    # 切到卡片视图：下拉框换为卡片档位，列表档位（16）不存在
+    window.switch_view_for_test(VIEW_INDEX_CARD)
+    combo = window._zoom_combo  # noqa: SLF001
+    assert combo.findData(16) < 0
+    assert combo.findData(160) >= 0
+    assert window.card_icon_size() == 160  # 卡片默认
+
+    # 卡片视图设置卡片档位 96
+    window.set_card_icon_size_for_test(96)
+    assert window.card_icon_size() == 96
+
+    # 切回列表视图：下拉框恢复列表档位，列表尺寸仍是 32
+    window.switch_view_for_test(VIEW_INDEX_LIST)
+    assert window.list_icon_size() == 32
+    assert window.zoom_combo_value() == 32
+
+
+def test_list_zoom_changes_icon_size_and_row_height(main_window_env) -> None:
+    """UI合理性19：列表缩放改变图标尺寸与行高（减小信息密度）。"""
+    window, _, _ = main_window_env
+    view = window._content_view  # noqa: SLF001
+    assert view.iconSize().width() == 16
+    assert view.verticalHeader().defaultSectionSize() == 16 + ui.LIST_ROW_PADDING_V
+
+    window.set_list_icon_size_for_test(36)
+    assert view.iconSize().width() == 36
+    assert view.verticalHeader().defaultSectionSize() == 36 + ui.LIST_ROW_PADDING_V
+
+
+def test_list_icon_size_persists_across_restart(main_window_env) -> None:
+    """UI合理性19：列表图标尺寸独立持久化（view/list_icon_size）。"""
+    from PySide6.QtCore import QSettings
+
+    window, _, _ = main_window_env
+    window.set_list_icon_size_for_test(32)
+    settings = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+    assert settings.value(ui.QSETTINGS_KEY_LIST_ICON_SIZE, type=int) == 32
+
+
+def test_zoom_combo_mouse_press_applies_immediately(qapp, main_window_env) -> None:
+    """BugFix3 方案（2026-08-04）：缩放下拉框弹出项鼠标按下即应用（列表）。"""
+    window, _, _ = main_window_env
+    combo = window._zoom_combo  # noqa: SLF001
+    size_idx = combo.findData(20)
+    combo.view().pressed.emit(combo.model().index(size_idx, 0))
+    qapp.processEvents()
+    assert window.list_icon_size() == 20
+    assert combo.currentData() == 20
+
+
+def test_zoom_combo_press_applies_card_size(qapp, main_window_env) -> None:
+    """BugFix3 方案（2026-08-04）：卡片视图缩放下拉框鼠标按下即应用。"""
+    window, _, _ = main_window_env
+    window.switch_view_for_test(VIEW_INDEX_CARD)
+    combo = window._zoom_combo  # noqa: SLF001
+    size_idx = combo.findData(128)
+    combo.view().pressed.emit(combo.model().index(size_idx, 0))
+    qapp.processEvents()
+    assert window.card_icon_size() == 128
+    assert combo.currentData() == 128
+
+
+def test_zoom_combo_press_then_activated_keeps_pressed_display(qapp, main_window_env) -> None:
+    """BugFix3 方案：按下后快速滑动释放到其他项，显示与应用保持按下项。"""
+    window, _, _ = main_window_env
+    combo = window._zoom_combo  # noqa: SLF001
+    press_idx = combo.findData(20)
+    other_idx = combo.findData(32)
+    combo.view().pressed.emit(combo.model().index(press_idx, 0))
+    qapp.processEvents()
+    combo.activated.emit(other_idx)  # 释放位置在别处（Qt 会覆盖 currentIndex）
+    qapp.processEvents()
+    assert window.list_icon_size() == 20
+    assert combo.currentData() == 20
+
+
+def test_zoom_combo_keyboard_activated_applies(qapp, main_window_env) -> None:
+    """BugFix3 方案：键盘路径（无鼠标 press）activated 仍正常应用。"""
+    window, _, _ = main_window_env
+    combo = window._zoom_combo  # noqa: SLF001
+    size_idx = combo.findData(24)
+    combo.activated.emit(size_idx)
+    qapp.processEvents()
+    assert window.list_icon_size() == 24
+    assert combo.currentData() == 24
 
 
 def test_view_switch_bar_visible_in_browse_mode(main_window_env) -> None:

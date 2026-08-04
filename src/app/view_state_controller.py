@@ -79,6 +79,8 @@ class ViewStateController(QObject):
         self._qsettings = qsettings
         self._current_view_index: int = VIEW_INDEX_LIST  # 默认列表视图
         self._card_icon_size: int = ui.ZOOM_SLIDER_DEFAULT
+        # UI合理性19（2026-08-04）：列表视图图标尺寸（行高 = 尺寸 + 内边距）
+        self._list_icon_size: int = ui.LIST_ICON_DEFAULT
 
     # --- 状态读取（MainWindow 镜像属性/测试访问器） ---
 
@@ -90,6 +92,35 @@ class ViewStateController(QObject):
         """返回当前卡片图标尺寸。"""
         return self._card_icon_size
 
+    def list_icon_size(self) -> int:
+        """返回当前列表图标尺寸（UI合理性19）。"""
+        return self._list_icon_size
+
+    def _zoom_presets(self, view_index: int) -> list[int]:
+        """返回指定视图的缩放档位（列表/卡片各自独立）。"""
+        return ui.LIST_ICON_PRESET_SIZES if view_index == VIEW_INDEX_LIST else ui.ZOOM_PRESET_SIZES
+
+    def _view_icon_size(self, view_index: int) -> int:
+        """返回指定视图当前图标尺寸。"""
+        return self._list_icon_size if view_index == VIEW_INDEX_LIST else self._card_icon_size
+
+    def _populate_zoom_presets(self, view_index: int) -> None:
+        """按当前视图重灌缩放下拉框档位，并选中该视图已保存的尺寸。
+
+        UI合理性19：列表模式显示列表档位、卡片模式显示卡片档位，互不干扰；
+        程序化填充时 blockSignals，避免 currentIndexChanged 触发 apply 造成
+        重复应用/循环。
+        """
+        presets = self._zoom_presets(view_index)
+        current_size = self._view_icon_size(view_index)
+        self._zoom_combo.blockSignals(True)
+        self._zoom_combo.clear()
+        for size in presets:
+            self._zoom_combo.addItem(f"{size}", size)
+        if current_size in presets:
+            self._zoom_combo.setCurrentIndex(presets.index(current_size))
+        self._zoom_combo.blockSignals(False)
+
     # --- 视图切换 + 缩放 ---
 
     def switch_view(self, view_index: int) -> None:
@@ -97,6 +128,7 @@ class ViewStateController(QObject):
 
         Q1=A：视图切换按钮组独立一行。
         Q4=A：选中状态跨视图保持（用 entry.path 匹配，行号可能因排序不同而变化）。
+        UI合理性19：切换后重灌缩放下拉框档位（列表/卡片各自独立记忆）。
         """
         if view_index == self._current_view_index:
             return
@@ -151,6 +183,8 @@ class ViewStateController(QObject):
             self._view_card_button.setChecked(True)
         else:
             self._view_list_button.setChecked(True)
+        # UI合理性19：缩放档位随视图切换
+        self._populate_zoom_presets(view_index)
 
     def on_zoom_combo_changed(self, index: int) -> None:
         """缩放下拉框变化：应用缩放并持久化。"""
@@ -159,8 +193,44 @@ class ViewStateController(QObject):
             return
         self.apply_zoom(size)
 
+    def on_zoom_user_selected(self, index: int) -> None:
+        """缩放下拉框用户选择（PressSelectComboBox 按下即选中，BugFix3 方案）。
+
+        鼠标按下即应用缩放，并立即同步下拉框显示（快速滑动释放到其他项时，
+        由 PressSelectComboBox 恢复按下项，避免"缩放已生效但显示未变"）。
+        """
+        size = self._zoom_combo.itemData(index)
+        if not isinstance(size, int):
+            return
+        self.apply_zoom(size)
+        self._zoom_combo.blockSignals(True)
+        self._zoom_combo.setCurrentIndex(index)
+        self._zoom_combo.blockSignals(False)
+
     def apply_zoom(self, value: int) -> None:
-        """应用缩放值：调整卡片图标尺寸并持久化。"""
+        """应用缩放值到当前视图（列表/卡片各自独立）并持久化。"""
+        self._apply_view_zoom(self._current_view_index, value)
+
+    def set_view_icon_size(self, view_index: int, value: int) -> None:
+        """按指定视图应用图标尺寸（供恢复状态与测试使用，不依赖当前视图）。"""
+        presets = self._zoom_presets(view_index)
+        if value not in presets:
+            return
+        self._apply_view_zoom(view_index, value)
+        if view_index == self._current_view_index:
+            self._zoom_combo.blockSignals(True)
+            self._zoom_combo.setCurrentIndex(presets.index(value))
+            self._zoom_combo.blockSignals(False)
+
+    def _apply_view_zoom(self, view_index: int, value: int) -> None:
+        """应用指定视图的图标尺寸：列表 = iconSize + 行高；卡片 = iconSize + gridSize。"""
+        if view_index == VIEW_INDEX_LIST:
+            self._list_icon_size = value
+            self._content_view.setIconSize(QSize(value, value))
+            # UI合理性19：图标变大 → 行高增大，减小信息密度
+            self._content_view.verticalHeader().setDefaultSectionSize(value + ui.LIST_ROW_PADDING_V)
+            self._qsettings.setValue(ui.QSETTINGS_KEY_LIST_ICON_SIZE, value)
+            return
         self._card_icon_size = value
         self._card_view.setIconSize(QSize(value, value))
         # Task 2 验收修复：iconSize 变化时同步 gridSize，保持固定网格
@@ -175,22 +245,20 @@ class ViewStateController(QObject):
         self._qsettings.setValue(ui.QSETTINGS_KEY_ZOOM, value)
 
     def restore_state(self) -> None:
-        """从 QSettings 恢复缩放值与视图模式（Q1=A）。"""
+        """从 QSettings 恢复缩放值与视图模式（Q1=A / UI合理性19）。"""
         zoom = self._qsettings.value(ui.QSETTINGS_KEY_ZOOM, ui.ZOOM_SLIDER_DEFAULT, type=int)
         if zoom in ui.ZOOM_PRESET_SIZES:
-            index = ui.ZOOM_PRESET_SIZES.index(zoom)
-            self._zoom_combo.setCurrentIndex(index)
-            self._card_view.setIconSize(QSize(zoom, zoom))
-            # Task 2 验收修复：恢复时同步 gridSize
-            self._card_view.setGridSize(
-                QSize(
-                    zoom + ui.CARD_GRID_PADDING_H,
-                    zoom + ui.CARD_GRID_PADDING_V,
-                )
-            )
-            self._card_list_model.set_icon_size(zoom)
-            self._card_view.doItemsLayout()
-            self._card_icon_size = zoom
+            self._apply_view_zoom(VIEW_INDEX_CARD, zoom)
+        else:
+            self._apply_view_zoom(VIEW_INDEX_CARD, ui.ZOOM_SLIDER_DEFAULT)
+        # UI合理性19：列表视图图标尺寸独立持久化
+        list_zoom = self._qsettings.value(
+            ui.QSETTINGS_KEY_LIST_ICON_SIZE, ui.LIST_ICON_DEFAULT, type=int
+        )
+        if list_zoom in ui.LIST_ICON_PRESET_SIZES:
+            self._apply_view_zoom(VIEW_INDEX_LIST, list_zoom)
+        else:
+            self._apply_view_zoom(VIEW_INDEX_LIST, ui.LIST_ICON_DEFAULT)
         # 恢复视图模式
         view_mode = self._qsettings.value(ui.QSETTINGS_KEY_VIEW_MODE, "list", type=str)
         if view_mode == "card":
@@ -199,6 +267,8 @@ class ViewStateController(QObject):
         else:
             self._view_list_button.setChecked(True)
             self.switch_view(VIEW_INDEX_LIST)
+        # switch_view 对同视图早退，列表模式需显式重灌缩放档位
+        self._populate_zoom_presets(self._current_view_index)
 
     def menu_view_switch(self, mode: str) -> None:
         """UI合理性3：菜单视图切换 → 复用既有 switch_view。"""

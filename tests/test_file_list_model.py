@@ -358,6 +358,34 @@ class TestDecorationRole:
         idx = model.index(0, COL_TYPE)
         assert model.data(idx, Qt.DecorationRole) is None
 
+    def test_icons_differ_by_file_type(self, qapp) -> None:  # noqa: ANN001
+        """UI合理性4：文件夹/压缩包/图片/其他文档显示不同类型图标。"""
+        from app.file_type_icons import (
+            ICON_ARCHIVE,
+            ICON_DOCUMENT,
+            ICON_FOLDER,
+            ICON_IMAGE,
+            file_type_key,
+        )
+
+        model = FileListModel()
+        entries = [
+            _make_entry("armor", "/mods/armor", is_dir=True),
+            _make_entry("mod.zip", "/mods/mod.zip", size=10),
+            _make_entry("preview.jpg", "/mods/preview.jpg", size=10),
+            _make_entry("readme.txt", "/mods/readme.txt", size=10),
+        ]
+        model.refresh(entries)
+        icon_keys = {
+            entry.name: model.icon_for(entry).pixmap(16, 16).cacheKey()
+            for entry in model._entries  # noqa: SLF001
+        }
+        assert len(set(icon_keys.values())) == 4
+        assert file_type_key(entries[0]) == ICON_FOLDER
+        assert file_type_key(entries[1]) == ICON_ARCHIVE
+        assert file_type_key(entries[2]) == ICON_IMAGE
+        assert file_type_key(entries[3]) == ICON_DOCUMENT
+
 
 class TestSort:
     def test_default_sort_is_name_ascending(self, qapp) -> None:  # noqa: ANN001

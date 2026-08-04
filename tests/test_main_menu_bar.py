@@ -34,6 +34,7 @@ def test_menu_structure(qapp) -> None:
     titles = [action.text() for action in menu_bar.actions()]
     assert ui.MENU_BAR_VIEW in titles
     assert ui.MENU_BAR_TOOLS in titles
+    assert ui.MENU_BAR_HELP in titles
 
 
 def test_view_actions_emit_switch_request(qapp) -> None:
@@ -111,3 +112,29 @@ def test_tools_actions_emit_signals_and_toggle_visibility(qapp) -> None:
 
     menu_bar.set_tag_manager_visible(True)
     assert menu_bar.tag_manager_action().isVisible()
+
+
+def test_help_asset_credits_action_emits_signal(qapp) -> None:
+    """UI合理性4 资产引用：帮助菜单「开源资产致谢…」发射 asset_credits_requested。"""
+    menu_bar = MainMenuBar()
+    captured: list[bool] = []
+    menu_bar.asset_credits_requested.connect(lambda: captured.append(True))
+
+    action = menu_bar.asset_credits_action()
+    assert action.text() == ui.MENU_HELP_ASSET_CREDITS
+    action.trigger()
+
+    assert captured == [True]
+
+
+def test_view_file_type_icon_colors_action_emits_signal(qapp) -> None:
+    """UI合理性4 二期：视图菜单「文件类型图标颜色…」发射 file_type_icon_colors_requested。"""
+    menu_bar = MainMenuBar()
+    captured: list[bool] = []
+    menu_bar.file_type_icon_colors_requested.connect(lambda: captured.append(True))
+
+    action = menu_bar.file_type_icon_colors_action()
+    assert action.text() == ui.MENU_VIEW_FILE_TYPE_ICON_COLORS
+    action.trigger()
+
+    assert captured == [True]

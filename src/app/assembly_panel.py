@@ -355,6 +355,10 @@ class AssemblyPanel(QFrame):
         """返回指定行的 FileEntry（供测试）。"""
         return self._list_model.entry_at(row)
 
+    def refresh_icons(self) -> None:
+        """文件类型图标颜色变化后重绘列表（不重载数据，仅重新查询图标）。"""
+        self._list_view.viewport().update()
+
     # --- UX 重构 Phase 1 Task 4：拖拽 drop target ---
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt 命名)

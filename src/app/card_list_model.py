@@ -281,6 +281,15 @@ class CardListModel(QAbstractListModel):
                 self.dataChanged.emit(idx, idx, [Qt.DecorationRole])
                 break
 
+    def invalidate_icons(self) -> None:
+        """清除占位图标缓存并触发全表 DecorationRole 重查。
+
+        文件类型图标颜色变化（UI合理性4 二期）后调用：占位图是从旧 QIcon
+        渲染的缓存位图，必须清除后才会用新颜色重建。
+        """
+        self._placeholder_cache.clear()
+        self.notify_decoration_changed()
+
     def set_thumbnail_provider(self, provider: CardThumbnailProvider | None) -> None:
         """注入缩略图查询回调。
 

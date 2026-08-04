@@ -90,6 +90,10 @@ def _clean_shared_qsettings() -> Iterator[None]:
     settings.remove("url/nexus_url_prefix")
     settings.remove("url/search_engine_url")
     settings.remove("url/search_prefix")
+    settings.remove(ui.QSETTINGS_KEY_ICON_COLOR_FOLDER)
+    settings.remove(ui.QSETTINGS_KEY_ICON_COLOR_ARCHIVE)
+    settings.remove(ui.QSETTINGS_KEY_ICON_COLOR_IMAGE)
+    settings.remove(ui.QSETTINGS_KEY_ICON_COLOR_DOCUMENT)
     settings.sync()
     try:
         yield
@@ -99,4 +103,8 @@ def _clean_shared_qsettings() -> Iterator[None]:
         settings.remove("url/nexus_url_prefix")
         settings.remove("url/search_engine_url")
         settings.remove("url/search_prefix")
+        settings.remove(ui.QSETTINGS_KEY_ICON_COLOR_FOLDER)
+        settings.remove(ui.QSETTINGS_KEY_ICON_COLOR_ARCHIVE)
+        settings.remove(ui.QSETTINGS_KEY_ICON_COLOR_IMAGE)
+        settings.remove(ui.QSETTINGS_KEY_ICON_COLOR_DOCUMENT)
         settings.sync()

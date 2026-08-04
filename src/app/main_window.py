@@ -47,7 +47,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QButtonGroup,
-    QComboBox,
     QDialog,
     QGroupBox,
     QHBoxLayout,
@@ -67,9 +66,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app import file_type_icon_colors, file_type_icons
 from app import ui_constants as ui
 from app.assembly_controller import AssemblyController
 from app.assembly_panel import AssemblyPanel
+from app.asset_credits_dialog import AssetCreditsDialog
 from app.batch_tag_dialog import BatchTagDialog
 from app.card_list_model import CardListModel
 from app.content_list_controller import ContentListController
@@ -93,6 +94,7 @@ from app.file_list_model import (
     FileListModel,
 )
 from app.file_operations_controller import FileOperationsController
+from app.file_type_icon_colors_dialog import FileTypeIconColorsDialog
 from app.folder_tree_model import FolderTreeModel
 from app.main_menu_bar import MainMenuBar
 from app.metadata_helpers import elide_label_lines, format_metadata_lines
@@ -211,6 +213,8 @@ class MainWindow(QMainWindow):
         # UI合理性2：分割线状态 helper（键与默认值见 ui_constants）
         self._qsettings = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
         self._splitter_state = SplitterStateHelper(self._qsettings)
+        # UI合理性4 二期：文件类型图标颜色配置（自定义颜色启动即生效）
+        file_type_icons.set_type_colors(file_type_icon_colors.load_colors(self._qsettings))
         # UI合理性21：内容单元标记配置（行首徽章 + 色条），QSettings 持久化
         self._marker_config = ContentUnitMarkerConfig.load(self._qsettings)
         # 操作便捷性3（2026-08-02）：最近移动目标（右键子菜单 / Ctrl+Q / 对话框快捷区）
@@ -558,6 +562,10 @@ class MainWindow(QMainWindow):
         self._menu_bar.url_settings_requested.connect(self._on_url_settings_clicked)
         self._menu_bar.tag_manager_requested.connect(self._on_tag_manager_clicked)
         self._menu_bar.operation_history_requested.connect(self._on_operation_history_clicked)
+        self._menu_bar.asset_credits_requested.connect(self._on_asset_credits_clicked)
+        self._menu_bar.file_type_icon_colors_requested.connect(
+            self._on_file_type_icon_colors_clicked
+        )
         # 工具菜单项按注入服务开关（与工具栏按钮可见性一致）
         self._menu_bar.set_tag_manager_visible(self._tag_service is not None)
         self._menu_bar.set_operation_history_visible(self._undo_service is not None)
@@ -784,15 +792,13 @@ class MainWindow(QMainWindow):
         # 缩放下拉框（Task 1b 修正：滑块改为预选尺寸下拉框，避免拖动频繁重绘原图）
         zoom_label = QLabel(ui.ZOOM_SLIDER_LABEL)
         view_switch_layout.addWidget(zoom_label)
-        self._zoom_combo = QComboBox()
-        for size in ui.ZOOM_PRESET_SIZES:
-            self._zoom_combo.addItem(f"{size}", size)
-        # 设置默认值
-        default_index = ui.ZOOM_PRESET_SIZES.index(ui.ZOOM_SLIDER_DEFAULT)
-        self._zoom_combo.setCurrentIndex(default_index)
+        self._zoom_combo = PressSelectComboBox()
+        # UI合理性19（2026-08-04）：档位由 ViewStateController 按当前视图
+        # （列表/卡片各自独立）在 restore_state / switch_view 时重灌
         self._zoom_combo.setToolTip(ui.ZOOM_SLIDER_TOOLTIP)
         self._zoom_combo.setFixedWidth(80)
-        self._zoom_combo.currentIndexChanged.connect(self._on_zoom_combo_changed)
+        # BugFix3 同款方案（2026-08-04）：按下即选中，快速滑动不再"点一次不生效"
+        self._zoom_combo.userSelected.connect(self._on_zoom_combo_user_selected)
         view_switch_layout.addWidget(self._zoom_combo)
 
         # 封面筛选（操作便捷性5，2026-08-03）：切换按钮，按下=只看有封面，不持久化
@@ -1127,9 +1133,9 @@ class MainWindow(QMainWindow):
         """切换文件列表视图（列表 ↔ 卡片，委托 ViewStateController）。"""
         self._view_state_controller.switch_view(view_index)
 
-    def _on_zoom_combo_changed(self, index: int) -> None:
-        """缩放下拉框变化：应用缩放并持久化（委托 ViewStateController）。"""
-        self._view_state_controller.on_zoom_combo_changed(index)
+    def _on_zoom_combo_user_selected(self, index: int) -> None:
+        """缩放下拉框用户选择：按下即应用并同步显示（委托 ViewStateController）。"""
+        self._view_state_controller.on_zoom_user_selected(index)
 
     def _apply_zoom(self, value: int) -> None:
         """应用缩放值：调整卡片图标尺寸并持久化（委托 ViewStateController）。"""
@@ -1196,6 +1202,24 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         dialog.resulting_config().save(self._qsettings)
+
+    def _on_asset_credits_clicked(self) -> None:
+        """UI合理性4 资产引用：菜单「帮助 → 开源资产致谢…」打开致谢对话框。"""
+        AssetCreditsDialog(self).exec()
+
+    def _on_file_type_icon_colors_clicked(self) -> None:
+        """UI合理性4 二期：菜单「视图 → 文件类型图标颜色…」→ 保存并应用。"""
+        current = file_type_icon_colors.load_colors(self._qsettings)
+        dialog = FileTypeIconColorsDialog(current, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        colors = dialog.resulting_colors()
+        file_type_icon_colors.save_colors(self._qsettings, colors)
+        # 应用：注入新颜色（内部清空图标缓存）→ 重绘各视图图标
+        file_type_icons.set_type_colors(colors)
+        self._content_view.viewport().update()
+        self._card_list_model.invalidate_icons()
+        self._assembly_panel.refresh_icons()
 
     def _on_menu_view_switch(self, mode: str) -> None:
         """UI合理性3：菜单视图切换（委托 ViewStateController）。"""
@@ -1978,16 +2002,21 @@ class MainWindow(QMainWindow):
         """返回当前卡片图标尺寸（供测试）。"""
         return self._card_icon_size
 
+    def list_icon_size(self) -> int:
+        """返回当前列表图标尺寸（UI合理性19，供测试）。"""
+        return self._view_state_controller.list_icon_size()
+
     def zoom_combo_value(self) -> int:
-        """返回缩放下拉框当前值（供测试）。"""
+        """返回缩放下拉框当前值（当前视图档位，供测试）。"""
         return self._zoom_combo.currentData()
 
     def set_card_icon_size_for_test(self, size: int) -> None:
-        """测试辅助：通过下拉框设置卡片图标尺寸。"""
-        if size not in ui.ZOOM_PRESET_SIZES:
-            return
-        index = ui.ZOOM_PRESET_SIZES.index(size)
-        self._zoom_combo.setCurrentIndex(index)  # 触发 currentIndexChanged → _on_zoom_combo_changed
+        """测试辅助：直接设置卡片图标尺寸（不依赖当前视图/下拉框档位）。"""
+        self._view_state_controller.set_view_icon_size(VIEW_INDEX_CARD, size)
+
+    def set_list_icon_size_for_test(self, size: int) -> None:
+        """测试辅助：直接设置列表图标尺寸（UI合理性19，不依赖当前视图）。"""
+        self._view_state_controller.set_view_icon_size(VIEW_INDEX_LIST, size)
 
     def switch_view_for_test(self, view_index: int) -> None:
         """测试辅助：切换视图（供测试）。"""

@@ -24,6 +24,8 @@ class MainMenuBar(QMenuBar):
     layout_reset_requested = Signal()
     # 内容单元标记设置请求（UI合理性21）
     marker_config_requested = Signal()
+    # 文件类型图标颜色设置请求（UI合理性4 二期）
+    file_type_icon_colors_requested = Signal()
     # 网址与搜索设置请求（操作便捷性8/9）
     url_settings_requested = Signal()
     # 快捷键设置请求（占位，二期实现自定义快捷键）
@@ -31,11 +33,14 @@ class MainMenuBar(QMenuBar):
     # 工具菜单请求（复用 MainWindow 既有 handler）
     tag_manager_requested = Signal()
     operation_history_requested = Signal()
+    # 开源资产致谢请求（UI合理性4 资产引用，2026-08-04）
+    asset_credits_requested = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._build_view_menu()
         self._build_tools_menu()
+        self._build_help_menu()
 
     # --- 菜单构建 ---
 
@@ -74,6 +79,12 @@ class MainMenuBar(QMenuBar):
         )
         view_menu.addAction(self._marker_config_action)
 
+        self._file_type_icon_colors_action = QAction(ui.MENU_VIEW_FILE_TYPE_ICON_COLORS, self)
+        self._file_type_icon_colors_action.triggered.connect(
+            lambda checked=False: self.file_type_icon_colors_requested.emit()
+        )
+        view_menu.addAction(self._file_type_icon_colors_action)
+
         # 快捷键自定义：二期独立任务实现，占位保持禁用（AGENTS 待确认需求保留 TODO）
         self._shortcuts_action = QAction(ui.MENU_VIEW_SHORTCUTS, self)
         self._shortcuts_action.setEnabled(False)
@@ -107,6 +118,15 @@ class MainMenuBar(QMenuBar):
         )
         tools_menu.addAction(self._url_settings_action)
 
+    def _build_help_menu(self) -> None:
+        """帮助菜单：开源资产致谢（UI合理性4 资产引用）。"""
+        help_menu = self.addMenu(ui.MENU_BAR_HELP)
+        self._asset_credits_action = QAction(ui.MENU_HELP_ASSET_CREDITS, self)
+        self._asset_credits_action.triggered.connect(
+            lambda checked=False: self.asset_credits_requested.emit()
+        )
+        help_menu.addAction(self._asset_credits_action)
+
     # --- MainWindow 接线辅助 ---
 
     def set_view(self, mode: str) -> None:
@@ -138,6 +158,9 @@ class MainMenuBar(QMenuBar):
     def marker_config_action(self) -> QAction:
         return self._marker_config_action
 
+    def file_type_icon_colors_action(self) -> QAction:
+        return self._file_type_icon_colors_action
+
     @property
     def url_settings_action(self) -> QAction:
         return self._url_settings_action
@@ -150,3 +173,6 @@ class MainMenuBar(QMenuBar):
 
     def operation_history_action(self) -> QAction:
         return self._operation_history_action
+
+    def asset_credits_action(self) -> QAction:
+        return self._asset_credits_action

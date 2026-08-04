@@ -37,9 +37,9 @@ from pathlib import Path
 
 from PySide6.QtCore import QAbstractTableModel, QMimeData, QModelIndex, Qt, QUrl
 from PySide6.QtGui import QBrush, QColor, QIcon, QPixmap
-from PySide6.QtWidgets import QApplication, QStyle
 
 from app import ui_constants as ui
+from app.file_type_icons import file_type_key, icon_for_type
 from domain.models import FileEntry
 
 logger = logging.getLogger(__name__)
@@ -155,10 +155,6 @@ class FileListModel(QAbstractTableModel):
         self._entries: list[FileEntry] = []
         self._sort_key: str = SORT_NAME
         self._sort_ascending: bool = True
-        # 图标缓存：避免 hover/paint 高频事件中反复调用 standardIcon（性能优化）
-        self._dir_icon: QIcon | None = None
-        self._file_icon: QIcon | None = None
-        self._icons_initialized = False
         # Stage 4 Task 4：缩略图 provider + QPixmap 缓存
         self._thumbnail_provider: ThumbnailProvider | None = None
         # unit_id → QPixmap (None 表示不可用)
@@ -375,13 +371,14 @@ class FileListModel(QAbstractTableModel):
 
         UI合理性5：文件夹类内容单元有封面 → 复用现有封面缓存图（64×64）
         作为图标以区分是否有封面；缓存不存在时不触发新缓存生成。
+        UI合理性4（2026-08-04）：非封面场景按文件类型返回 SVG 图标
+        （文件夹 / 压缩包 / 图片 / 其他文档，跟随系统主题着色），
+        加载失败回退 Qt 标准图标（见 file_type_icons）。
 
         优先级：
         1. 文件夹内容单元有封面（且缓存可用）→ 封面图标
-        2. 文件夹 → Qt 文件夹图标
-        3. 文件 → Qt 文件图标
+        2. 其余 → 按类型 SVG 图标（file_type_icons）
         """
-        self._ensure_icons()
         if (
             entry.is_dir
             and entry.content_unit is not None
@@ -391,7 +388,7 @@ class FileListModel(QAbstractTableModel):
             cover_icon = self._query_cover_icon(entry.content_unit)
             if cover_icon is not None:
                 return cover_icon
-        return self._dir_icon if entry.is_dir else self._file_icon
+        return icon_for_type(file_type_key(entry))
 
     def _query_cover_icon(self, unit) -> QIcon | None:
         """查询并缓存封面图标（缺失缓存 → None，不投递生成任务）。"""
@@ -402,20 +399,6 @@ class FileListModel(QAbstractTableModel):
         icon = self._cover_icon_provider(unit_id, source_path)  # type: ignore[misc]
         self._cover_icon_cache[unit_id] = icon
         return icon
-
-    def _ensure_icons(self) -> None:
-        """懒加载图标缓存。QApplication 未就绪时跳过，下次调用再尝试。"""
-        if self._icons_initialized:
-            return
-        app = QApplication.instance()
-        if app is None:
-            return
-        style = app.style()
-        if style is None:
-            return
-        self._dir_icon = style.standardIcon(QStyle.SP_DirIcon)
-        self._file_icon = style.standardIcon(QStyle.SP_FileIcon)
-        self._icons_initialized = True
 
     # --- Stage 4 Task 4：缩略图接口 ---
 

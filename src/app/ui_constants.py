@@ -551,10 +551,26 @@ VIEW_SWITCH_CARD = "卡片"
 VIEW_SWITCH_LIST_TOOLTIP = "切换到详细列表视图（4 列：名称/类型/大小/修改日期）"
 VIEW_SWITCH_CARD_TOOLTIP = "切换到大图卡片视图（仅显示封面 + 名称）"
 ZOOM_SLIDER_LABEL = "缩放"
-ZOOM_SLIDER_TOOLTIP = "选择卡片图标尺寸（仅卡片视图生效）"
+ZOOM_SLIDER_TOOLTIP = "选择图标尺寸（列表/卡片视图各自生效）"
 # Task 1b 修正：滑块改为下拉框预选尺寸，避免拖动时频繁重绘原图
 ZOOM_PRESET_SIZES = [96, 128, 160, 192, 224, 256]
 ZOOM_SLIDER_DEFAULT = 160
+# UI合理性19（2026-08-04）：列表视图图标尺寸档位（六档，与卡片模式同数量；
+# 默认 16 保持紧凑）。行高 = 图标尺寸 + LIST_ROW_PADDING_V。
+# 验收反馈（2026-08-04）：档位调整为 16/20/24/28/32/36。
+LIST_ICON_PRESET_SIZES = [16, 20, 24, 28, 32, 36]
+LIST_ICON_DEFAULT = 16
+LIST_ROW_PADDING_V = 8
+
+# 文件类型图标颜色（UI合理性4 验收反馈，2026-08-04）
+# 键对应 file_type_icons 的类型键（folder/archive/image/document）。
+# 默认值；运行时可通过「视图 → 文件类型图标颜色…」自定义（QSettings 持久化）。
+FILE_TYPE_ICON_COLORS = {
+    "folder": "#f6e03b",  # 文件夹（黄）
+    "archive": "#72e9a1",  # 压缩包（浅绿，用户验收后调整值）
+    "image": "#8ab8e6",  # 图片（浅蓝）
+    "document": "#ffffff",  # 其他文档（白；若切浅色主题可能看不清，可改为主题文字色）
+}
 
 # 右栏封面预览（Task 1b 修正：统一加载原图，宽度跟随右栏自适应）
 COVER_PREVIEW_DEFAULT_WIDTH = 128  # 初始宽度（resize 后跟随右栏）
@@ -612,6 +628,7 @@ SEARCH_JUMP_TOOLTIP = "双击跳转到所在目录"
 QSETTINGS_ORGANIZATION = "SkyrimContentWorkbench"
 QSETTINGS_APPLICATION = "SkyrimContentWorkbench"
 QSETTINGS_KEY_ZOOM = "view/card_icon_size"
+QSETTINGS_KEY_LIST_ICON_SIZE = "view/list_icon_size"
 QSETTINGS_KEY_VIEW_MODE = "view/current_mode"  # "list" | "card"
 QSETTINGS_KEY_SPLITTER_MAIN = "layout/splitter/main"
 QSETTINGS_KEY_SPLITTER_RIGHT = "layout/splitter/right"
@@ -643,16 +660,32 @@ FILE_LIST_COLUMN_WIDTHS = (
 # === 顶部菜单栏（UI合理性3，2026-08-03） ===
 MENU_BAR_VIEW = "视图"
 MENU_BAR_TOOLS = "工具"
+MENU_BAR_HELP = "帮助"
 MENU_VIEW_LIST = "列表视图"
 MENU_VIEW_CARD = "卡片视图"
 MENU_VIEW_RESET_LAYOUT = "重置布局"
 MENU_VIEW_CONTENT_UNIT_MARKER = "内容单元标记设置…"
+MENU_VIEW_FILE_TYPE_ICON_COLORS = "文件类型图标颜色…"
 MENU_VIEW_URL_SETTINGS = "网址与搜索设置…"
 MENU_VIEW_SHORTCUTS = "快捷键设置…"
 MENU_VIEW_SHORTCUTS_TODO = "快捷键自定义待独立任务实现（UI合理性3 二期）"
 MENU_TOOLS_TAG_MANAGER = "标签管理…"
 MENU_TOOLS_OPERATION_HISTORY = "操作历史…"
 LAYOUT_RESET_STATUS = "布局已重置为默认比例"
+
+# === 开源资产致谢对话框（UI合理性4 资产引用，2026-08-04） ===
+MENU_HELP_ASSET_CREDITS = "开源资产致谢…"
+ASSET_CREDITS_DIALOG_TITLE = "开源资产致谢"
+ASSET_CREDITS_HEADING = "本软件使用以下开源资产："
+ASSET_CREDITS_ICON_PACK_NAME = "game-icon-pack"
+ASSET_CREDITS_ICON_PACK_AUTHOR = "作者：Nieobie"
+ASSET_CREDITS_ICON_PACK_SOURCE = "来源："
+ASSET_CREDITS_ICON_PACK_SOURCE_URL = "https://github.com/Nieobie/game-icon-pack"
+ASSET_CREDITS_ICON_PACK_LICENSE = "许可协议：CC0-1.0（公有领域）"
+ASSET_CREDITS_ICON_PACK_LICENSE_URL = "https://github.com/Nieobie/game-icon-pack#CC0-1.0-1-ov-file"
+ASSET_CREDITS_ICON_PACK_LOCAL = "本地归档：assets/third-party/game-icon-pack-v1.4-svg-zh/"
+ASSET_CREDITS_THANKS = "感谢作者的无偿共享，让本软件得以呈现更清晰的图标。"
+ASSET_CREDITS_CLOSE = "关闭"
 
 # === 网址与搜索设置对话框（操作便捷性8/9，2026-08-04） ===
 URL_SETTINGS_DIALOG_TITLE = "网址与搜索设置"
@@ -673,3 +706,18 @@ MARKER_CONFIG_STRIPE_LABEL = "色条颜色"
 MARKER_CONFIG_RESET = "恢复默认"
 MARKER_CONFIG_NEED_ONE = "图标标记和左侧色条至少要启用一个。"
 MARKER_CONFIG_GLYPH_INVALID = "标记字符必须是单个字符。"
+
+# === 文件类型图标颜色设置对话框（UI合理性4 二期，2026-08-04） ===
+FILE_TYPE_ICON_COLORS_DIALOG_TITLE = "文件类型图标颜色"
+FILE_TYPE_ICON_COLORS_HINT = "为不同文件类型图标选择颜色："
+FILE_TYPE_ICON_COLORS_LABELS = {
+    "folder": "文件夹",
+    "archive": "压缩包",
+    "image": "图标",
+    "document": "其他文档",
+}
+FILE_TYPE_ICON_COLORS_RESET = "恢复默认"
+QSETTINGS_KEY_ICON_COLOR_FOLDER = "icon_color/folder"
+QSETTINGS_KEY_ICON_COLOR_ARCHIVE = "icon_color/archive"
+QSETTINGS_KEY_ICON_COLOR_IMAGE = "icon_color/image"
+QSETTINGS_KEY_ICON_COLOR_DOCUMENT = "icon_color/document"
