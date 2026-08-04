@@ -8,6 +8,33 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+**文件类型 SVG 图标 + 列表图标尺寸调节（UI合理性4 / UI合理性19，2026-08-04）**：
+  - 文件类型图标（列表 / 卡片占位 / 文件夹预览共用）：文件夹、压缩包、图片、
+    其他文档四类 SVG 图标，加载失败回退 Qt 标准图标
+    （[file_type_icons.py](src/app/file_type_icons.py) /
+    [file_list_model.py](src/app/file_list_model.py)）
+  - 图标库：**game-icon-pack**（作者 Nieobie，CC0-1.0）
+    - 库原址：https://github.com/Nieobie/game-icon-pack
+    - 许可：https://github.com/Nieobie/game-icon-pack#CC0-1.0-1-ov-file
+    - 本地归档：`assets/third-party/game-icon-pack-v1.4-svg-zh/`（v1.4-svg-zh，
+      取「无间距」变体 9-媒体 四枚；运行时副本 `src/app/resources/icons/` ASCII 短名）
+  - 图标按类型着色：文件夹 #f6e03b / 压缩包 #72e9a1 / 图片 #8ab8e6 /
+    其他文档 #ffffff；默认值在 `ui_constants.FILE_TYPE_ICON_COLORS`，
+    并新增「视图 → 文件类型图标颜色…」自定义对话框（QColorDialog + 恢复默认，
+    QSettings 持久化 `icon_color/*`，确定后立即生效并重绘三处列表）
+    （[file_type_icon_colors.py](src/app/file_type_icon_colors.py) /
+    [file_type_icon_colors_dialog.py](src/app/file_type_icon_colors_dialog.py)）
+  - 顶部菜单新增「帮助 → 开源资产致谢…」对话框，展示图标库来源/作者/许可
+    （[asset_credits_dialog.py](src/app/asset_credits_dialog.py) /
+    [main_menu_bar.py](src/app/main_menu_bar.py)）
+  - 列表视图图标尺寸六档（16/20/24/28/32/36，默认 16），行高 = 图标 + 8px
+    内边距，用于减小信息密度；缩放下拉框随视图切换档位（列表六档 / 卡片六档，
+    各自独立记忆与持久化 `view/list_icon_size` / `view/card_icon_size`）
+  - 缩放下拉框套用 BugFix3 方案（`PressSelectComboBox` 按下即选中），
+    列表/卡片视图快速滑动点一次即生效、显示与实际缩放一致
+    （[view_state_controller.py](src/app/view_state_controller.py) /
+    [ui_constants.py](src/app/ui_constants.py)）
+
 **MainWindow 第二轮拆分（TD-M21 / TD-M31 独立重构，2026-08-04）**：
   - 继续拆分 `main_window.py`（原 3710 行 / 167 方法 / 91 实例变量 →
     **1985 行 / 174 方法 / 76 实例变量**，纯重构、无行为变化）

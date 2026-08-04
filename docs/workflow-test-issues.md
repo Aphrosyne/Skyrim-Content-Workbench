@@ -9,11 +9,6 @@
 
 ### 26-8-2
 
-### UI合理性4
-- 增加不同后缀文件不同svg图标，用于快速区分文件类型
-- 可能去使用单独一套全面的图标库
-- 优先级L0
-
 ### 设计合理性1
 - 一些使用率较低的右键功能，或者其他功能
 - 可以通过菜单配置界面进行关闭
@@ -104,13 +99,81 @@
 - 元数据面板高度较低时，还是会造成文字或者内容有图层覆盖情况
 - 优先级L0
 
-### UI合理性19
-- 列表视图可以改变icon大小，从而操控每行的宽度，减小信息密度
-- 优先级L1
+### 26-8-4
+
+### 本地化与文本集中化（独立 issue，2026-08-04 记录）
+- 背景：项目无任何 i18n 基础设施——无 QTranslator、无 .ts/.qm、全项目 0 处 tr()
+- 现状（2026-08-04 扫描）：用户可见中文文本仅约一半集中在 ui_constants.py：
+  - ui_constants.py ≈ 428 行（已集中）
+  - UI 层内联 ≈ 74 行 / 34 个文件（tag_manager_dialog、main_window、metadata_panel、
+    sort_combo_box 等）
+  - Application / Domain / Infrastructure ≈ 418 行 / 33 个文件（错误/校验消息，
+    如 ValueError("ContentUnit.id 不能为空")、SourceNotFoundError(f"父目录不存在：{parent}")；
+    部分为 f-string 动态拼接）
+  - AGENTS.md 规定"UI 文本使用中文，集中在 ui_constants.py"，但业务层错误信息未执行
+- 计划：
+  - 第一步：文本集中化（纯重构）——散落字符串收拢进统一文案表；
+    ui_constants 升级为带 key 的文案表（区分静态标签与动态拼接占位符）
+  - 第二步：接入翻译框架（QTranslator + .ts/.qm，或自建字典方案）；
+    业务层错误信息是否一并翻译待定
+- 处理时机：Task 8（UI 重构）前后，作为专项任务
+- 优先级L1（非阻塞，计划内）
 
 ## 已修复（归档）
 
 ### 26-8-4
+
+### UI合理性4 ✅ 已修复（2026-08-04，未发版）
+- 增加不同后缀文件不同svg图标，用于快速区分文件类型
+- 优先级L0
+- 决策（用户确认 2026-08-04）：
+  - 图标库采用 [Nieobie/game-icon-pack](https://github.com/Nieobie/game-icon-pack)
+    （CC0-1.0，作者 Nieobie），整包入库；本地归档
+    `assets/third-party/game-icon-pack-v1.4-svg-zh/`（v1.4-svg-zh 中文整理版，
+    间距/无间距两套），NOTICE.md 记录来源与许可
+  - 使用「无间距」变体 9-媒体 四枚：文件夹.svg → 文件夹、文件.svg → 压缩包、
+    图像.svg → 图片、文档.svg → 其他文档；验收效果不佳可换「间距」变体
+  - 验收反馈（2026-08-04）：图标按类型着色——文件夹 #f6e03b（黄）、
+    压缩包 #72e9a1（浅绿，用户验收后调整）、图片 #8ab8e6（浅蓝）、
+    其他文档 #ffffff（白）
+  - 二期（2026-08-04）：视图菜单新增「文件类型图标颜色…」自定义配置对话框
+    （QColorDialog 全功能 + 恢复默认 + QSettings 持久化 `icon_color/*`）；
+    默认值仍集中 `ui_constants.FILE_TYPE_ICON_COLORS`（保存后无需改代码）
+  - 顶部菜单新增「帮助 → 开源资产致谢…」对话框展示资产来源/作者/许可；
+    CHANGELOG 同步记录库原址（尊重作者）
+- 实现：
+  - 新增 `file_type_icons.py`：压缩包扩展名复用 `infrastructure.file_classify`
+    （含分卷 .001/.r01 等），图片扩展名与封面候选集合一致；
+    SVG 加载时把 `fill="currentColor"` 替换为类型颜色 → QSvgRenderer 矢量渲染
+    全部档位（16-256）→ QIcon 按 (类型, 颜色) 缓存；任一环节失败回退 Qt 标准图标
+  - 运行时 4 枚图标副本 `src/app/resources/icons/`（ASCII 短名
+    folder/archive/image/document.svg，避免中文文件名/打包兼容问题）
+  - FileListModel.icon_for 非封面场景按类型返回图标；列表视图、卡片占位图、
+    文件夹预览面板（single_column）自动共用
+  - 颜色配置：新增 `file_type_icon_colors.py`（load/save/clear）与
+    `file_type_icon_colors_dialog.py`（四类颜色按钮 + 恢复默认）；
+    MainWindow 启动注入存档、对话框确定后注入新颜色并清空图标缓存 +
+    重绘列表/卡片（占位缓存失效）/文件夹预览
+
+### UI合理性19 ✅ 已修复（2026-08-04，未发版）
+- 列表视图可以改变icon大小，从而操控每行的宽度，减小信息密度
+- 优先级L1
+- 决策（用户确认 2026-08-04）：
+  - "每行的宽度"按**行高/信息密度**理解（列表行是横条，宽度由列宽决定）
+  - 验收反馈（2026-08-04）：列表六档 [16, 20, 24, 28, 32, 36]，默认 16（保持紧凑）；
+    行高 = 图标 + 8px
+  - 缩放下拉框与卡片模式**共用一处**，随当前视图切换档位（列表六档 / 卡片六档），
+    两视图尺寸互不干扰、各自持久化（`view/list_icon_size` / `view/card_icon_size`）
+- 实现：
+  - ViewStateController 增加 `_list_icon_size` 与 `_populate_zoom_presets(view)`：
+    切换视图时重灌下拉框档位并选中该视图已保存尺寸；`apply_zoom` 按当前视图分支
+  - 列表应用缩放：`content_view.setIconSize(QSize(v, v))` +
+    `verticalHeader().setDefaultSectionSize(v + LIST_ROW_PADDING_V)`
+  - MainWindow 缩放下拉框不再预填卡片档位（由控制器恢复状态时重灌）；
+    测试辅助 `set_list_icon_size_for_test` / `list_icon_size` 新增
+  - 验收反馈（2026-08-04）：缩放下拉框（列表/卡片共用）同样存在 BugFix3
+    的"快速滑动点一次不生效"问题——改用 `PressSelectComboBox` 按下即选中
+    （userSelected 信号），与排序下拉框同一套方案
 
 ### 操作便捷性1 ✅ 已修复（2026-08-04，未发版）
 - 可以右键一个文件夹进行一种 剥离 操作
