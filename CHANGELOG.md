@@ -52,6 +52,35 @@
   [test_strip_service.py](tests/test_strip_service.py) /
   [test_main_window_strip.py](tests/test_main_window_strip.py)）
 
+**N 网网址 + 快速浏览器搜索（操作便捷性8 / 操作便捷性9，2026-08-04）**：
+  - 新增共享模块 `nexus_filename`：`extract_nexus_id`（N 网尾号）、
+    `build_nexus_url`（文件自身名 / 文件夹内部最小 ID——汉化后发 → 最小者即本体）、
+    `mod_search_query`（与创建 Mod 组同名提取 + `_`/`-`→空格）；
+    `extract_mod_name` 迁入该模块（content_unit_creation_service re-export，消除重复）
+  - 右键菜单（中栏单选内容单元）：「自动填入网址」「打开网址」——
+    打开网址在来源 URL 为空时先尝试自动填入，仍为空则静默；格式检查严格匹配
+    N 网模式，不匹配时**不填、不报错、不弹窗**（绝无"前缀+空值"）；
+    扫描与启动不自动填入
+  - 右键菜单（中栏单选条目）：「浏览器搜索」——前缀（默认 `skyrim `）+
+    有效文件名（去尾号），拼到搜索引擎（默认 Bing）
+  - 「视图 → 网址与搜索设置…」：N 网前缀 / 搜索引擎 / 搜索前缀可配置
+    （QSettings 键 `url/*`，带恢复默认）
+  （[nexus_filename.py](src/application/nexus_filename.py) /
+  [url_settings.py](src/app/url_settings.py) /
+  [content_list_controller.py](src/app/content_list_controller.py) /
+  [context_menu_builder.py](src/app/context_menu_builder.py) /
+  [test_nexus_filename.py](tests/test_nexus_filename.py) /
+  [test_main_window_url_actions.py](tests/test_main_window_url_actions.py)）
+
+**输入控件右键菜单中文化（验收反馈，2026-08-04）**：
+  - Qt 内置输入框右键菜单为英文（复制/粘贴/剪切/全选），与项目全中文 UI 约定不符；
+    新增应用级事件过滤器 `ChineseInputContextMenuFilter`，拦截 QLineEdit /
+    QTextEdit / QPlainTextEdit 的 ContextMenu 事件弹出中文菜单（复制/剪切/粘贴/全选，
+    按控件状态与剪贴板内容启用/禁用）
+  - 接入 main.py（QApplication 安装事件过滤器），无需逐个控件改造
+  （[chinese_input_menu.py](src/app/chinese_input_menu.py) /
+  [test_chinese_input_menu.py](tests/test_chinese_input_menu.py)）
+
 ## [0.50.12] - 2026-08-04
 
 **内容单元标记可配置（UI合理性21）**：
