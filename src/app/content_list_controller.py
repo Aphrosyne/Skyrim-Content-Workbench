@@ -292,11 +292,12 @@ class ContentListController(QObject):
     def on_entry_activated(self, index) -> None:  # noqa: ANN001 (Qt 信号)
         """双击文件条目。
 
-        交互行为（2026-07-17 调整）：
+        交互行为（2026-08-04 调整，操作合理性1）：
         - 双击文件夹 → 进入该目录（无论是否内容单元，优先于元数据显示）。
           文件夹的元数据通过单击选中查看（on_content_selection_changed）。
-        - 双击文件类型内容单元（压缩包）→ 显示元数据面板。
-        - 双击普通文件 / 普通文件夹 → 不响应（右键「打开」可用系统默认程序打开）。
+        - 双击文件（内容单元或普通文件）→ 用系统默认程序打开
+          （压缩包交给解压器、图片交给看图工具，即"快速预览"），
+          与右键「打开」行为一致；元数据通过单击选中查看。
 
         Stage 5 Task 1：支持列表视图和卡片视图，两个视图共享同一份 FileEntry 数据
         （行号一致），因此用任一 model 取 entry 均可。这里用当前活动视图对应的 model。
@@ -337,20 +338,15 @@ class ContentListController(QObject):
                 self._set_metadata_text(ui.METADATA_NOT_SELECTED)
             return
 
-        # 双击文件类型内容单元 → 显示元数据
-        if entry.content_unit is not None:
-            self._update_metadata(entry.content_unit)
-            return
-
-        # 其他情况（普通文件）：不响应
+        # 双击文件 → 系统默认程序打开（操作合理性1，2026-08-04）
+        self._open_file_with_default(entry)
 
     def on_entry_activated_for_entry(self, entry: FileEntry) -> None:
         """右键菜单「打开」项的 handler（UX 重构 Phase 2 Task 5，Q1=B）。
 
         行为与双击（on_entry_activated）一致：
         - 文件夹 → 进入该目录
-        - 文件类型内容单元 → 显示元数据面板
-        - 普通文件 → 尝试用系统默认程序打开
+        - 文件 → 尝试用系统默认程序打开（操作合理性1：与双击一致）
         """
         # 复用双击逻辑：构造一个伪 index 不可行（需要 model），
         # 直接内联双击的关键逻辑。
@@ -369,12 +365,14 @@ class ContentListController(QObject):
                 self._set_metadata_text(ui.METADATA_NOT_SELECTED)
             return
 
-        # 文件类型内容单元 → 显示元数据
-        if entry.content_unit is not None:
-            self._update_metadata(entry.content_unit)
-            return
+        # 文件 → 用系统默认程序打开
+        self._open_file_with_default(entry)
 
-        # 普通文件 → 用系统默认程序打开
+    def _open_file_with_default(self, entry: FileEntry) -> None:
+        """用系统默认程序打开文件（操作合理性1，2026-08-04）。
+
+        双击与右键「打开」共用；失败提示用户可读错误。
+        """
         try:
             subprocess.run(
                 ["cmd", "/c", "start", "", entry.path],

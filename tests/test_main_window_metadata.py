@@ -268,15 +268,15 @@ def test_metadata_panel_hidden_initially(qapp, main_window_with_tags):
 # === 加载内容单元 ===
 
 
-def test_double_click_content_unit_loads_into_panel(qapp, main_window_with_tags):
-    """双击内容单元 → MetadataPanel 加载 + 字段填充。"""
+def test_select_content_unit_loads_into_panel(qapp, main_window_with_tags):
+    """选中内容单元 → MetadataPanel 加载 + 字段填充（双击现为打开文件，操作合理性1）。"""
     window, _, _, _ = main_window_with_tags
     _select_root(qapp, window)
     _navigate_to_armor(qapp, window)
 
-    # 双击寒霜之心.7z（内容单元）
+    # 单击选中寒霜之心.7z（内容单元）
     idx = _find_entry_index(window, "寒霜之心.7z")
-    window._on_entry_activated(window._content_list_model.index(idx, 0))  # noqa: SLF001
+    window._content_view.selectRow(idx)  # noqa: SLF001
     qapp.processEvents()
 
     panel = window.metadata_panel()
@@ -287,13 +287,21 @@ def test_double_click_content_unit_loads_into_panel(qapp, main_window_with_tags)
     assert panel.is_form_enabled()
 
 
-def test_double_click_non_content_unit_does_not_load(qapp, main_window_with_tags):
-    """双击非内容单元 → MetadataPanel 不加载（保持初始状态）。"""
-    window, _, _, _ = main_window_with_tags
+def test_double_click_non_content_unit_does_not_load_panel(
+    qapp, main_window_with_tags, monkeypatch: pytest.MonkeyPatch
+):
+    """双击非内容单元 → 系统默认程序打开，但 MetadataPanel 不加载（保持初始状态）。"""
+    window, _, root_dir, _ = main_window_with_tags
     _select_root(qapp, window)
     _navigate_to_armor(qapp, window)
 
-    # 双击 preview1.jpg（非内容单元）
+    subprocess_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "app.content_list_controller.subprocess.run",
+        lambda args, **kwargs: subprocess_calls.append(args),
+    )
+
+    # 双击 preview1.jpg（非内容单元，操作合理性1：打开文件）
     idx = _find_entry_index(window, "preview1.jpg")
     window._on_entry_activated(window._content_list_model.index(idx, 0))  # noqa: SLF001
     qapp.processEvents()
@@ -302,6 +310,7 @@ def test_double_click_non_content_unit_does_not_load(qapp, main_window_with_tags
     assert panel is not None
     assert panel.current_unit() is None
     assert not panel.is_form_enabled()
+    assert subprocess_calls == [["cmd", "/c", "start", "", str(root_dir / "护甲" / "preview1.jpg")]]
 
 
 def test_single_click_content_unit_loads_into_panel(qapp, main_window_with_tags):
@@ -400,9 +409,9 @@ def test_save_metadata_commits_and_shows_status(qapp, main_window_with_tags):
     _select_root(qapp, window)
     _navigate_to_armor(qapp, window)
 
-    # 双击寒霜之心.7z
+    # 单击选中寒霜之心.7z
     idx = _find_entry_index(window, "寒霜之心.7z")
-    window._on_entry_activated(window._content_list_model.index(idx, 0))  # noqa: SLF001
+    window._content_view.selectRow(idx)  # noqa: SLF001
     qapp.processEvents()
 
     panel = window.metadata_panel()
@@ -430,7 +439,7 @@ def test_metadata_rename_request_renames_file(qapp, main_window_with_tags):
     _navigate_to_armor(qapp, window)
 
     idx = _find_entry_index(window, "寒霜之心.7z")
-    window._on_entry_activated(window._content_list_model.index(idx, 0))  # noqa: SLF001
+    window._content_view.selectRow(idx)  # noqa: SLF001
     qapp.processEvents()
 
     panel = window.metadata_panel()
@@ -751,7 +760,7 @@ def test_metadata_full_text_backward_compat(qapp, main_window_with_tags):
     _navigate_to_armor(qapp, window)
 
     idx = _find_entry_index(window, "寒霜之心.7z")
-    window._on_entry_activated(window._content_list_model.index(idx, 0))  # noqa: SLF001
+    window._content_view.selectRow(idx)  # noqa: SLF001
     qapp.processEvents()
 
     text = window.metadata_full_text()

@@ -112,3 +112,9 @@ class ShortcutRegistry:
         host._shortcut_refresh = QShortcut(QKeySequence("F5"), host)
         host._shortcut_refresh.setContext(Qt.ShortcutContext.WindowShortcut)
         host._shortcut_refresh.activated.connect(host._on_refresh_current)
+
+        # 操作便捷性10（2026-08-04）：Ctrl+P 钉住/取消钉住文件夹预览（窗口级）
+        if host._assembly_panel is not None:
+            host._shortcut_toggle_pin = QShortcut(QKeySequence("Ctrl+P"), host)
+            host._shortcut_toggle_pin.setContext(Qt.ShortcutContext.WindowShortcut)
+            host._shortcut_toggle_pin.activated.connect(host._on_shortcut_toggle_pin)

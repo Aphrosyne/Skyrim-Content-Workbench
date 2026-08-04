@@ -18,6 +18,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtGui import QKeySequence  # noqa: E402
 
 from app.assembly_panel import AssemblyPanel  # noqa: E402
 from app.file_list_model import FileListModel  # noqa: E402
@@ -56,6 +57,57 @@ def assembly_service(tmp_path: Path) -> tuple[AssemblyService, sqlite3.Connectio
     service = AssemblyService(file_op, ContentUnitRepository(conn))
     yield service, conn
     conn.close()
+
+
+class TestPanelShortcuts:
+    """操作便捷性10（2026-08-04）：文件夹预览快捷键。"""
+
+    def _make_panel(self, assembly_service, on_file_op):
+        panel = AssemblyPanel(assembly_service, on_file_op=on_file_op)
+        return panel
+
+    def test_shortcuts_installed_when_file_op_injected(self, qapp, assembly_service) -> None:
+        """注入 on_file_op → 六个快捷键全部安装。"""
+        panel = AssemblyPanel(assembly_service, on_file_op=lambda *a: None)
+        try:
+            expected = {
+                "copy": "Ctrl+C",
+                "cut": "Ctrl+X",
+                "paste": "Ctrl+V",
+                "delete": "Delete",
+                "move_to": "Ctrl+M",
+                "move_to_recent": "Ctrl+Q",
+            }
+            for action, key in expected.items():
+                shortcut = getattr(panel, f"_shortcut_{action}")
+                assert shortcut.key() == QKeySequence(key)
+        finally:
+            panel.close()
+
+    def test_shortcuts_not_installed_without_file_op(self, qapp, assembly_service) -> None:
+        """未注入 on_file_op → 不安装快捷键。"""
+        panel = AssemblyPanel(assembly_service)
+        try:
+            assert not hasattr(panel, "_shortcut_copy")
+        finally:
+            panel.close()
+
+    def test_shortcut_trigger_dispatches_file_op(self, qapp, assembly_service) -> None:
+        """触发快捷键 → 以对应 action 分发 on_file_op。"""
+        service, _ = assembly_service
+        calls: list[str] = []
+        panel = AssemblyPanel(service, on_file_op=lambda action, entries: calls.append(action))
+        try:
+            panel._shortcut_copy.activated.emit()  # noqa: SLF001
+            panel._shortcut_cut.activated.emit()  # noqa: SLF001
+            panel._shortcut_paste.activated.emit()  # noqa: SLF001
+            panel._shortcut_delete.activated.emit()  # noqa: SLF001
+            panel._shortcut_move_to.activated.emit()  # noqa: SLF001
+            panel._shortcut_move_to_recent.activated.emit()  # noqa: SLF001
+        finally:
+            panel.close()
+
+        assert calls == ["copy", "cut", "paste", "delete", "move_to", "move_to_recent"]
 
 
 @pytest.fixture

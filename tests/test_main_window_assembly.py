@@ -1849,3 +1849,24 @@ def test_card_list_model_mime_data(qapp, main_window_env) -> None:
     assert mime is not None
     urls = mime.urls()
     assert len(urls) >= 1
+
+
+def test_ctrl_p_toggles_pin(qapp, main_window_env) -> None:
+    """操作便捷性10：Ctrl+P 钉住/取消钉住文件夹预览。"""
+    window, _, root_dir, _ = main_window_env
+    stash = root_dir / "Stash"
+    window._bind_assembly_folder(stash)  # noqa: SLF001
+    assert not window._assembly_panel.is_pinned()
+
+    window._on_shortcut_toggle_pin()  # noqa: SLF001
+    assert window._assembly_panel.is_pinned()
+
+    window._on_shortcut_toggle_pin()  # noqa: SLF001
+    assert not window._assembly_panel.is_pinned()
+
+
+def test_ctrl_p_shortcut_registered_with_assembly(qapp, main_window_env) -> None:
+    """装配面板存在时注册 Ctrl+P 快捷键（窗口级）。"""
+    window, _, _, _ = main_window_env
+    assert window._shortcut_toggle_pin is not None  # noqa: SLF001
+    assert window._shortcut_toggle_pin.key().toString() == "Ctrl+P"  # noqa: SLF001

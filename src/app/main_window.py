@@ -663,7 +663,6 @@ class MainWindow(QMainWindow):
         self._tree_view.setHeaderHidden(True)
         self._tree_view.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self._tree_view.setSelectionMode(QTreeView.SelectionMode.SingleSelection)
-        self._tree_view.setDragDropMode(QTreeView.DragDropMode.NoDragDrop)
         self._tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree_model = FolderTreeModel(self._tree_service)
         self._tree_view.setModel(self._tree_model)
@@ -1539,6 +1538,9 @@ class MainWindow(QMainWindow):
                         self._bind_assembly_panel(None)
             else:
                 self._assembly_panel.refresh_current()
+        elif action == "move_to_recent":
+            # 操作便捷性10（2026-08-04）：装配面板 Ctrl+Q 移动到最近目标
+            self._on_assembly_move_to_recent(entries)
         elif action == "delete":
             # 修复：装配面板删除不刷新中栏到被删文件父目录，
             # 避免中栏跳入被钉住的文件夹（保留中栏当前显示目录）
@@ -1546,6 +1548,17 @@ class MainWindow(QMainWindow):
             self._assembly_panel.refresh_current()
         elif action == "copy_path" and len(entries) == 1:
             self._copy_path_to_clipboard(entries[0].path)
+
+    def _on_assembly_move_to_recent(self, entries: list[FileEntry]) -> None:
+        """装配面板 Ctrl+Q：选中条目移动到最近目标（操作便捷性10）。"""
+        if not entries:
+            return
+        latest = self._recent_move_targets.latest()
+        if latest is None:
+            self.statusBar().showMessage(ui.SHORTCUT_MOVE_TO_LATEST_NO_TARGET, 3000)
+            return
+        src_paths = [Path(e.path) for e in entries]
+        self._perform_move_to(src_paths, Path(latest), refresh_assembly=True)
 
     def _on_tag_manager_clicked(self) -> None:
         """打开标签管理对话框（委托 ContentListController）。"""
@@ -1560,6 +1573,24 @@ class MainWindow(QMainWindow):
     def _on_refresh_current(self) -> None:
         """刷新当前目录（委托 ContentListController）。"""
         self._content_list_controller.refresh_current()
+
+    def _on_shortcut_toggle_pin(self) -> None:
+        """Ctrl+P：钉住/取消钉住文件夹预览（操作便捷性10，2026-08-04）。"""
+        if self._assembly_panel is None:
+            return
+        if self._assembly_panel.is_pinned():
+            self._assembly_panel.unpin()
+            # B4：取消钉住后跟随中栏当前选中
+            self._on_assembly_pin_changed(False)
+            self.statusBar().showMessage(ui.ASSEMBLY_PIN_STATUS_UNPINNED_FOLLOW, 2000)
+        else:
+            folder = self._assembly_panel.current_folder_path()
+            if folder is None:
+                return  # 未绑定任何文件夹 → 无操作
+            self._assembly_panel.pin()
+            self.statusBar().showMessage(
+                ui.ASSEMBLY_PIN_STATUS_PINNED.format(name=folder.name), 2000
+            )
 
     # === Stage 5 Task 4：键盘快捷键 ===
 

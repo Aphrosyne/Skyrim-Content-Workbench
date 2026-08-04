@@ -4,8 +4,8 @@
 - 初始状态：文件列表为空；
 - 选中目录树节点 → 文件列表刷新（含非内容单元文件）；
 - 压缩包文件作为内容单元候选（spec §5.4 修正），文件夹不作为候选；
-- 双击内容单元 → 元数据面板显示详情；
-- 双击非内容单元文件/文件夹 → 不响应（spec §5.1 L205）；
+- 双击内容单元文件/普通文件 → 系统默认程序打开（操作合理性1，2026-08-04）；
+- 双击文件夹 → 进入该目录（2026-07-15 交互调整）；
 - 切换目录树节点 → 文件列表更新，元数据面板清空；
 - 未扫描根目录选中时不崩溃；
 - 右键复制路径写入剪贴板；
@@ -252,9 +252,11 @@ def test_archive_file_in_subdir_is_content_unit(qapp, main_window_env) -> None:
     pytest.fail("未找到护甲节点")
 
 
-def test_double_click_content_unit_shows_metadata(qapp, main_window_env) -> None:
-    """双击内容单元 → 元数据面板显示详情。"""
-    window, _, _ = main_window_env
+def test_double_click_content_unit_opens_with_default(
+    qapp, main_window_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """双击内容单元文件 → 用系统默认程序打开（操作合理性1）。"""
+    window, _, root_dir = main_window_env
     _select_root(qapp, window)
 
     # 进入护甲子目录
@@ -269,24 +271,26 @@ def test_double_click_content_unit_shows_metadata(qapp, main_window_env) -> None
             qapp.processEvents()
             break
 
-    # 双击寒霜之心.7z（内容单元）
+    subprocess_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "app.content_list_controller.subprocess.run",
+        lambda args, **kwargs: subprocess_calls.append(args),
+    )
+
+    # 双击寒霜之心.7z（内容单元文件）
     idx = _find_entry_index(window, "寒霜之心.7z")
     window._on_entry_activated(window._content_list_model.index(idx, 0))  # noqa: SLF001
     qapp.processEvents()
 
-    metadata = window.metadata_full_text()
-    assert "标题" not in metadata  # UI合理性13：多行文本不再含标题行
-    assert "路径" in metadata
-    assert "类型" in metadata
-    # Stage 5 Task 7 收尾：移除"整理状态"行（status 简化为两态，显示无意义）
-    assert "整理状态" not in metadata
-    # 文件名（含扩展名）出现在路径行
-    assert "寒霜之心.7z" in metadata
+    expected_path = str(root_dir / "护甲" / "寒霜之心.7z")
+    assert subprocess_calls == [["cmd", "/c", "start", "", expected_path]]
 
 
-def test_double_click_non_content_unit_file_no_response(qapp, main_window_env) -> None:
-    """双击非内容单元文件 → 不响应，元数据面板保持现状（spec §5.1 L205）。"""
-    window, _, _ = main_window_env
+def test_double_click_plain_file_opens_with_default(
+    qapp, main_window_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """双击普通文件 → 系统默认程序打开（操作合理性1）。"""
+    window, _, root_dir = main_window_env
     _select_root(qapp, window)
 
     # 进入护甲子目录（同目录内同时存在内容单元和非内容单元文件）
@@ -301,19 +305,19 @@ def test_double_click_non_content_unit_file_no_response(qapp, main_window_env) -
             qapp.processEvents()
             break
 
-    # 双击寒霜之心.7z 填充元数据
-    idx_archive = _find_entry_index(window, "寒霜之心.7z")
-    window._on_entry_activated(window._content_list_model.index(idx_archive, 0))  # noqa: SLF001
-    qapp.processEvents()
-    assert "路径" in window.metadata_full_text()
+    subprocess_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "app.content_list_controller.subprocess.run",
+        lambda args, **kwargs: subprocess_calls.append(args),
+    )
 
-    # 同目录内双击 readme.txt（非内容单元文件），元数据面板应保持不变
+    # 双击 readme.txt（非内容单元文件）
     idx_readme = _find_entry_index(window, "readme.txt")
     window._on_entry_activated(window._content_list_model.index(idx_readme, 0))  # noqa: SLF001
     qapp.processEvents()
-    # 元数据面板保持上一次状态（不响应非内容单元）
-    assert "路径" in window.metadata_full_text()
-    assert "寒霜之心.7z" in window.metadata_full_text()
+
+    expected_path = str(root_dir / "护甲" / "readme.txt")
+    assert subprocess_calls == [["cmd", "/c", "start", "", expected_path]]
 
 
 def test_double_click_non_content_unit_dir_no_response(qapp, main_window_env) -> None:
@@ -337,9 +341,12 @@ def test_double_click_non_content_unit_dir_no_response(qapp, main_window_env) ->
             qapp.processEvents()
             break
 
-    # 双击寒霜之心.7z 填充元数据
+    # 单击选中寒霜之心.7z（内容单元）填充元数据
     idx_archive = _find_entry_index(window, "寒霜之心.7z")
-    window._on_entry_activated(window._content_list_model.index(idx_archive, 0))  # noqa: SLF001
+    content_idx_archive = window._content_list_model.index(idx_archive, 0)  # noqa: SLF001
+    sm = window._content_view.selectionModel()  # noqa: SLF001
+    sm.select(content_idx_archive, sm.SelectionFlag.ClearAndSelect)
+    window._content_view.setCurrentIndex(content_idx_archive)  # noqa: SLF001
     qapp.processEvents()
     assert "路径" in window.metadata_full_text()
 
@@ -581,7 +588,7 @@ def test_elide_applies_to_long_path(qapp, main_window_env) -> None:
     window, _, root_dir = main_window_env
     _select_root(qapp, window)
 
-    # 进入护甲子目录双击内容单元填充元数据
+    # 进入护甲子目录，单击选中内容单元填充元数据（双击现为打开文件，操作合理性1）
     model = window._tree_model  # noqa: SLF001
     root_idx = model.index(0, 0)
     model.fetchMore(root_idx)
@@ -594,7 +601,10 @@ def test_elide_applies_to_long_path(qapp, main_window_env) -> None:
             break
 
     idx = _find_entry_index(window, "寒霜之心.7z")
-    window._on_entry_activated(window._content_list_model.index(idx, 0))  # noqa: SLF001
+    content_idx = window._content_list_model.index(idx, 0)  # noqa: SLF001
+    sm = window._content_view.selectionModel()  # noqa: SLF001
+    sm.select(content_idx, sm.SelectionFlag.ClearAndSelect)
+    window._content_view.setCurrentIndex(content_idx)  # noqa: SLF001
     qapp.processEvents()
 
     # 调整窗口尺寸较小，触发 Elide

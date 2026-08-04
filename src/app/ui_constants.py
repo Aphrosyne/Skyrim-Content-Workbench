@@ -109,6 +109,9 @@ MENU_OPEN_IN_EXPLORER_FAILED = "无法打开资源管理器"
 MENU_OPEN = "打开"
 MENU_COLLAPSE_ALL = "折叠全部"
 
+# 操作便捷性2（2026-08-04）：中栏内部拖拽目标高亮颜色
+DROP_TARGET_HIGHLIGHT_COLOR = "#3D7EFF"
+
 # 输入控件右键菜单（中文化，2026-08-04 验收反馈）
 INPUT_MENU_COPY = "复制"
 INPUT_MENU_CUT = "剪切"
@@ -623,7 +626,6 @@ QSETTINGS_KEY_MARKER_STRIPE_COLOR = "marker/stripe_color"
 QSETTINGS_KEY_URL_NEXUS_PREFIX = "url/nexus_url_prefix"
 QSETTINGS_KEY_URL_SEARCH_ENGINE = "url/search_engine_url"
 QSETTINGS_KEY_URL_SEARCH_PREFIX = "url/search_prefix"
-
 # === 布局默认值（UI合理性2/3，2026-08-03） ===
 # 所有分割线/列宽默认值集中在此，用户可手动调整后重启生效。
 # 注意：文件列表中"名称"列使用 Stretch 模式（自动吸收剩余宽度），

@@ -10,14 +10,69 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QPoint, QRect, QSize, Qt
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QListView, QRubberBand, QTableView, QWidget
 
+from app import ui_constants as ui
 
-class _RubberBandTableView(QTableView):
+logger = logging.getLogger(__name__)
+
+
+class _DropHighlightMixin:
+    """中栏内部拖拽目标高亮（操作便捷性2 调整版，2026-08-04）。
+
+    与同视图内部拖拽（拖到文件夹 = 移动）配合：拖动悬停在文件夹行时自绘高亮，
+    不改变选中。仅中栏内部拖拽（同视图），不涉及跨视图拖拽（目录树方案已回退，
+    Qt 原生跨视图拖拽重绘异常，见 issue 记录）。
+    """
+
+    def _init_drop_highlight(self) -> None:
+        self._drop_highlight_row: int = -1
+
+    def _update_drop_highlight(self, event) -> None:
+        """按悬停位置更新高亮行（文件夹行高亮，其余清除）。"""
+        index = self.indexAt(event.pos())
+        row = -1
+        if index.isValid() and self.model() is not None:
+            entry = self.model().data(index, Qt.UserRole)
+            if entry is not None and entry.is_dir:
+                row = index.row()
+        if row != self._drop_highlight_row:
+            self._drop_highlight_row = row
+            self.viewport().update()
+
+    def _clear_drop_highlight(self) -> None:
+        if self._drop_highlight_row != -1:
+            self._drop_highlight_row = -1
+            self.viewport().update()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        self._clear_drop_highlight()
+        super().dragLeaveEvent(event)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        """绘制拖拽目标高亮：文件夹行 2px 边框（不改变选中）。"""
+        super().paintEvent(event)
+        if self._drop_highlight_row < 0 or self.model() is None:
+            return
+        index = self.model().index(self._drop_highlight_row, 0)
+        rect = self.visualRect(index)
+        if not rect.isValid():
+            return
+        painter = QPainter(self.viewport())
+        try:
+            painter.setPen(QPen(QColor(ui.DROP_TARGET_HIGHLIGHT_COLOR), 2))
+            painter.drawRect(rect.adjusted(0, 0, -1, -1))
+        finally:
+            painter.end()
+
+
+class _RubberBandTableView(_DropHighlightMixin, QTableView):
     """支持空白区域拖动框选的 QTableView。
 
     Stage 5 Task 2 验收修复（决策 3A）：QTableView 不支持 setSelectionRectVisible
@@ -33,6 +88,7 @@ class _RubberBandTableView(QTableView):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._init_drop_highlight()
         self._rubber_band: QRubberBand | None = None
         self._origin = QPoint()
         self._drag_selecting = False
@@ -114,11 +170,13 @@ class _RubberBandTableView(QTableView):
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         if event.source() is self and event.mimeData().hasUrls():
+            self._update_drop_highlight(event)
             event.acceptProposedAction()
         else:
             super().dragMoveEvent(event)
 
     def dropEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        self._clear_drop_highlight()
         if event.source() is not self or not event.mimeData().hasUrls():
             event.ignore()
             return
@@ -145,7 +203,7 @@ class _RubberBandTableView(QTableView):
             event.ignore()
 
 
-class _DragDropListView(QListView):
+class _DragDropListView(_DropHighlightMixin, QListView):
     """支持内部拖拽到文件夹的 QListView（卡片视图用）。
 
     UX 重构 Phase 1 Task 4：与 _RubberBandTableView 相同的拖拽逻辑，
@@ -154,6 +212,7 @@ class _DragDropListView(QListView):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._init_drop_highlight()
         self.on_drop_to_folder: Callable[[Path, list[Path]], None] | None = None
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
@@ -164,11 +223,13 @@ class _DragDropListView(QListView):
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         if event.source() is self and event.mimeData().hasUrls():
+            self._update_drop_highlight(event)
             event.acceptProposedAction()
         else:
             super().dragMoveEvent(event)
 
     def dropEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        self._clear_drop_highlight()
         if event.source() is not self or not event.mimeData().hasUrls():
             event.ignore()
             return

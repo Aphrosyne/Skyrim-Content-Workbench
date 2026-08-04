@@ -95,8 +95,38 @@ class AssemblyPanel(QFrame):
         self._is_pinned: bool = False
 
         self._setup_ui()
+        # 操作便捷性10（2026-08-04）：文件夹预览快捷键（仅面板列表聚焦时生效）
+        self._install_shortcuts()
         # UX 重构 Phase 1 Task 4：装配面板作为 drop target（仅钉住时接受文件拖入）
         self.setAcceptDrops(True)
+
+    def _install_shortcuts(self) -> None:
+        """文件夹预览快捷键：Ctrl+C / Ctrl+X / Ctrl+V / Delete / Ctrl+M / Ctrl+Q。
+
+        与中栏/目录树同键不冲突：全部用 WidgetShortcut 绑定到面板列表视图，
+        仅面板聚焦时生效（此时中栏/目录树的同名快捷键不触发）。
+        文件操作复用右键菜单同一 on_file_op 分发。
+        """
+        if self._on_file_op is None:
+            return
+        from PySide6.QtGui import QKeySequence, QShortcut  # noqa: PLC0415
+
+        bindings = (
+            ("Ctrl+C", "copy"),
+            ("Ctrl+X", "cut"),
+            ("Ctrl+V", "paste"),
+            ("Delete", "delete"),
+            ("Ctrl+M", "move_to"),
+            ("Ctrl+Q", "move_to_recent"),
+        )
+        for key, action in bindings:
+            shortcut = QShortcut(QKeySequence(key), self._list_view)
+            shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+            shortcut.activated.connect(
+                lambda checked=False, a=action: self._on_file_op(a, self._selected_entries())
+            )
+            # 挂到面板属性上（防 GC + 供测试检查注入开关）
+            setattr(self, f"_shortcut_{action}", shortcut)
 
     def _setup_ui(self) -> None:
         # 装配面板与左栏「受管理根目录 / 目录树」同构（UI合理性8 布局修复）：
