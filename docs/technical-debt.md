@@ -322,7 +322,7 @@
 > 以下问题来自 Stage 3 正式 Code Review，经评估不阻塞 Stage 4 启动，
 > 但建议在对应阶段择机处理。编号接续既有 TD 序列。
 
-### TD-M21: MainWindow God Object 趋势 ✅ 已处理（UX 重构 Task 7，v0.48.0）
+### TD-M21: MainWindow God Object 趋势 ✅ 已处理（UX 重构 Task 7，v0.48.0；第二轮 2026-08-04）
 
 - **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
 - **背景**: Stage 3 Code Review 发现 MainWindow 已增长到约 3490 行 / 150 方法
@@ -344,6 +344,15 @@
 - **处理（UX 重构 Task 7，v0.48.0）**: TransactionScope / ScanController /
   AssemblyController / MetadataView 已拆出；MainWindow 保留薄委托与文件操作编排，
   行数继续下降，可进一步瘦身。
+- **处理（第二轮，2026-08-04 独立重构）**: 继续拆出 12 个模块
+  （content_views / navigation_controller / view_state_controller / search_controller /
+  tree_roots_controller / context_menu_builder / file_operations_controller /
+  content_list_controller / metadata_helpers / entry_dialogs / shortcut_registry /
+  scan_ui_state）；`_setup_ui` 拆为 `_build_*` 子方法。MainWindow 由 3710 行降至
+  **1985 行 / 174 方法 / 76 个实例变量**（2026-08-04 实测），保留窗口装配、薄委托、
+  测试接口与少量窗口级 handler（装配回调残量、`_on_batch_tag`、`_on_open_in_explorer`
+  等受既有测试命名空间补丁约束保留）。全部 247 个 main_window 测试与全量
+  1449 个测试保持通过。
 
 ### TD-M22: folder_cache 同步辅助逻辑在多个 Service 中重复 ✅ 已修复（Stage 4.5）
 
@@ -587,7 +596,7 @@
 - **推荐修复方案**: 引入"补偿日志"机制（记录文件已成功移动但 DB 未更新），下次启动时尝试补偿；或在错误提示中明确告知用户"文件已移动但元数据更新失败，请手动刷新或重新扫描"。
 - **建议修复阶段**: **Stage 6 或后续迭代**（数据一致性版本）。
 
-### TD-M31: MainWindow 业务逻辑泄漏 ✅ 已处理（UX 重构 Task 7，v0.48.0）
+### TD-M31: MainWindow 业务逻辑泄漏 ✅ 已处理（UX 重构 Task 7，v0.48.0；第二轮 2026-08-04）
 
 - **位置**: [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)
 - **背景**: MainWindow 约 3490 行、150 个方法、60+ 实例变量、6 个并行状态机
@@ -595,6 +604,9 @@
 - **影响范围**: 任何 UI 改动成本极高，且 UI 层承担了本应在 Application 层的事务边界职责。
 - **推荐修复方案**: UI 重构版本前置任务。至少拆出 `ScanController` / `AssemblyController` / `MetadataView` / `ModeController` / `TransactionScope`（事务边界从 UI 移到 Application 层）。
 - **建议修复阶段**: **UI 重构版本（前置）**（用户决策：UI 重构单独开分支处理）。
+- **处理（第二轮，2026-08-04）**: 文件操作编排（新建/重命名/删除/粘贴/移动到/撤销）、
+  右键菜单构建、导航历史、视图状态、搜索、中栏内容联动、扫描 UI 状态等逻辑全部迁出；
+  MainWindow 保留同名薄委托，行为不变（全量 pytest 1449 passed）。
 
 ### TD-M32: UndoService 安全校验无 size/mtime 比对
 

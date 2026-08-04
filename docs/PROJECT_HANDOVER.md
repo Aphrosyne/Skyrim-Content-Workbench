@@ -269,7 +269,7 @@
 | 文件 | 职责 | 当前状态 |
 |------|------|----------|
 | [main.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main.py) | 应用入口 + 组合根（依赖注入装配） | 稳定 |
-| [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) | 主窗口（**约 3490 行 / 150 方法 God Object，TD-M31**） | 风险高，待 Task 7 拆分 |
+| [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) | 主窗口（约 1985 行 / 174 方法，窗口装配 + 薄委托 + 测试接口） | ✅ 两轮拆分完成（Task 7 v0.48.0 + 2026-08-04 第二轮，TD-M21/M31） |
 | [folder_tree_model.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/folder_tree_model.py) | 目录树 QAbstractItemModel（惰性加载） | 稳定 |
 | [file_list_model.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/file_list_model.py) | 中栏文件列表 QAbstractListModel（详细列表视图） | 稳定 |
 | [card_list_model.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/card_list_model.py) | 中栏卡片视图 QAbstractListModel | 稳定 |
@@ -658,12 +658,19 @@ OperationHistoryDialog → 选中可撤销记录 → UndoService.undo(history_id
 
 ### [main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py)（**最高风险**）
 
-- **技术债**：TD-M21 + TD-M31
-- **现状**：约 3490 行 / 150 个方法 / 60+ 实例变量 / 6 个并行状态机（2026-08-01 复核）
-- **承担职责**：UI 搭建 + 信号槽 + 扫描线程生命周期 + 装配面板绑定 + 文件操作编排 + 冲突解决编排（2 个重复方法）+ 21 处 `_commit()` + 事务边界 + 14 个快捷键 handler + 导航历史栈
-- **影响**：任何 UI 改动成本极高，UI 层承担了本应在 Application 层的事务边界职责
-- **修复方案**：UX 重构 Phase 2 Task 7 拆分（至少拆出 `ScanController` / `AssemblyController` / `MetadataView` / `ModeController` / `TransactionScope`）
-- **当前状态**：登记为技术债，待 Task 7 处理。Phase 2 编码约束"不再往 MainWindow 堆方法，新增逻辑尽量抽到独立 controller / helper / view 中"
+- **技术债**：TD-M21 + TD-M31（✅ 已两轮处理）
+- **现状**：约 1985 行 / 174 方法 / 76 个实例变量（2026-08-04 复核）；窗口装配 +
+  薄委托 + 测试接口 + 少量窗口级 handler
+- **承担职责**：窗口装配（`_setup_ui` → `_build_top_bar` / `_build_left_panel` /
+  `_build_middle_panel` / `_build_right_panel`）、控制器构造与信号接线、测试薄委托与
+  访问器、扫描 UI 状态（ScanUiState）、装配面板回调残量、受测试命名空间补丁约束保留的
+  `_on_batch_tag` / `_on_open_in_explorer`
+- **影响**：低——逻辑已按职责拆至 12 个新模块（content_views / navigation_controller /
+  view_state_controller / search_controller / tree_roots_controller /
+  context_menu_builder / file_operations_controller / content_list_controller /
+  metadata_helpers / entry_dialogs / shortcut_registry / scan_ui_state）
+- **当前状态**：✅ 已拆分（Task 7 v0.48.0 + 2026-08-04 第二轮独立重构）。
+  残留候选（装配回调、`_on_batch_tag` 等）如需继续抽 view 类，另行确认后处理
 
 ### [file_operation_service.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/file_operation_service.py)
 
@@ -745,8 +752,8 @@ OperationHistoryDialog → 选中可撤销记录 → UndoService.undo(history_id
 
 ## 5.2 当前痛点
 
-1. **MainWindow God Object**：✅ 已拆分（Task 7，v0.48.0，TransactionScope / ScanController /
-   AssemblyController / MetadataView 迁出；MainWindow 保留薄委托，行数进一步下降）
+1. **MainWindow God Object**：✅ 已拆分（Task 7 v0.48.0 + 2026-08-04 第二轮：
+   12 个 controller/helper/view 模块迁出，MainWindow 降至约 1985 行薄委托）
 2. **文件列表加载性能**：大目录 N+1 查询导致 UI 冻结
 3. **撤销安全性不足**：无 size/mtime 比对，可能覆盖用户外部修改
 4. **文件操作与 DB 事务不一致窗口**：文件已移动 + DB 同步失败时无法回滚
@@ -755,7 +762,7 @@ OperationHistoryDialog → 选中可撤销记录 → UndoService.undo(history_id
 
 ## 5.3 计划修改方向
 
-- **拆分 MainWindow**：✅ 已完成（Phase 2 Task 7，v0.48.0）
+- **拆分 MainWindow**：✅ 已完成（Phase 2 Task 7，v0.48.0；2026-08-04 第二轮独立重构）
 - **清理 is_marked 字段**：✅ 已完成（Phase 2 Task 6，schema v13 纯 DELETE 模式）
 - **性能优化**：批量查询替代 N+1，后台线程加载文件列表
 - **撤销安全增强**：Stage 6 schema 扩展存储操作前快照
@@ -792,7 +799,9 @@ OperationHistoryDialog → 选中可撤销记录 → UndoService.undo(history_id
 - **影响范围**：UI 层全部，但不动业务逻辑，仅结构调整
 - **状态**：✅ 已落地（UX 重构 Phase 2 Task 7，v0.48.0：TransactionScope / ScanController /
   AssemblyController / MetadataView 已拆出，TD-H10/L25/M35/M36 同步处理；
-  MainWindow 保留薄委托与文件操作编排，可进一步瘦身）
+  MainWindow 保留薄委托与文件操作编排，可进一步瘦身。2026-08-04 第二轮独立重构：
+  12 个 controller/helper/view 模块迁出，MainWindow 降至约 1985 行 / 174 方法薄委托，
+  全部 main_window 测试与全量 1449 个测试保持通过）
 - **权威来源**：[ux-redesign-roadmap.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/ux-redesign-roadmap.md) Task 7
 
 ### P0-2：文档与代码同步
@@ -1067,7 +1076,7 @@ a84bebf Stage 5 Task 7: 全局搜索 + ContentUnit.status 简化 (v0.40.0)
 | 待确认问题 | [docs/open-questions.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/docs/open-questions.md) | 待决策问题清单 |
 | 变更历史 | [CHANGELOG.md](file:///c:/AphrosyneData/Skyrim-Content-Workbench/CHANGELOG.md) | 版本变更记录 |
 | 组合根 | [src/app/main.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main.py) | 依赖注入装配 |
-| 主窗口 | [src/app/main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) | God Object（待拆分） |
+| 主窗口 | [src/app/main_window.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/app/main_window.py) | 主窗口（已拆分，薄委托 + 测试接口） |
 | Domain | [src/domain/models.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/domain/models.py) | 实体定义 + 领域校验 |
 | 数据库 | [src/infrastructure/db.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/db.py) | 连接管理 + 迁移执行 |
 | 迁移 | [src/infrastructure/migrations.py](file:///c:/AphrosyneData/Skyrim-Content-Workbench/src/infrastructure/migrations.py) | v0→v12 迁移函数 |

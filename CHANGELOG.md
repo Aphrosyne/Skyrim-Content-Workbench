@@ -8,6 +8,28 @@
 
 尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
 
+**MainWindow 第二轮拆分（TD-M21 / TD-M31 独立重构，2026-08-04）**：
+  - 继续拆分 `main_window.py`（原 3710 行 / 167 方法 / 91 实例变量 →
+    **1985 行 / 174 方法 / 76 实例变量**，纯重构、无行为变化）
+  - 新增 12 个模块：`content_views`（两个列表视图类）、`navigation_controller`
+    （导航历史）、`view_state_controller`（视图切换/缩放/排序）、`search_controller`、
+    `tree_roots_controller`（目录树/根目录）、`context_menu_builder`（右键菜单）、
+    `file_operations_controller`（新建/重命名/删除/粘贴/移动到/撤销）、
+    `content_list_controller`（中栏刷新/选中联动/筛选/条目级动作）、
+    `metadata_helpers`（元数据文本 + Elide）、`entry_dialogs`（重命名/创建 Mod 组对话框）、
+    `shortcut_registry`（快捷键注册）、`scan_ui_state`（扫描按钮/状态栏/刷新联动）
+  - `_setup_ui` 拆为 `_build_top_bar` / `_build_left_panel` / `_build_middle_panel` /
+    `_build_right_panel` 子方法
+  - MainWindow 保留窗口装配、薄委托、测试接口与少量窗口级 handler；
+    全部 247 个 main_window 测试与全量 1449 个测试保持通过
+    （[main_window.py](src/app/main_window.py) / [navigation_controller.py](src/app/navigation_controller.py) /
+    [view_state_controller.py](src/app/view_state_controller.py) / [search_controller.py](src/app/search_controller.py) /
+    [tree_roots_controller.py](src/app/tree_roots_controller.py) / [context_menu_builder.py](src/app/context_menu_builder.py) /
+    [file_operations_controller.py](src/app/file_operations_controller.py) / [content_list_controller.py](src/app/content_list_controller.py) /
+    [metadata_helpers.py](src/app/metadata_helpers.py) / [entry_dialogs.py](src/app/entry_dialogs.py) /
+    [shortcut_registry.py](src/app/shortcut_registry.py) / [scan_ui_state.py](src/app/scan_ui_state.py) /
+    [content_views.py](src/app/content_views.py)）
+
 ## [0.50.12] - 2026-08-04
 
 **内容单元标记可配置（UI合理性21）**：
