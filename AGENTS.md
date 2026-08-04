@@ -81,7 +81,7 @@ ThumbnailCache     → 缩略图缓存（关联 content_unit_id，WebP 多档缓
 
 - **Schema 版本**：以 `src/infrastructure/db.py` 中的 `CURRENT_SCHEMA_VERSION` 为准，变更历史见 CHANGELOG.md。
 - **分支**：以 git 当前分支为准；UX 重构的权威计划是 `docs/ux-redesign-roadmap.md`。
-- **应用数据目录解析优先级**：`SCW_DATA_DIR` 环境变量 > 项目根 `data/` > `%LOCALAPPDATA%\SkyrimContentWorkbench\` > `~/.skyrimmodworkbench/`。默认位于项目根 `data/`（app.db、thumbnails/、exports/、logs/），`.gitignore` 已忽略 `/data/`。
+- **应用数据目录解析优先级**：`SCW_DATA_DIR` 环境变量 > 项目根 `data/` > 程序文件所在位置 `data/`（2026-08-04 起不再回退 `%LOCALAPPDATA%` / 用户主目录，数据始终位于程序所在位置内）。默认位于项目根 `data/`（app.db、thumbnails/、exports/、logs/、settings.ini），`.gitignore` 已忽略 `/data/`。
 - **UI 单面板**：无浏览/整理模式切换，无暂存区，无快速插入。统一为目录树（左）+ 文件列表/卡片（中）+ 元数据/可钉住装配面板（右）。
 - **文件操作流程**：直接执行（move/rename/delete/new_folder），写入 operation_history，支持撤销。撤销不产生新记录，仅标记原记录 `undone_at`。
 - **扫描**：启动时自动增量扫描（基于目录 mtime），用户可手动全量重扫。不做实时文件系统监听。识别规则：所有压缩包文件自动标记为内容单元候选，文件夹由用户手动标记。

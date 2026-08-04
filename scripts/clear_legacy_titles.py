@@ -15,7 +15,7 @@ UI合理性13（2026-08-03）：content_unit.title 列保留但停止使用。�
     python scripts/clear_legacy_titles.py --apply    # 实际清除
     python scripts/clear_legacy_titles.py --db PATH  # 指定数据库（测试用）
 
-数据库路径默认由 app.app_paths 解析（SCW_DATA_DIR > 项目 data/ > LOCALAPPDATA 回退）。
+数据库路径默认由 app.app_paths 解析（SCW_DATA_DIR > 项目 data/ > 程序目录 data/ 回退）。
 """
 
 from __future__ import annotations
@@ -44,8 +44,7 @@ def collect_legacy_titles(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """返回 title 与文件名不一致的行（title ≠ basename(path)）。"""
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT id, path, title FROM content_unit "
-        "WHERE title IS NOT NULL AND title != ''"
+        "SELECT id, path, title FROM content_unit WHERE title IS NOT NULL AND title != ''"
     ).fetchall()
     return [row for row in rows if row["title"] != _basename(row["path"])]
 

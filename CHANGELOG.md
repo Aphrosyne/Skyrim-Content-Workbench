@@ -4,9 +4,20 @@
 
 在 1.0.0 之前，0.MINOR.PATCH 中的 MINOR 用于标记里程碑推进（roadmap 阶段/Task），PATCH 用于同里程碑内的修复与小幅调整。任何可能影响用户数据或破坏已有功能的变化都会使 MINOR 递增。
 
-## [Unreleased]
+## [0.50.22] - 2026-08-04
 
-尚未发布的改动。开发期间此节用于汇总已完成但未标注版本标签的提交。
+**设置文件化 + 数据目录收紧（2026-08-04，用户反馈）**：
+  - 应用设置从 Windows 注册表改为文件形式 settings.ini（位于应用数据目录内）：
+    统一走 `get_app_settings()`，覆盖全部设置（缩放/布局/内容单元标记/图标颜色/
+    网址搜索/归档/快捷键/右键开关等），不再写注册表
+  - 数据目录解析收紧：删除 %LOCALAPPDATA% 与用户主目录回退，应用数据
+    （app.db / thumbnails / logs / exports / settings.ini）始终位于程序所在位置内
+    （项目 data/ 或打包后程序旁 data/）
+  （[app_paths.py](src/app/app_paths.py) / [main_window.py](src/app/main_window.py) /
+  [content_list_controller.py](src/app/content_list_controller.py) /
+  [operation_history_dialog.py](src/app/operation_history_dialog.py)）
+
+## [0.50.21] - 2026-08-04
 
 **右键功能开关 + 快捷键配置面板（设计合理性1，2026-08-04）**：
   - 新增「工具 → 设置…」统一对话框（原「视图 → 快捷键设置…」占位移除），
@@ -21,6 +32,8 @@
     「添加到钉住文件夹」归入「视图与其他」组、「提取内容」归入「文件操作」组
   - 验收修复：最近使用标签按钮与预选/chip 一致按分类着色（背景/边框分类色、
     文字按亮度黑/白）
+
+## [0.50.20] - 2026-08-04
 
 **归档功能（功能增加1，2026-08-04）**：
   - 标记任意文件夹为归档根目录（中栏/目录树右键，QSettings 持久化 `archive/root_path`，
@@ -37,6 +50,8 @@
     逻辑迁自参考脚本 `src/archive_selector.py`，原脚本已删除）
   - 同位置移动（目标 = 源路径）自动跳过、不再弹「覆盖/跳过/重命名」对话框
     （共享冲突扫描逻辑，快速移动/快速归档/复制粘贴一并生效）
+
+## [0.50.19] - 2026-08-04
 
 **文件类型 SVG 图标 + 列表图标尺寸调节（UI合理性4 / UI合理性19，2026-08-04）**：
   - 文件类型图标（列表 / 卡片占位 / 文件夹预览共用）：文件夹、压缩包、图片、
@@ -65,6 +80,8 @@
     （[view_state_controller.py](src/app/view_state_controller.py) /
     [ui_constants.py](src/app/ui_constants.py)）
 
+## [0.50.18] - 2026-08-04
+
 **MainWindow 第二轮拆分（TD-M21 / TD-M31 独立重构，2026-08-04）**：
   - 继续拆分 `main_window.py`（原 3710 行 / 167 方法 / 91 实例变量 →
     **1985 行 / 174 方法 / 76 实例变量**，纯重构、无行为变化）
@@ -90,6 +107,8 @@
     [shortcut_registry.py](src/app/shortcut_registry.py) / [scan_ui_state.py](src/app/scan_ui_state.py) /
     [content_views.py](src/app/content_views.py)）
 
+## [0.50.17] - 2026-08-04
+
 **提取内容（剥离）+ Mod 组元数据继承（操作便捷性1 / 操作合理性5，2026-08-04）**：
   - 新增「提取内容」：中栏右键普通文件夹（未标记内容单元）→ 确认后把文件夹内
     顶层条目提取到上级目录，清空后文件夹移入回收站；冲突复用现有解决对话框
@@ -108,6 +127,8 @@
   [migrations.py](src/infrastructure/migrations.py) /
   [test_strip_service.py](tests/test_strip_service.py) /
   [test_main_window_strip.py](tests/test_main_window_strip.py)）
+
+## [0.50.16] - 2026-08-04
 
 **N 网网址 + 快速浏览器搜索（操作便捷性8 / 操作便捷性9，2026-08-04）**：
   - 新增共享模块 `nexus_filename`：`extract_nexus_id`（N 网尾号）、
@@ -129,6 +150,8 @@
   [test_nexus_filename.py](tests/test_nexus_filename.py) /
   [test_main_window_url_actions.py](tests/test_main_window_url_actions.py)）
 
+## [0.50.15] - 2026-08-04
+
 **输入控件右键菜单中文化（验收反馈，2026-08-04）**：
   - Qt 内置输入框右键菜单为英文（复制/粘贴/剪切/全选），与项目全中文 UI 约定不符；
     新增应用级事件过滤器 `ChineseInputContextMenuFilter`，拦截 QLineEdit /
@@ -137,6 +160,8 @@
   - 接入 main.py（QApplication 安装事件过滤器），无需逐个控件改造
   （[chinese_input_menu.py](src/app/chinese_input_menu.py) /
   [test_chinese_input_menu.py](tests/test_chinese_input_menu.py)）
+
+## [0.50.14] - 2026-08-04
 
 **双击打开 + 文件夹预览快捷键 + 中栏拖拽高亮（操作合理性1 / 操作便捷性10 /
 操作便捷性2 调整，2026-08-04）**：
@@ -154,6 +179,8 @@
   [assembly_panel.py](src/app/assembly_panel.py) /
   [shortcut_registry.py](src/app/shortcut_registry.py) /
   [test_content_views_drop_highlight.py](tests/test_content_views_drop_highlight.py)）
+
+## [0.50.13] - 2026-08-04
 
 **排序下拉框修复（BugFix3，2026-08-04）**：
   - 修复"点击排序项要点两次 / 快速滑动时排序与下拉框显示不一致"：新增

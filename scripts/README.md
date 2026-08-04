@@ -51,7 +51,7 @@ python scripts/clean.py --verbose
 - `archive/` — 归档文档
 - `scripts/` — 脚本
 
-**应用数据**（位于 `%LOCALAPPDATA%\SkyrimContentWorkbench\` 或项目内 `local_appdata/`）：
+**应用数据**（位于程序所在位置 `data/`，2026-08-04 起不再写 `%LOCALAPPDATA%`）：
 - `app.db` — 数据库
 - `thumbnails/` — 缩略图缓存
 - `exports/` — 导出文件
@@ -85,7 +85,7 @@ python scripts/clear_legacy_titles.py --db PATH  # 指定数据库（测试用�
 
 - 只修改 content_unit.title，不触碰文件系统、不删除记录。
 - 幂等：重复执行结果一致。
-- 数据库路径默认由 `app.app_paths` 解析（SCW_DATA_DIR > 项目 data/ > LOCALAPPDATA 回退）。
+- 数据库路径默认由 `app.app_paths` 解析（SCW_DATA_DIR > 项目 data/ > 程序目录 data/ 回退）。
 
 ### 测试
 
