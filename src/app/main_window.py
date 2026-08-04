@@ -73,7 +73,7 @@ from app.assembly_controller import AssemblyController
 from app.assembly_panel import AssemblyPanel
 from app.batch_tag_dialog import BatchTagDialog
 from app.card_list_model import CardListModel
-from app.content_filter import filter_entries
+from app.content_list_controller import ContentListController
 from app.content_unit_delegate import ContentUnitStripeDelegate
 from app.content_unit_marker_config import ContentUnitMarkerConfig
 from app.content_unit_marker_dialog import ContentUnitMarkerDialog
@@ -330,6 +330,40 @@ class MainWindow(QMainWindow):
         self._metadata_view.cover_saved.connect(self._on_cover_saved)
         # UI合理性13（2026-08-03）：面板重命名栏回车 → 执行文件重命名
         self._metadata_view.rename_requested.connect(self._on_metadata_rename_requested)
+        # TD-M21 阶段 7：中栏内容列表控制器（刷新/选中联动/筛选/条目级动作）
+        self._content_list_controller = ContentListController(
+            content_service=self._content_service,
+            content_unit_creation_service=self._content_unit_creation_service,
+            tag_service=self._tag_service,
+            content_list_model=self._content_list_model,
+            card_list_model=self._card_list_model,
+            content_view=self._content_view,
+            card_view=self._card_view,
+            content_empty_hint=self._content_empty_hint,
+            cover_filter_button=self._cover_filter_button,
+            tag_filter_bar=self._tag_filter_bar,
+            tree_model=self._tree_model,
+            tree_view=self._tree_view,
+            metadata_panel=self._metadata_panel,
+            metadata_label=self._metadata_label,
+            metadata_view=self._metadata_view,
+            selection_memory=self._selection_memory,
+            transaction_scope=self._transaction_scope,
+            status_bar=self.statusBar(),
+            set_metadata_text=self._set_metadata_text,
+            update_metadata=self._update_metadata,
+            bind_assembly_panel=self._bind_assembly_panel,
+            bind_assembly_folder=self._bind_assembly_folder,
+            is_assembly_pinned=self._is_assembly_pinned,
+            current_nav_path=lambda: self._current_nav_path,
+            navigating_from_history=lambda: self._navigating_from_history,
+            current_view_index=lambda: self._current_view_index,
+            record_nav_history=self._record_nav_history,
+            handle_error=self._handle_service_error,
+            dialog_parent=self,
+            host=self,
+            parent=self,
+        )
         self._refresh_root_list()
         self._refresh_tree()
         # Stage 5 Task 4：注册键盘快捷键
@@ -951,270 +985,52 @@ class MainWindow(QMainWindow):
         self._tree_roots_controller.on_tree_selection_changed(*args)
 
     def _refresh_content_list(self, dir_path: str) -> None:
-        """刷新文件列表（数据源为文件系统，content_unit 表仅作标记）。
-
-        Stage 4 Task 3：若 TagFilterBar 筛选激活，按筛选结果过滤条目。
-        - 筛选激活时：仅显示匹配的内容单元条目（Q1: B）。非内容单元条目与
-          不匹配的内容单元条目全部隐藏，列表变成纯结果集。
-        - 筛选未激活：显示全量条目。
-        - 切换目录时筛选状态保留（Q3: A），自动应用于新目录。
-        """
-        try:
-            entries = self._content_service.list_directory_entries(dir_path)
-        except Exception:  # noqa: BLE001 - UI 边界需捕获所有异常
-            logger.exception("加载文件列表失败：dir_path=%s", dir_path)
-            entries = []
-
-        entries = self._apply_tag_filter(entries)
-        self._content_list_model.refresh(entries)
-        if not entries:
-            if self._is_tag_filter_active() or self._cover_filter_button.isChecked():
-                self._content_empty_hint.setText(ui.TAG_FILTER_NO_RESULT_HINT)
-            else:
-                self._content_empty_hint.setText(ui.CONTENT_LIST_EMPTY_HINT)
-        else:
-            self._content_empty_hint.setText("")
-        # 操作便捷性7：历史导航（后退/前进）恢复该目录记忆的选中
-        if self._navigating_from_history:
-            active_view = (
-                self._card_view
-                if self._current_view_index == VIEW_INDEX_CARD
-                else self._content_view
-            )
-            self._selection_memory.restore(dir_path, self._content_list_model, active_view)
-        # Stage 5 Task 2：记录目录导航历史
-        self._record_nav_history(dir_path)
+        """刷新文件列表（委托 ContentListController）。"""
+        self._content_list_controller.refresh_content_list(dir_path)
 
     # --- 标签筛选（Stage 4 Task 3） ---
 
     def _is_tag_filter_active(self) -> bool:
-        """返回 TagFilterBar 是否激活（已选标签数 > 0）。
-
-        TagService 未注入时返回 False。
-        """
-        return self._tag_filter_bar is not None and self._tag_filter_bar.is_filter_active()
+        """返回 TagFilterBar 是否激活（委托 ContentListController）。"""
+        return self._content_list_controller.is_tag_filter_active()
 
     def _apply_tag_filter(self, entries: list) -> list:
-        """按标签/封面筛选过滤条目（委托 ContentFilter，MainWindow 仅接线）。"""
-        if self._tag_filter_bar is None:
-            return filter_entries(
-                entries,
-                tag_service=self._tag_service,
-                selected_tag_ids=set(),
-                excluded_tag_ids=set(),
-                cover_only=self._cover_filter_button.isChecked(),
-            )
-        return filter_entries(
-            entries,
-            tag_service=self._tag_service,
-            selected_tag_ids=self._tag_filter_bar.current_selected_tag_ids(),
-            excluded_tag_ids=self._tag_filter_bar.current_excluded_tag_ids(),
-            cover_only=self._cover_filter_button.isChecked(),
-        )
+        """按标签/封面筛选过滤条目（委托 ContentListController）。"""
+        return self._content_list_controller.apply_tag_filter(entries)
 
     def _on_cover_filter_toggled(self, _checked: bool) -> None:
-        """封面筛选切换：按下=只看有封面；不持久化。"""
-        self._refresh_filters_current_dir()
+        """封面筛选切换（委托 ContentListController）。"""
+        self._content_list_controller.on_cover_filter_toggled(_checked)
 
     def _on_tag_exclusion_changed(self, _excluded_tag_ids: set) -> None:
-        """TagFilterBar 反选标签变化 → 重新刷新中栏（应用排除筛选）。"""
-        self._refresh_filters_current_dir()
+        """TagFilterBar 反选标签变化（委托 ContentListController）。"""
+        self._content_list_controller.on_tag_exclusion_changed(_excluded_tag_ids)
 
     def _refresh_filters_current_dir(self) -> None:
-        """刷新当前显示目录（标签/封面筛选变化时；优先当前导航目录，回退目录树选中）。"""
-        if self._current_nav_path is not None:
-            self._refresh_content_list(self._current_nav_path)
-        else:
-            self._refresh_content_list_for_current_mode()
+        """刷新当前显示目录（委托 ContentListController）。"""
+        self._content_list_controller.refresh_filters_current_dir()
 
     def _on_tag_filter_changed(self, selected_tag_ids: set[str]) -> None:
-        """TagFilterBar 选中标签变化时重新刷新中栏（应用筛选）。
-
-        Stage 4 Task 3（Q6: A 修正）：筛选激活时保留 MetadataPanel 可见性，
-        用户可继续查看选中条目的元数据。若当前选中行被筛选过滤掉，
-        MetadataPanel 保持上一次加载的内容（不主动清空），避免干扰用户。
-        - 仅中栏可见时响应（TagFilterBar 常驻中栏顶部）。
-        """
-        self._refresh_filters_current_dir()
+        """TagFilterBar 选中标签变化时重新刷新中栏（委托 ContentListController）。"""
+        self._content_list_controller.on_tag_filter_changed(selected_tag_ids)
 
     def _refresh_tag_filter_bar(self) -> None:
-        """刷新 TagFilterBar 的可选标签（标签管理对话框关闭后调用）。"""
-        if self._tag_filter_bar is not None:
-            self._tag_filter_bar.refresh_categories()
+        """刷新 TagFilterBar 的可选标签（委托 ContentListController）。"""
+        self._content_list_controller.refresh_tag_filter_bar()
 
     # --- 文件条目 ---
 
     def _on_entry_activated(self, index) -> None:  # noqa: ANN001 (Qt 信号)
-        """双击文件条目。
-
-        交互行为（2026-07-17 调整）：
-        - 双击文件夹 → 进入该目录（无论是否内容单元，优先于元数据显示）。
-          文件夹的元数据通过单击选中查看（_on_content_selection_changed）。
-        - 双击文件类型内容单元（压缩包）→ 显示元数据面板。
-        - 双击普通文件 / 普通文件夹 → 不响应（右键「打开」可用系统默认程序打开）。
-
-        Stage 5 Task 1：支持列表视图和卡片视图，两个视图共享同一份 FileEntry 数据
-        （行号一致），因此用任一 model 取 entry 均可。这里用当前活动视图对应的 model。
-        """
-        # 两个视图共享同一份数据（行号一致），用任一 model 取 entry 均可
-        active_model = (
-            self._card_list_model
-            if self._current_view_index == VIEW_INDEX_CARD
-            else self._content_list_model
-        )
-        entry = active_model.entry_at(index.row())
-        if entry is None:
-            return
-
-        # 双击文件夹 → 进入该目录（优先于内容单元判断）
-        # 文件夹即使被标记为内容单元（如 Mod 组），双击也进入目录；
-        # 元数据通过单击查看。
-        # UX 重构 Phase 1 Task 1：移除模式分支，双击始终进入目录。
-        if entry.is_dir:
-            # 同步目录树选中节点到当前浏览目录（2026-07-17 修复）：
-            # 原实现只刷新中栏，不更新 tree_view.selectionModel()，导致后续依赖
-            # 该 selection 的刷新逻辑（_refresh_content_list_for_current_mode /
-            # _refresh_content_list_after_scan）误用陈旧的选中节点，
-            # 中栏在标记内容单元后"退回"父目录显示。
-            # 通过 find_index_by_path 找到对应节点并 setCurrentIndex，
-            # 触发 _on_tree_selection_changed 完成中栏刷新 + 详情区更新。
-            # 未找到节点时（如未扫描根目录的子项），回退到原保底逻辑手动刷新。
-            target_idx = self._tree_model.find_index_by_path(self._tree_view, entry.path)
-            if target_idx.isValid():
-                self._tree_view.setCurrentIndex(target_idx)
-                self._set_metadata_text(ui.METADATA_NOT_SELECTED)
-            else:
-                logger.warning(
-                    "双击导航：未在目录树中找到匹配节点，回退到手动刷新：path=%s",
-                    entry.path,
-                )
-                self._refresh_content_list(entry.path)
-                self._set_metadata_text(ui.METADATA_NOT_SELECTED)
-            return
-
-        # 双击文件类型内容单元 → 显示元数据
-        if entry.content_unit is not None:
-            self._update_metadata(entry.content_unit)
-            return
-
-        # 其他情况（普通文件）：不响应
+        """双击文件条目（委托 ContentListController）。"""
+        self._content_list_controller.on_entry_activated(index)
 
     def _on_entry_activated_for_entry(self, entry: FileEntry) -> None:
-        """右键菜单「打开」项的 handler（UX 重构 Phase 2 Task 5，Q1=B）。
-
-        行为与双击（_on_entry_activated）一致：
-        - 文件夹 → 进入该目录
-        - 文件类型内容单元 → 显示元数据面板
-        - 普通文件 → 尝试用系统默认程序打开
-
-        Args:
-            entry: 要打开的条目。
-        """
-        # 复用双击逻辑：构造一个伪 index 不可行（需要 model），
-        # 直接内联双击的关键逻辑。
-        if entry.is_dir:
-            # 进入文件夹：同步目录树选中
-            target_idx = self._tree_model.find_index_by_path(self._tree_view, entry.path)
-            if target_idx.isValid():
-                self._tree_view.setCurrentIndex(target_idx)
-                self._set_metadata_text(ui.METADATA_NOT_SELECTED)
-            else:
-                logger.warning(
-                    "右键打开：未在目录树中找到匹配节点，回退到手动刷新：path=%s",
-                    entry.path,
-                )
-                self._refresh_content_list(entry.path)
-                self._set_metadata_text(ui.METADATA_NOT_SELECTED)
-            return
-
-        # 文件类型内容单元 → 显示元数据
-        if entry.content_unit is not None:
-            self._update_metadata(entry.content_unit)
-            return
-
-        # 普通文件 → 用系统默认程序打开
-        try:
-            subprocess.run(
-                ["cmd", "/c", "start", "", entry.path],
-                check=False,
-                shell=False,
-            )
-        except (OSError, subprocess.SubprocessError):  # noqa: BLE001
-            logger.exception("系统打开文件失败：path=%s", entry.path)
-            QMessageBox.information(
-                self, ui.MENU_OPEN, ui.MENU_OPERATION_FAILED.format(error="无法打开文件")
-            )
+        """右键菜单「打开」项 handler（委托 ContentListController）。"""
+        self._content_list_controller.on_entry_activated_for_entry(entry)
 
     def _on_content_selection_changed(self, *args) -> None:  # noqa: N802, ANN001 (Qt 信号)
-        """文件列表选中变化：单击选中条目 → 右栏同步更新元数据与装配面板。
-
-        UX 重构 Phase 1 Task 2（A1-1 决策）：
-        - 单选文件夹内容单元 → 显示元数据 + 绑定装配面板显示其内部文件。
-        - 单选文件类型内容单元 → 显示元数据 + 装配面板解绑显空状态。
-        - 单选非内容单元 → 清空元数据 + 装配面板解绑显空状态。
-        - 多选 → 清空元数据 + 装配面板解绑显空状态（避免混淆）。
-        - 双击文件夹 → 进入目录（_on_entry_activated 处理，与单击不冲突）。
-
-        信号循环防护（用户补充注意）：
-        _bind_assembly_panel → bind_mod_group → _refresh_file_list 仅刷新装配面板
-        内部 AssemblyListModel，不反向修改 content_view 选区，因此 selectionChanged
-        不会再次触发本方法。元数据更新同理。
-
-        Stage 5 Task 1：支持列表视图和卡片视图，根据当前活动视图获取选中。
-        """
-        # 取当前活动视图（列表 or 卡片）
-        active_view = (
-            self._card_view if self._current_view_index == VIEW_INDEX_CARD else self._content_view
-        )
-        active_model = (
-            self._card_list_model
-            if self._current_view_index == VIEW_INDEX_CARD
-            else self._content_list_model
-        )
-        sm = active_view.selectionModel()
-        if sm is None:
-            return
-        indexes = sm.selectedRows()
-        if not indexes:
-            return
-        # 操作便捷性7：记忆当前目录的选中（后退/前进时恢复）。
-        # 仅在非空选中时记录，避免列表刷新/恢复过程中的空选中事件清空记忆。
-        if self._current_nav_path is not None:
-            paths: list[str] = []
-            for i in indexes:
-                e = active_model.entry_at(i.row())
-                if e is not None:
-                    paths.append(e.path)
-            self._selection_memory.record(self._current_nav_path, paths)
-        # 多选：清空元数据 + 解绑装配面板
-        if len(indexes) > 1:
-            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
-            self._bind_assembly_panel(None)
-            return
-        entry = active_model.entry_at(indexes[0].row())
-        if entry is None:
-            return
-        if entry.content_unit is not None:
-            # 显示元数据
-            self._update_metadata(entry.content_unit)
-            # 文件夹内容单元 → 绑定装配面板（保留 unit 关联用于封面重命名）
-            # 文件类型内容单元 → 解绑装配面板
-            self._bind_assembly_panel(entry.content_unit if entry.is_dir else None)
-        elif entry.is_dir:
-            # UX 重构 Phase 1 Task 2：非内容单元文件夹 → 装配面板透视（文件夹透视器语义）
-            # 清空元数据（非内容单元无元数据），装配面板按路径透视显示其内部文件
-            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
-            self._bind_assembly_folder(Path(entry.path))
-        else:
-            # 非内容单元文件
-            # 操作合理性2（2026-08-03）：图片文件 → 元数据面板直接预览原图
-            # （无缓存、不写数据库）；其他文件 → 清空元数据（显示提示文本）。
-            if self._metadata_panel is not None and self._content_service.is_image_file(entry.path):
-                self._metadata_label.setVisible(False)
-                self._metadata_view.show_image_preview(Path(entry.path))
-            else:
-                self._set_metadata_text(ui.METADATA_NOT_SELECTED)
-            self._bind_assembly_panel(None)
+        """文件列表选中变化（委托 ContentListController）。"""
+        self._content_list_controller.on_content_selection_changed(*args)
 
     def _on_content_header_clicked(self, column: int) -> None:  # noqa: N802 (Qt 命名)
         """文件列表列头点击：切换排序键，同列再点切换升降序（委托 ViewStateController）。"""
@@ -1391,102 +1207,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(ui.CONTEXT_MENU_COPY_PATH_OK, 3000)
 
     def _on_quick_set_cover(self, unit_id: str) -> None:
-        """快速设置封面（Stage 5 Task 1）。
-
-        调用 ContentService.quick_set_cover 取目录内第一张图设为封面。
-        根据返回值在状态栏反馈结果，无图片或已有封面均不报错。
-        """
-        if self._content_service is None:
-            return
-        try:
-            ok = self._content_service.quick_set_cover(unit_id)
-        except Exception as e:  # noqa: BLE001
-            self._handle_service_error(e, "快速设置封面失败")
-            return
-
-        if ok:
-            self._commit()
-            self.statusBar().showMessage(ui.MENU_QUICK_SET_COVER_OK, 3000)
-        else:
-            # quick_set_cover 返回 False 的语义：无图片或已有封面
-            # 需要区分两种情况给用户更精准的反馈
-            unit = self._content_service.get_by_id(unit_id)
-            if unit is None:
-                return
-            if unit.cover_path:
-                # 已有封面，未覆盖
-                self.statusBar().showMessage(ui.MENU_QUICK_SET_COVER_ALREADY_SET, 3000)
-            else:
-                # 无图片
-                self.statusBar().showMessage(ui.MENU_QUICK_SET_COVER_NO_IMAGE, 3000)
+        """快速设置封面（委托 ContentListController）。"""
+        self._content_list_controller.on_quick_set_cover(unit_id)
 
     def _on_create_mod_group(self, entries: list[FileEntry]) -> None:
-        """创建 Mod 组：弹出对话框选择/编辑名称，调用 ContentUnitCreationService。
-
-        UX 重构 Phase 1 Task 1 Commit 3：支持多选。
-        - E1：仅全部为文件（非目录）时显示菜单项（由 _build_content_menu_actions 保证）
-        - F1：按文件列表显示顺序的第一项提取 Mod 名
-        - D1 调整：原 D1 逐个调用因文件夹已存在冲突不可行，改用批量接口
-          create_content_unit_from_files（一次建文件夹 + 逐个移入 + 容错汇总）
-        """
-        if self._content_unit_creation_service is None or not entries:
-            return
-
-        # F1：按显示顺序第一项提取名（entries 由调用方按显示顺序传入）
-        first_entry = entries[0]
-        # 选中文件所在父目录作为 staging_path
-        staging_path = Path(first_entry.path).parent
-
-        # 提取两种命名选项
-        from application.content_unit_creation_service import extract_mod_name
-
-        pure_name = extract_mod_name(first_entry.name)
-        # 完整原名：去扩展名
-        full_name = Path(first_entry.name).stem
-
-        # 弹出对话框
-        chosen_name = self._show_create_mod_group_dialog(pure_name, full_name)
-        if chosen_name is None:
-            return  # 用户取消
-
-        source_files = [Path(e.path) for e in entries]
-        try:
-            result = self._content_unit_creation_service.create_content_unit_from_files(
-                source_files,
-                staging_path,
-                name=chosen_name,
-            )
-            # D3：ContentUnitCreationService 已注入 UoW，事务由 Service 内部管理，无需 _commit
-            # 刷新目录树（新文件夹已写入 folder_cache）
-            self._refresh_tree()
-            # 刷新当前目录文件列表
-            self._refresh_content_list(str(staging_path))
-            # 绑定装配面板到新创建的 Mod 组
-            # UX 重构 Phase 1 Task 3（B1）：钉住状态下不自动绑定新 Mod 组
-            if not self._is_assembly_pinned():
-                self._bind_assembly_panel(result.unit)
-            # 状态栏汇总
-            if result.failure_count == 0:
-                if result.success_count == 1:
-                    self.statusBar().showMessage(
-                        ui.CREATE_MOD_GROUP_DEFAULT_OK.format(name=chosen_name), 3000
-                    )
-                else:
-                    self.statusBar().showMessage(
-                        ui.CREATE_MOD_GROUP_MULTI_OK.format(
-                            name=chosen_name, count=result.success_count
-                        ),
-                        5000,
-                    )
-            else:
-                self.statusBar().showMessage(
-                    ui.CREATE_MOD_GROUP_MULTI_PARTIAL.format(
-                        ok=result.success_count, fail=result.failure_count
-                    ),
-                    5000,
-                )
-        except Exception as e:  # noqa: BLE001
-            self._handle_service_error(e, ui.CREATE_MOD_GROUP_FAILED, rollback=False)
+        """创建 Mod 组（委托 ContentListController）。"""
+        self._content_list_controller.on_create_mod_group(entries)
 
     def _show_create_mod_group_dialog(self, pure_name: str, full_name: str) -> str | None:
         """弹出创建 Mod 组对话框，返回用户选择的名称；取消返回 None。
@@ -1525,123 +1251,28 @@ class MainWindow(QMainWindow):
         return None
 
     def _on_mark_content_unit(self, entry: FileEntry) -> None:
-        """标记单个条目为内容单元。"""
-        try:
-            self._content_service.mark_as_content_unit(Path(entry.path))
-            # D3：ContentService 已注入 UoW，事务由 Service 内部管理，无需 _commit
-            self._refresh_content_list_for_current_mode()
-            self.statusBar().showMessage(ui.MARK_CONTENT_UNIT_OK, 3000)
-        except Exception as e:  # noqa: BLE001
-            self._handle_service_error(e, ui.MARK_CONTENT_UNIT_FAILED, rollback=False)
+        """标记单个条目为内容单元（委托 ContentListController）。"""
+        self._content_list_controller.on_mark_content_unit(entry)
 
     def _on_unmark_content_unit(self, entry: FileEntry) -> None:
-        """取消单个条目的内容单元标记。"""
-        if entry.content_unit is None:
-            return
-        try:
-            self._content_service.unmark_content_unit(entry.content_unit.id)
-            # unmark_content_unit 是单步写方法，未使用 UoW（仅 mark_as_content_unit
-            # 的多步写在 UoW 事务内）。调用方需显式提交。
-            self._commit()
-            self._refresh_content_list_for_current_mode()
-            self.statusBar().showMessage(ui.UNMARK_CONTENT_UNIT_OK, 3000)
-        except Exception as e:  # noqa: BLE001
-            self._handle_service_error(e, ui.UNMARK_CONTENT_UNIT_FAILED, rollback=True)
+        """取消单个条目的内容单元标记（委托 ContentListController）。"""
+        self._content_list_controller.on_unmark_content_unit(entry)
 
     def _on_batch_mark_content_unit(self, entries: list[FileEntry]) -> None:
-        """批量标记多个条目为内容单元（各自独立，已标记项跳过）。
-
-        容错策略：循环内单条失败仅计数不中断。ContentService 已注入 UoW，
-        每条 mark_as_content_unit 成功时内部已 commit，失败时内部已 rollback。
-        """
-        success_count = 0
-        failure_count = 0
-        for entry in entries:
-            if entry.content_unit is not None:
-                continue  # 已标记，跳过
-            try:
-                self._content_service.mark_as_content_unit(Path(entry.path))
-                success_count += 1
-            except Exception:  # noqa: BLE001
-                logger.exception("批量标记失败：path=%s", entry.path)
-                failure_count += 1
-        if success_count > 0:
-            # D3：ContentService 已注入 UoW，事务由 Service 内部管理，无需 _commit
-            self._refresh_content_list_for_current_mode()
-            self.statusBar().showMessage(
-                ui.BATCH_MARK_CONTENT_UNIT_OK.format(count=success_count), 3000
-            )
-        if failure_count > 0:
-            QMessageBox.information(
-                self,
-                ui.BATCH_MARK_CONTENT_UNIT_FAILED,
-                f"{failure_count} 个文件标记失败，请查看日志。",
-            )
+        """批量标记多个条目为内容单元（委托 ContentListController）。"""
+        self._content_list_controller.on_batch_mark_content_unit(entries)
 
     def _on_batch_unmark_content_unit(self, entries: list[FileEntry]) -> None:
-        """批量取消多个条目的内容单元标记（各自独立，未标记项跳过）。
-
-        容错策略与批量标记一致：循环内单条失败仅计数不中断。
-        unmark_content_unit 是单步写方法，未使用 UoW，每条独立 commit。
-        """
-        success_count = 0
-        failure_count = 0
-        for entry in entries:
-            if entry.content_unit is None:
-                continue  # 未标记，跳过
-            try:
-                self._content_service.unmark_content_unit(entry.content_unit.id)
-                # unmark_content_unit 未使用 UoW，调用方需显式提交
-                self._commit()
-                success_count += 1
-            except Exception:  # noqa: BLE001
-                logger.exception("批量取消标记失败：path=%s", entry.path)
-                failure_count += 1
-                # 单条失败时回滚该条事务（避免未提交残留）
-                self._rollback()
-        if success_count > 0:
-            self._refresh_content_list_for_current_mode()
-            self.statusBar().showMessage(
-                ui.BATCH_UNMARK_CONTENT_UNIT_OK.format(count=success_count), 3000
-            )
-        if failure_count > 0:
-            QMessageBox.information(
-                self,
-                ui.BATCH_UNMARK_CONTENT_UNIT_FAILED,
-                f"{failure_count} 个内容单元取消标记失败，请查看日志。",
-            )
+        """批量取消多个条目的内容单元标记（委托 ContentListController）。"""
+        self._content_list_controller.on_batch_unmark_content_unit(entries)
 
     def _refresh_content_list_for_current_mode(self) -> None:
-        """刷新中栏文件列表（基于当前目录树选中节点）。
-
-        UX 重构 Phase 1 Task 1：移除模式分支，统一为原 browse 行为。
-        方法名保留 _for_current_mode 仅为最小改动，Task 7 重命名。
-        """
-        sm = self._tree_view.selectionModel()
-        if sm is None:
-            return
-        indexes = sm.selectedIndexes()
-        if not indexes:
-            return
-        node = self._tree_model.node_at(indexes[0])
-        if node is not None:
-            self._refresh_content_list(node.real_path)
+        """刷新中栏文件列表（委托 ContentListController）。"""
+        self._content_list_controller.refresh_content_list_for_current_mode()
 
     def _current_displayed_dir(self) -> str | None:
-        """获取当前中栏显示的目录路径（Stage 5 Task 3a）。
-
-        UX 重构 Phase 1 Task 1：移除模式分支，取目录树当前选中节点的 real_path。
-        """
-        sm = self._tree_view.selectionModel()
-        if sm is None:
-            return None
-        indexes = sm.selectedIndexes()
-        if not indexes:
-            return None
-        node = self._tree_model.node_at(indexes[0])
-        if node is None:
-            return None
-        return node.real_path
+        """获取当前中栏显示的目录路径（委托 ContentListController）。"""
+        return self._content_list_controller.current_displayed_dir()
 
     def _refresh_content_list_after_file_op(self, dir_path: str | None) -> None:
         """文件操作后刷新中栏（委托 FileOperationsController）。"""
@@ -2018,27 +1649,8 @@ class MainWindow(QMainWindow):
     # === Stage 5 Task 4：键盘快捷键 ===
 
     def _get_selected_entries(self) -> list[FileEntry]:
-        """获取中栏当前活动视图中选中的条目（列表视图或卡片视图）。
-
-        Stage 5 Task 4：供快捷键 handler 复用，避免重复实现选中逻辑。
-        """
-        active_view = (
-            self._card_view if self._current_view_index == VIEW_INDEX_CARD else self._content_view
-        )
-        active_model = (
-            self._card_list_model
-            if self._current_view_index == VIEW_INDEX_CARD
-            else self._content_list_model
-        )
-        sm = active_view.selectionModel()
-        if sm is None:
-            return []
-        entries: list[FileEntry] = []
-        for idx in sm.selectedRows():
-            entry = active_model.entry_at(idx.row())
-            if entry is not None:
-                entries.append(entry)
-        return entries
+        """获取中栏当前活动视图中选中的条目（委托 ContentListController）。"""
+        return self._content_list_controller.get_selected_entries()
 
     def _setup_shortcuts(self) -> None:
         """注册键盘快捷键。
