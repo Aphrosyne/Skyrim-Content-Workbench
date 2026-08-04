@@ -84,6 +84,8 @@ from app.file_list_model import (
     COL_NAME,
     COL_SIZE,
     COL_TYPE,
+    SORT_DIRECTION_ASC,
+    SORT_DIRECTION_DESC,
     SORT_MODIFIED,
     SORT_NAME,
     SORT_SIZE,
@@ -104,6 +106,7 @@ from app.scan_ui_state import ScanUiState
 from app.search_controller import SearchController
 from app.selection_memory import SelectionMemory
 from app.shortcut_registry import ShortcutRegistry
+from app.sort_combo_box import PressSelectComboBox
 from app.splitter_state import SplitterStateHelper
 from app.tag_filter import TagFilterBar
 from app.thumbnail_coordinator import ThumbnailCoordinator
@@ -256,7 +259,6 @@ class MainWindow(QMainWindow):
             view_card_button=self._view_card_button,
             zoom_combo=self._zoom_combo,
             sort_field_combo=self._sort_field_combo,
-            sort_dir_button=self._sort_dir_button,
             qsettings=self._qsettings,
             parent=self,
         )
@@ -747,14 +749,19 @@ class MainWindow(QMainWindow):
 
         view_switch_layout.addStretch(1)
 
-        # 排序字段下拉框 + 方向按钮（Stage 5 Task 2，Q2=A 列表/卡片视图共享）
+        # 排序下拉框：字段 + 升降序项（Stage 5 Task 2，Q2=A 列表/卡片视图共享；
+        # BugFix3 后升降序并入下拉框，不再有独立按钮）
         sort_label = QLabel(ui.SORT_FIELD_LABEL)
         view_switch_layout.addWidget(sort_label)
-        self._sort_field_combo = QComboBox()
+        self._sort_field_combo = PressSelectComboBox()
         self._sort_field_combo.addItem(ui.SORT_FIELD_NAME, SORT_NAME)
         self._sort_field_combo.addItem(ui.SORT_FIELD_TYPE, SORT_TYPE)
         self._sort_field_combo.addItem(ui.SORT_FIELD_SIZE, SORT_SIZE)
         self._sort_field_combo.addItem(ui.SORT_FIELD_MODIFIED, SORT_MODIFIED)
+        # BugFix3（2026-08-04）：下拉框内置升降序项（资源管理器式）
+        self._sort_field_combo.insertSeparator(self._sort_field_combo.count())
+        self._sort_field_combo.addItem(ui.SORT_DIRECTION_ASC_LABEL, SORT_DIRECTION_ASC)
+        self._sort_field_combo.addItem(ui.SORT_DIRECTION_DESC_LABEL, SORT_DIRECTION_DESC)
         self._sort_field_combo.setToolTip(ui.SORT_FIELD_TOOLTIP)
         self._sort_field_combo.setFixedWidth(90)
         # Stage 5 Task 2 验收修复：取消 popup 当前项的蓝色高亮背景，
@@ -764,22 +771,15 @@ class MainWindow(QMainWindow):
             "QComboBox::item:selected { background: transparent; color: black; }"
             "QComboBox::item:hover { background: #e0e0e0; }"
         )
-        # Stage 5 Task 2 验收修复（最终版）：仅用 activated 信号。
-        # 放弃 currentIndexChanged + activated 双信号方案：双信号在 Qt popup 关闭顺序
-        # 不确定时存在 deduplication 边界失效，导致重复执行或漏执行。
-        # activated 在用户主动点击下拉项时触发，程序化 setCurrentIndex 不触发（避免
-        # _sync_sort_controls 同步时死循环）。“选当前项重新排序”无产品意义，不予支持。
-        self._sort_field_combo.activated.connect(self._on_sort_field_activated)
+        # BugFix3（2026-08-04）：改用 PressSelectComboBox 的 userSelected 信号。
+        # - 鼠标在弹窗项上按下即应用排序，微量位移不再导致 release 丢 activated
+        #   （表现为"点一次不生效、要点两次"）；
+        # - 键盘路径（无鼠标 press）仍由 activated 转发，程序化 setCurrentIndex
+        #   不触发（避免 _sync_sort_controls 同步时死循环）；
+        # - 去重标志在控件内部维护，"选当前项重新排序"无产品意义，不予支持。
+        self._sort_field_combo.userSelected.connect(self._on_sort_field_activated)
+        self._sort_field_combo.directionRequested.connect(self._on_sort_direction_requested)
         view_switch_layout.addWidget(self._sort_field_combo)
-
-        # 升降序切换按钮：文本显示 ▲/▼，点击翻转
-        # 不用 checkable：checked 状态会有蓝色高亮，方向由文本 ▲/▼ 表达即可
-        self._sort_dir_button = QPushButton(ui.SORT_ASC_SYMBOL)
-        self._sort_dir_button.setToolTip(ui.SORT_DIRECTION_ASC_TOOLTIP)
-        self._sort_dir_button.setFixedWidth(32)
-        self._sort_dir_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._sort_dir_button.clicked.connect(self._on_sort_direction_clicked)
-        view_switch_layout.addWidget(self._sort_dir_button)
 
         # 缩放下拉框（Task 1b 修正：滑块改为预选尺寸下拉框，避免拖动频繁重绘原图）
         zoom_label = QLabel(ui.ZOOM_SLIDER_LABEL)
@@ -1071,23 +1071,19 @@ class MainWindow(QMainWindow):
         """文件列表列头点击：切换排序键，同列再点切换升降序（委托 ViewStateController）。"""
         self._view_state_controller.on_content_header_clicked(column)
 
-    # --- Stage 5 Task 2：排序下拉框 + 方向按钮 ---
+    # --- Stage 5 Task 2：排序下拉框 ---
 
     def _on_sort_field_activated(self, combo_index: int) -> None:
-        """排序字段下拉框 activated 信号（委托 ViewStateController）。"""
+        """排序字段下拉框用户选择信号（委托 ViewStateController）。"""
         self._view_state_controller.on_sort_field_activated(combo_index)
 
-    def _on_sort_direction_clicked(self) -> None:
-        """升降序按钮点击（委托 ViewStateController）。"""
-        self._view_state_controller.on_sort_direction_clicked()
+    def _on_sort_direction_requested(self, ascending: bool) -> None:
+        """下拉框内升降序项选择（BugFix3，委托 ViewStateController）。"""
+        self._view_state_controller.on_sort_direction_requested(ascending)
 
     def _sync_sort_controls(self) -> None:
-        """同步排序下拉框与方向按钮（委托 ViewStateController）。"""
+        """同步排序下拉框（委托 ViewStateController）。"""
         self._view_state_controller.sync_sort_controls()
-
-    def _sync_sort_direction_button(self, ascending: bool) -> None:
-        """同步方向按钮文本与 tooltip（委托 ViewStateController）。"""
-        self._view_state_controller.sync_sort_direction_button(ascending)
 
     # --- Stage 5 Task 2：前进/后退目录导航 ---
 

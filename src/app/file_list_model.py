@@ -56,6 +56,10 @@ SORT_NAME = "name"
 SORT_TYPE = "type"
 SORT_SIZE = "size"
 SORT_MODIFIED = "modified"
+# BugFix3（2026-08-04）：下拉框内升降序项的 data 标记（区别于排序字段键，
+# 用于 PressSelectComboBox 区分"字段项"与"方向项"）
+SORT_DIRECTION_ASC = "sort-asc"
+SORT_DIRECTION_DESC = "sort-desc"
 
 # 缩略图 provider 签名：(content_unit_id, source_path) → QPixmap | None
 ThumbnailProvider = Callable[[str, str], QPixmap | None]

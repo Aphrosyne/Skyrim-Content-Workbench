@@ -50,7 +50,6 @@ class ViewStateController(QObject):
         view_card_button: QPushButton,
         zoom_combo: QComboBox,
         sort_field_combo: QComboBox,
-        sort_dir_button: QPushButton,
         qsettings: QSettings,
         parent: QObject | None = None,
     ) -> None:
@@ -63,7 +62,7 @@ class ViewStateController(QObject):
             menu_bar: 顶部菜单栏（视图选中态同步）。
             view_list_button / view_card_button: 视图切换按钮。
             zoom_combo: 缩放下拉框。
-            sort_field_combo / sort_dir_button: 排序控件。
+            sort_field_combo: 排序下拉框（含升降序项，BugFix3 后不再有独立按钮）。
             qsettings: QSettings 持久化（视图模式/缩放）。
         """
         super().__init__(parent)
@@ -77,7 +76,6 @@ class ViewStateController(QObject):
         self._view_card_button = view_card_button
         self._zoom_combo = zoom_combo
         self._sort_field_combo = sort_field_combo
-        self._sort_dir_button = sort_dir_button
         self._qsettings = qsettings
         self._current_view_index: int = VIEW_INDEX_LIST  # 默认列表视图
         self._card_icon_size: int = ui.ZOOM_SLIDER_DEFAULT
@@ -222,7 +220,7 @@ class ViewStateController(QObject):
         """文件列表列头点击：切换排序键，同列再点切换升降序。
 
         阶段 3 Task 2：列头排序。点击不同列切换排序键；点击同列切换升降序。
-        Stage 5 Task 2：同步排序下拉框与方向按钮状态。
+        Stage 5 Task 2：同步排序下拉框状态。
         """
         key_map = {
             0: SORT_NAME,
@@ -245,13 +243,16 @@ class ViewStateController(QObject):
         self.sync_sort_controls()
 
     def on_sort_field_activated(self, combo_index: int) -> None:
-        """排序字段下拉框 activated 信号：用户主动点击下拉项时触发。
+        """排序字段下拉框用户选择信号（userSelected/activated 委托）。
 
-        Stage 5 Task 2 验收修复（最终版）：仅用 activated 单信号。
-        - activated 在用户点击下拉项时触发，程序化 setCurrentIndex 不触发
-          （避免 _sync_sort_controls 同步时死循环）
+        BugFix3（2026-08-04）：信号由 PressSelectComboBox 归一化为
+        userSelected——鼠标按下即触发（微量位移不再丢点击），键盘选择经
+        activated 转发；程序化 setCurrentIndex 不触发（避免
+        _sync_sort_controls 同步时死循环）。
+        按下即排序后立即 sync_sort_controls()，保证快速滑动时下拉框显示
+        与已应用排序一致（不依赖 Qt 的 release 更新 currentIndex）。
         - “选当前项重新排序”无产品意义，不予支持（currentIndex 不变时
-          Qt 不会触发 activated，此场景下排序不变是预期行为）
+          不会触发用户选择信号，此场景下排序不变是预期行为）
         - 幂等保护：若 sort_key 与当前一致且方向也未变，set_sort_key 内部
           会提前返回，避免重复 reset model 造成 view 异常
         """
@@ -260,17 +261,20 @@ class ViewStateController(QObject):
             return
         ascending = self._content_list_model.is_sort_ascending()
         self._content_list_model.set_sort_key(sort_key, ascending)
-        self.sync_sort_direction_button(ascending)
+        self.sync_sort_controls()
 
-    def on_sort_direction_clicked(self) -> None:
-        """升降序按钮点击：翻转方向（不依赖 checked 状态，从 model 读取当前方向取反）。"""
-        ascending = not self._content_list_model.is_sort_ascending()
+    def on_sort_direction_requested(self, ascending: bool) -> None:
+        """下拉框内升降序项选择（BugFix3）：保持当前字段切换方向并同步显示。"""
+        self._apply_sort_direction(ascending)
+
+    def _apply_sort_direction(self, ascending: bool) -> None:
+        """按指定方向重排当前字段，并同步下拉框显示。"""
         current_key = self._content_list_model.current_sort_key()
         self._content_list_model.set_sort_key(current_key, ascending)
-        self.sync_sort_direction_button(ascending)
+        self.sync_sort_controls()
 
     def sync_sort_controls(self) -> None:
-        """同步排序下拉框与方向按钮到 FileListModel 当前状态。
+        """同步排序下拉框到 FileListModel 当前状态。
 
         Stage 5 Task 2 验收修复（最终版）：activated 不受 blockSignals 影响
         （程序化 setCurrentIndex 本就不触发 activated），blockSignals 仅用于
@@ -278,19 +282,8 @@ class ViewStateController(QObject):
         防御性措施，避免未来误连接其他信号时死循环。
         """
         current_key = self._content_list_model.current_sort_key()
-        ascending = self._content_list_model.is_sort_ascending()
         target_index = self._SORT_KEY_TO_INDEX.get(current_key, 0)
         if self._sort_field_combo.currentIndex() != target_index:
             self._sort_field_combo.blockSignals(True)
             self._sort_field_combo.setCurrentIndex(target_index)
             self._sort_field_combo.blockSignals(False)
-        self.sync_sort_direction_button(ascending)
-
-    def sync_sort_direction_button(self, ascending: bool) -> None:
-        """同步方向按钮文本与 tooltip（不使用 checked 状态）。"""
-        if ascending:
-            self._sort_dir_button.setText(ui.SORT_ASC_SYMBOL)
-            self._sort_dir_button.setToolTip(ui.SORT_DIRECTION_ASC_TOOLTIP)
-        else:
-            self._sort_dir_button.setText(ui.SORT_DESC_SYMBOL)
-            self._sort_dir_button.setToolTip(ui.SORT_DIRECTION_DESC_TOOLTIP)

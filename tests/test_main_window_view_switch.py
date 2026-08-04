@@ -320,13 +320,15 @@ def test_card_list_model_shares_data_with_file_list_model(qapp, main_window_env)
 
 
 def test_sort_field_combo_initial_state(main_window_env) -> None:
-    """初始化时排序下拉框默认为名称，方向按钮显示 ▲。"""
+    """初始化时排序下拉框默认为名称，且下拉框内含升降序项（BugFix3）。"""
     window, _, _ = main_window_env
     from app import ui_constants as ui
-    from app.file_list_model import SORT_NAME
+    from app.file_list_model import SORT_DIRECTION_ASC, SORT_DIRECTION_DESC, SORT_NAME
 
     assert window._sort_field_combo.currentData() == SORT_NAME  # noqa: SLF001
-    assert window._sort_dir_button.text() == ui.SORT_ASC_SYMBOL  # noqa: SLF001
+    assert window._sort_field_combo.findData(SORT_DIRECTION_ASC) >= 0  # noqa: SLF001
+    assert window._sort_field_combo.findData(SORT_DIRECTION_DESC) >= 0  # noqa: SLF001
+    assert ui.SORT_DIRECTION_ASC_LABEL == "升序 ▲"
 
 
 def test_sort_field_combo_changes_model_sort(qapp, main_window_env) -> None:
@@ -350,33 +352,37 @@ def test_sort_field_combo_changes_model_sort(qapp, main_window_env) -> None:
     assert window._content_list_model.current_sort_key() == SORT_SIZE  # noqa: SLF001
 
 
-def test_sort_direction_button_toggles(qapp, main_window_env) -> None:
-    """方向按钮点击后翻转方向，文本在 ▲/▼ 间切换。"""
+def test_sort_direction_item_toggles_both_ways(qapp, main_window_env) -> None:
+    """下拉框升降序项（BugFix3）双向切换：降序 → 升序。"""
     window, _, _ = main_window_env
-    from app import ui_constants as ui
+    from app.file_list_model import SORT_DIRECTION_ASC, SORT_DIRECTION_DESC
 
     _select_root(qapp, window)
     qapp.processEvents()
 
-    # 默认升序 ▲
-    assert window._sort_dir_button.text() == ui.SORT_ASC_SYMBOL  # noqa: SLF001
+    # 默认升序
     assert window._content_list_model.is_sort_ascending() is True  # noqa: SLF001
+    combo = window._sort_field_combo  # noqa: SLF001
+    desc_idx = combo.findData(SORT_DIRECTION_DESC)
+    asc_idx = combo.findData(SORT_DIRECTION_ASC)
 
-    # 点击 → 降序 ▼
-    window._sort_dir_button.click()  # noqa: SLF001
+    # 按下降序项 → 降序
+    combo.view().pressed.emit(combo.model().index(desc_idx, 0))  # noqa: SLF001
+    combo.activated.emit(desc_idx)  # release（鼠标路径去重）
+    combo.hidePopup()  # 弹窗关闭（真实交互中 release 后 Qt 自动关闭）
     qapp.processEvents()
-    assert window._sort_dir_button.text() == ui.SORT_DESC_SYMBOL  # noqa: SLF001
     assert window._content_list_model.is_sort_ascending() is False  # noqa: SLF001
 
-    # 再点击 → 升序 ▲
-    window._sort_dir_button.click()  # noqa: SLF001
+    # 再次按下升序项 → 升序
+    combo.view().pressed.emit(combo.model().index(asc_idx, 0))  # noqa: SLF001
+    combo.activated.emit(asc_idx)
+    combo.hidePopup()
     qapp.processEvents()
-    assert window._sort_dir_button.text() == ui.SORT_ASC_SYMBOL  # noqa: SLF001
     assert window._content_list_model.is_sort_ascending() is True  # noqa: SLF001
 
 
 def test_header_click_syncs_sort_controls(qapp, main_window_env) -> None:
-    """点击列头排序后下拉框与方向按钮同步。"""
+    """点击列头排序后下拉框与排序方向同步。"""
     window, _, _ = main_window_env
     from app.file_list_model import SORT_SIZE
 
@@ -389,15 +395,13 @@ def test_header_click_syncs_sort_controls(qapp, main_window_env) -> None:
 
     # 下拉框同步到大小
     assert window._sort_field_combo.currentData() == SORT_SIZE  # noqa: SLF001
-    # 方向按钮默认升序 ▲
-    from app import ui_constants as ui
+    # 默认升序
+    assert window._content_list_model.is_sort_ascending() is True  # noqa: SLF001
 
-    assert window._sort_dir_button.text() == ui.SORT_ASC_SYMBOL  # noqa: SLF001
-
-    # 再次点击同列 → 降序，方向按钮显示 ▼
+    # 再次点击同列 → 降序
     window._on_content_header_clicked(2)  # noqa: SLF001
     qapp.processEvents()
-    assert window._sort_dir_button.text() == ui.SORT_DESC_SYMBOL  # noqa: SLF001
+    assert window._content_list_model.is_sort_ascending() is False  # noqa: SLF001
 
 
 def test_sort_field_combo_activated_on_same_item(qapp, main_window_env) -> None:
@@ -448,11 +452,151 @@ def test_sort_field_combo_switch_all_fields(qapp, main_window_env) -> None:
         assert window._content_list_model.current_sort_key() == sort_key  # noqa: SLF001
 
 
-def test_sort_direction_button_not_checkable(main_window_env) -> None:
-    """Task 2 验收修复：方向按钮不使用 checkable（避免蓝色高亮）。"""
+def test_sort_field_combo_mouse_press_applies_immediately(qapp, main_window_env) -> None:
+    """BugFix3：弹出列表鼠标按下即生效，轻微移动不再丢点击。
+
+    用户反馈：点击排序项时鼠标有微量滑动位移，就会导致点一次不生效
+    （Qt 在 popup 中按下后若 press/release 位置不一致，release 可能不再
+    发 activated）。修复：监听 popup 视图 pressed 信号，按下即应用排序；
+    activated 仅保留给键盘路径，并配合去重标志避免鼠标路径重复执行。
+    """
     window, _, _ = main_window_env
-    assert window._sort_dir_button.isCheckable() is False  # noqa: SLF001
-    assert window._sort_dir_button.isChecked() is False  # noqa: SLF001
+    from app.file_list_model import SORT_SIZE
+
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    combo = window._sort_field_combo  # noqa: SLF001
+    size_idx = combo.findData(SORT_SIZE)
+    # 模拟鼠标按下（release 可能被 Qt 判定为"位移取消"而不再发 activated）
+    combo.view().pressed.emit(combo.model().index(size_idx, 0))
+    qapp.processEvents()
+
+    assert window._content_list_model.current_sort_key() == SORT_SIZE  # noqa: SLF001
+
+
+def test_sort_field_combo_press_then_activated_no_double_apply(qapp, main_window_env) -> None:
+    """BugFix3：鼠标按下后 release 正常触发 activated 时不重复/不覆盖。
+
+    鼠标路径先按 pressed 应用排序；随后 release 触发的 activated 应被
+    去重跳过（保持"按下即选中"语义），不得把排序切回 release 位置项。
+    """
+    window, _, _ = main_window_env
+    from app.file_list_model import SORT_SIZE, SORT_TYPE
+
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    combo = window._sort_field_combo  # noqa: SLF001
+    size_idx = combo.findData(SORT_SIZE)
+    type_idx = combo.findData(SORT_TYPE)
+
+    combo.view().pressed.emit(combo.model().index(size_idx, 0))  # noqa: SLF001
+    qapp.processEvents()
+    combo.activated.emit(type_idx)  # release 触发（鼠标路径，应被去重）
+    qapp.processEvents()
+
+    assert window._content_list_model.current_sort_key() == SORT_SIZE  # noqa: SLF001
+
+
+def test_sort_field_combo_keyboard_activated_still_applies(qapp, main_window_env) -> None:
+    """BugFix3：键盘路径（无鼠标 press）activated 仍正常切换排序。"""
+    window, _, _ = main_window_env
+    from app.file_list_model import SORT_TYPE
+
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    combo = window._sort_field_combo  # noqa: SLF001
+    type_idx = combo.findData(SORT_TYPE)
+    combo.activated.emit(type_idx)
+    qapp.processEvents()
+
+    assert window._content_list_model.current_sort_key() == SORT_TYPE  # noqa: SLF001
+
+
+def test_sort_combo_press_syncs_combo_display(qapp, main_window_env) -> None:
+    """BugFix3 验收修复：按下即排序后，下拉框显示立即跟随。
+
+    用户反馈：快速滑动时排序已生效、列表已变，但下拉框显示未变。
+    按下即排序后必须同步控件显示，不依赖 Qt 的 release 更新 currentIndex。
+    """
+    window, _, _ = main_window_env
+    from app.file_list_model import SORT_SIZE
+
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    combo = window._sort_field_combo  # noqa: SLF001
+    size_idx = combo.findData(SORT_SIZE)
+    combo.view().pressed.emit(combo.model().index(size_idx, 0))  # noqa: SLF001
+    qapp.processEvents()
+
+    assert window._content_list_model.current_sort_key() == SORT_SIZE  # noqa: SLF001
+    assert combo.currentIndex() == size_idx
+
+
+def test_sort_combo_fast_slide_release_restores_pressed_display(qapp, main_window_env) -> None:
+    """BugFix3 验收修复：按下后快速滑动释放到其他项，显示保持按下项。"""
+    window, _, _ = main_window_env
+    from app.file_list_model import SORT_SIZE, SORT_TYPE
+
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    combo = window._sort_field_combo  # noqa: SLF001
+    size_idx = combo.findData(SORT_SIZE)
+    type_idx = combo.findData(SORT_TYPE)
+
+    combo.view().pressed.emit(combo.model().index(size_idx, 0))  # noqa: SLF001
+    qapp.processEvents()
+    combo.activated.emit(type_idx)  # 释放位置在其他项（Qt 会覆盖 currentIndex）
+    qapp.processEvents()
+
+    assert window._content_list_model.current_sort_key() == SORT_SIZE  # noqa: SLF001
+    assert combo.currentIndex() == size_idx
+
+
+def test_sort_combo_direction_item_switches_direction(qapp, main_window_env) -> None:
+    """BugFix3：下拉框内降序项切换方向，字段保持不变，显示恢复为字段项。"""
+    window, _, _ = main_window_env
+    from app.file_list_model import SORT_DIRECTION_DESC, SORT_NAME
+
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    combo = window._sort_field_combo  # noqa: SLF001
+    name_idx = combo.findData(SORT_NAME)
+    desc_idx = combo.findData(SORT_DIRECTION_DESC)
+
+    combo.view().pressed.emit(combo.model().index(desc_idx, 0))  # noqa: SLF001
+    qapp.processEvents()
+
+    assert window._content_list_model.is_sort_ascending() is False  # noqa: SLF001
+    assert window._content_list_model.current_sort_key() == SORT_NAME  # noqa: SLF001
+    assert combo.currentIndex() == name_idx
+
+
+def test_sort_combo_direction_item_keyboard_path(qapp, main_window_env) -> None:
+    """BugFix3：先按下切降序，再键盘选择升序，两条路径均生效。"""
+    window, _, _ = main_window_env
+    from app.file_list_model import SORT_DIRECTION_ASC, SORT_DIRECTION_DESC
+
+    _select_root(qapp, window)
+    qapp.processEvents()
+
+    combo = window._sort_field_combo  # noqa: SLF001
+    desc_idx = combo.findData(SORT_DIRECTION_DESC)
+    asc_idx = combo.findData(SORT_DIRECTION_ASC)
+
+    combo.view().pressed.emit(combo.model().index(desc_idx, 0))  # noqa: SLF001
+    combo.activated.emit(desc_idx)  # release（鼠标路径去重）
+    combo.hidePopup()  # 弹窗关闭（真实交互中 release 后 Qt 自动关闭）
+    qapp.processEvents()
+    combo.activated.emit(asc_idx)  # 键盘路径（无 press 标志）
+    qapp.processEvents()
+
+    assert window._content_list_model.is_sort_ascending() is True  # noqa: SLF001
 
 
 def test_card_grid_size_set(main_window_env) -> None:

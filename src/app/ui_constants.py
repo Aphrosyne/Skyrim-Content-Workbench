@@ -572,14 +572,14 @@ SORT_DESC_SYMBOL = "▼"
 
 # Stage 5 Task 2：排序下拉框（Q2=A 列表/卡片视图共享）
 SORT_FIELD_LABEL = "排序"
-SORT_FIELD_TOOLTIP = "选择排序字段（列表/卡片视图共享）"
+SORT_FIELD_TOOLTIP = "选择排序字段与升降序（列表/卡片视图共享）"
 SORT_FIELD_NAME = "名称"
 SORT_FIELD_TYPE = "类型"
 SORT_FIELD_SIZE = "大小"
 SORT_FIELD_MODIFIED = "修改日期"
-# 排序方向按钮
-SORT_DIRECTION_ASC_TOOLTIP = "升序（点击切换为降序）"
-SORT_DIRECTION_DESC_TOOLTIP = "降序（点击切换为升序）"
+# BugFix3（2026-08-04）：下拉框内升降序项（资源管理器式）
+SORT_DIRECTION_ASC_LABEL = "升序 ▲"
+SORT_DIRECTION_DESC_LABEL = "降序 ▼"
 
 # Stage 5 Task 2：前进/后退目录导航
 NAV_BACK_TOOLTIP = "后退（上一个目录）"
