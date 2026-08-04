@@ -22,6 +22,9 @@
     `_build_right_panel` 子方法
   - MainWindow 保留窗口装配、薄委托、测试接口与少量窗口级 handler；
     全部 247 个 main_window 测试与全量 1449 个测试保持通过
+  - 测试隔离修复：conftest autouse fixture 每个测试前后清理默认 QSettings 的
+    `recent_move_targets` / `recent_tags` 键，根治既有用例把最近移动目标写入
+    真实注册表导致的跨用例/跨进程污染
     （[main_window.py](src/app/main_window.py) / [navigation_controller.py](src/app/navigation_controller.py) /
     [view_state_controller.py](src/app/view_state_controller.py) / [search_controller.py](src/app/search_controller.py) /
     [tree_roots_controller.py](src/app/tree_roots_controller.py) / [context_menu_builder.py](src/app/context_menu_builder.py) /
