@@ -33,6 +33,25 @@
     [shortcut_registry.py](src/app/shortcut_registry.py) / [scan_ui_state.py](src/app/scan_ui_state.py) /
     [content_views.py](src/app/content_views.py)）
 
+**提取内容（剥离）+ Mod 组元数据继承（操作便捷性1 / 操作合理性5，2026-08-04）**：
+  - 新增「提取内容」：中栏右键普通文件夹（未标记内容单元）→ 确认后把文件夹内
+    顶层条目提取到上级目录，清空后文件夹移入回收站；冲突复用现有解决对话框
+    （重命名/跳过/覆盖）；汇总写一条 `strip` 操作历史（不可撤销，与 copy/delete 一致）
+  - 新增 `StripService`（应用层）：前置校验（仅普通文件夹/非空）+ 冲突扫描 +
+    子项逐个 move（自动同步 folder_cache / ContentUnit.path）+ 空文件夹回收站删除
+  - schema v14：`operation_history.operation_type` CHECK 约束扩展 `'strip'`（幂等迁移）
+  - 创建 Mod 组继承元数据：来源 URL / 备注取显示顺序第一个非空、标签取并集，
+    在源文件移动前快照（move 会改写 ContentUnit.path）、新文件夹标记后应用；
+    成功提示追加「（已继承来源/备注/标签）」
+  - 中文路径、部分失败（子项失败不中断、文件夹未清空则不删除）、空文件夹拒绝均覆盖
+  （[strip_service.py](src/application/strip_service.py) /
+  [content_unit_creation_service.py](src/application/content_unit_creation_service.py) /
+  [context_menu_builder.py](src/app/context_menu_builder.py) /
+  [file_operations_controller.py](src/app/file_operations_controller.py) /
+  [migrations.py](src/infrastructure/migrations.py) /
+  [test_strip_service.py](tests/test_strip_service.py) /
+  [test_main_window_strip.py](tests/test_main_window_strip.py)）
+
 ## [0.50.12] - 2026-08-04
 
 **内容单元标记可配置（UI合理性21）**：
