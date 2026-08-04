@@ -42,7 +42,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QItemSelectionModel, QPoint, QSettings, QSize, Qt
+from PySide6.QtCore import QPoint, QSettings, QSize, Qt
 from PySide6.QtGui import QFontMetrics, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -96,6 +96,7 @@ from app.folder_tree_model import FolderTreeModel
 from app.main_menu_bar import MainMenuBar
 from app.metadata_panel import MetadataPanel
 from app.metadata_view import MetadataView
+from app.navigation_controller import NavigationController
 from app.path_display import make_display_path_from_service
 from app.recent_move_targets import RecentMoveTargets
 from app.recent_tags import RecentTags
@@ -106,6 +107,7 @@ from app.tag_filter import TagFilterBar
 from app.tag_manager_dialog import TagManagerDialog
 from app.thumbnail_coordinator import ThumbnailCoordinator
 from app.transaction_scope import TransactionScope
+from app.view_state_controller import ViewStateController
 from application.assembly_service import AssemblyService
 from application.clipboard_service import ClipboardService
 from application.content_service import ContentService
@@ -214,15 +216,6 @@ class MainWindow(QMainWindow):
         self._recent_move_targets = RecentMoveTargets(self._qsettings)
         # UI合理性8（2026-08-02）：最近使用标签（面板最近区 / 右键「添加最近标签」）
         self._recent_tags = RecentTags(self._qsettings)
-        self._current_view_index: int = VIEW_INDEX_LIST  # 默认列表视图
-        self._card_icon_size: int = ui.ZOOM_SLIDER_DEFAULT
-
-        # Stage 5 Task 2：目录导航历史栈（UX 重构 Phase 1 移除模式后始终记录）
-        self._nav_back_stack: list[str] = []
-        self._nav_forward_stack: list[str] = []
-        self._current_nav_path: str | None = None
-        # 历史导航触发的切换标记，防止 _refresh_content_list 再次入栈导致循环
-        self._navigating_from_history: bool = False
         # 操作便捷性7：目录 → 最后一次选中路径列表（后退/前进时恢复）
         self._selection_memory = SelectionMemory()
 
@@ -230,6 +223,31 @@ class MainWindow(QMainWindow):
         self.resize(ui.WINDOW_DEFAULT_WIDTH, ui.WINDOW_DEFAULT_HEIGHT)
 
         self._setup_ui()
+        # TD-M21 阶段 2：导航历史与视图状态控制器（状态归控制器，MainWindow 镜像/委托）
+        self._navigation_controller = NavigationController(
+            self._tree_model,
+            self._tree_view,
+            self._nav_back_button,
+            self._nav_forward_button,
+            refresh_content_list=self._refresh_content_list,
+            set_metadata_not_selected=lambda: self._set_metadata_text(ui.METADATA_NOT_SELECTED),
+            parent=self,
+        )
+        self._view_state_controller = ViewStateController(
+            content_stack=self._content_stack,
+            content_view=self._content_view,
+            card_view=self._card_view,
+            content_list_model=self._content_list_model,
+            card_list_model=self._card_list_model,
+            menu_bar=self._menu_bar,
+            view_list_button=self._view_list_button,
+            view_card_button=self._view_card_button,
+            zoom_combo=self._zoom_combo,
+            sort_field_combo=self._sort_field_combo,
+            sort_dir_button=self._sort_dir_button,
+            qsettings=self._qsettings,
+            parent=self,
+        )
         # UX 重构 Task 7 Step 3/4：装配面板与元数据控制器
         self._assembly_controller = AssemblyController(self._assembly_panel, self)
         self._metadata_view = MetadataView(
@@ -276,6 +294,38 @@ class MainWindow(QMainWindow):
         self._card_list_model.set_thumbnail_provider(self._card_thumbnail_provider)
         # UI合理性5：列表视图封面图标 provider（只读复用现有缓存，不产生新缓存）
         self._content_list_model.set_cover_icon_provider(self._list_cover_icon_provider)
+
+    # --- TD-M21 阶段 2：导航/视图状态镜像属性（测试兼容，状态归控制器） ---
+
+    @property
+    def _nav_back_stack(self) -> list[str]:
+        """后退栈（NavigationController 持有的同一列表对象，供测试读取）。"""
+        return self._navigation_controller.back_stack()
+
+    @property
+    def _nav_forward_stack(self) -> list[str]:
+        """前进栈（NavigationController 持有的同一列表对象，供测试读取）。"""
+        return self._navigation_controller.forward_stack()
+
+    @property
+    def _current_nav_path(self) -> str | None:
+        """当前浏览目录路径（状态归 NavigationController）。"""
+        return self._navigation_controller.current_path()
+
+    @property
+    def _navigating_from_history(self) -> bool:
+        """历史导航切换标记（状态归 NavigationController）。"""
+        return self._navigation_controller.is_navigating_from_history()
+
+    @property
+    def _current_view_index(self) -> int:
+        """当前活动视图索引（0=列表，1=卡片，状态归 ViewStateController）。"""
+        return self._view_state_controller.current_view_index()
+
+    @property
+    def _card_icon_size(self) -> int:
+        """当前卡片图标尺寸（状态归 ViewStateController）。"""
+        return self._view_state_controller.card_icon_size()
 
     def _list_cover_icon_provider(self, content_unit_id: str, source_path: str) -> QIcon | None:
         """列表视图封面图标：只读复用 256 档封面缓存，缩放到 64×64（UI合理性5）。"""
@@ -1177,140 +1227,40 @@ class MainWindow(QMainWindow):
             self._bind_assembly_panel(None)
 
     def _on_content_header_clicked(self, column: int) -> None:  # noqa: N802 (Qt 命名)
-        """文件列表列头点击：切换排序键，同列再点切换升降序。
-
-        阶段 3 Task 2：列头排序。点击不同列切换排序键；点击同列切换升降序。
-        Stage 5 Task 2：同步排序下拉框与方向按钮状态。
-        """
-        key_map = {
-            0: SORT_NAME,
-            1: SORT_TYPE,
-            2: SORT_SIZE,
-            3: SORT_MODIFIED,
-        }
-        new_key = key_map.get(column)
-        if new_key is None:
-            return
-        current_key = self._content_list_model.current_sort_key()
-        if new_key == current_key:
-            # 同列：翻转升降序
-            self._content_list_model.set_sort_key(
-                new_key, not self._content_list_model.is_sort_ascending()
-            )
-        else:
-            # 不同列：切换排序键，默认升序
-            self._content_list_model.set_sort_key(new_key, True)
-        self._sync_sort_controls()
+        """文件列表列头点击：切换排序键，同列再点切换升降序（委托 ViewStateController）。"""
+        self._view_state_controller.on_content_header_clicked(column)
 
     # --- Stage 5 Task 2：排序下拉框 + 方向按钮 ---
 
-    _SORT_KEY_TO_INDEX = {
-        SORT_NAME: 0,
-        SORT_TYPE: 1,
-        SORT_SIZE: 2,
-        SORT_MODIFIED: 3,
-    }
-
     def _on_sort_field_activated(self, combo_index: int) -> None:
-        """排序字段下拉框 activated 信号：用户主动点击下拉项时触发。
-
-        Stage 5 Task 2 验收修复（最终版）：仅用 activated 单信号。
-        - activated 在用户点击下拉项时触发，程序化 setCurrentIndex 不触发
-          （避免 _sync_sort_controls 同步时死循环）
-        - “选当前项重新排序”无产品意义，不予支持（currentIndex 不变时
-          Qt 不会触发 activated，此场景下排序不变是预期行为）
-        - 幂等保护：若 sort_key 与当前一致且方向也未变，set_sort_key 内部
-          会提前返回，避免重复 reset model 造成 view 异常
-        """
-        sort_key = self._sort_field_combo.itemData(combo_index)
-        if sort_key is None:
-            return
-        ascending = self._content_list_model.is_sort_ascending()
-        self._content_list_model.set_sort_key(sort_key, ascending)
-        self._sync_sort_direction_button(ascending)
+        """排序字段下拉框 activated 信号（委托 ViewStateController）。"""
+        self._view_state_controller.on_sort_field_activated(combo_index)
 
     def _on_sort_direction_clicked(self) -> None:
-        """升降序按钮点击：翻转方向（不依赖 checked 状态，从 model 读取当前方向取反）。"""
-        ascending = not self._content_list_model.is_sort_ascending()
-        current_key = self._content_list_model.current_sort_key()
-        self._content_list_model.set_sort_key(current_key, ascending)
-        self._sync_sort_direction_button(ascending)
+        """升降序按钮点击（委托 ViewStateController）。"""
+        self._view_state_controller.on_sort_direction_clicked()
 
     def _sync_sort_controls(self) -> None:
-        """同步排序下拉框与方向按钮到 FileListModel 当前状态。
-
-        Stage 5 Task 2 验收修复（最终版）：activated 不受 blockSignals 影响
-        （程序化 setCurrentIndex 本就不触发 activated），blockSignals 仅用于
-        阻止 currentIndexChanged——当前已不连接该信号，保留 blockSignals 作为
-        防御性措施，避免未来误连接其他信号时死循环。
-        """
-        current_key = self._content_list_model.current_sort_key()
-        ascending = self._content_list_model.is_sort_ascending()
-        target_index = self._SORT_KEY_TO_INDEX.get(current_key, 0)
-        if self._sort_field_combo.currentIndex() != target_index:
-            self._sort_field_combo.blockSignals(True)
-            self._sort_field_combo.setCurrentIndex(target_index)
-            self._sort_field_combo.blockSignals(False)
-        self._sync_sort_direction_button(ascending)
+        """同步排序下拉框与方向按钮（委托 ViewStateController）。"""
+        self._view_state_controller.sync_sort_controls()
 
     def _sync_sort_direction_button(self, ascending: bool) -> None:
-        """同步方向按钮文本与 tooltip（不使用 checked 状态）。"""
-        if ascending:
-            self._sort_dir_button.setText(ui.SORT_ASC_SYMBOL)
-            self._sort_dir_button.setToolTip(ui.SORT_DIRECTION_ASC_TOOLTIP)
-        else:
-            self._sort_dir_button.setText(ui.SORT_DESC_SYMBOL)
-            self._sort_dir_button.setToolTip(ui.SORT_DIRECTION_DESC_TOOLTIP)
+        """同步方向按钮文本与 tooltip（委托 ViewStateController）。"""
+        self._view_state_controller.sync_sort_direction_button(ascending)
 
     # --- Stage 5 Task 2：前进/后退目录导航 ---
 
     def _on_nav_back_clicked(self) -> None:
-        """后退按钮：切换到上一个浏览目录。"""
-        if not self._nav_back_stack:
-            return
-        current = self._current_nav_path
-        target = self._nav_back_stack.pop()
-        if current is not None:
-            self._nav_forward_stack.append(current)
-        self._navigating_from_history = True
-        try:
-            # 先更新当前路径，使导航期间恢复选中触发的 selectionChanged
-            # 把记忆归属到正确目录（操作便捷性7）
-            self._current_nav_path = target
-            self._navigate_to_directory(target)
-        finally:
-            self._navigating_from_history = False
-        self._update_nav_buttons()
+        """后退按钮：切换到上一个浏览目录（委托 NavigationController）。"""
+        self._navigation_controller.navigate_back()
 
     def _on_nav_forward_clicked(self) -> None:
-        """前进按钮：切换到下一个浏览目录。"""
-        if not self._nav_forward_stack:
-            return
-        current = self._current_nav_path
-        target = self._nav_forward_stack.pop()
-        if current is not None:
-            self._nav_back_stack.append(current)
-        self._navigating_from_history = True
-        try:
-            # 同上：先更新当前路径，避免恢复选中时记忆错归属目录
-            self._current_nav_path = target
-            self._navigate_to_directory(target)
-        finally:
-            self._navigating_from_history = False
-        self._update_nav_buttons()
+        """前进按钮：切换到下一个浏览目录（委托 NavigationController）。"""
+        self._navigation_controller.navigate_forward()
 
     def _navigate_to_directory(self, dir_path: str) -> None:
-        """切换到指定目录（通过目录树选中触发，复用既有刷新链路）。
-
-        未在目录树中找到节点时回退到直接刷新文件列表。
-        """
-        target_idx = self._tree_model.find_index_by_path(self._tree_view, dir_path)
-        if target_idx.isValid():
-            self._tree_view.setCurrentIndex(target_idx)
-        else:
-            # 未扫描的子目录：直接刷新中栏（不走 tree selection 链路）
-            self._refresh_content_list(dir_path)
-            self._set_metadata_text(ui.METADATA_NOT_SELECTED)
+        """切换到指定目录（委托 NavigationController）。"""
+        self._navigation_controller.navigate_to(dir_path)
 
     # === Stage 5 Task 7：全局搜索 ===
 
@@ -1414,146 +1364,34 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(100, _select_in_content_list)
 
     def _content_view_current(self) -> QAbstractItemView | None:
-        """返回当前激活的内容视图（列表或卡片）。"""
-        current_widget = self._content_stack.currentWidget()
-        if current_widget is self._content_view:
-            return self._content_view
-        if current_widget is self._card_view:
-            return self._card_view
-        return None
+        """返回当前激活的内容视图（列表或卡片，委托 ViewStateController）。"""
+        return self._view_state_controller.content_view_current()
 
     def _record_nav_history(self, dir_path: str) -> None:
-        """记录浏览历史（非历史导航时调用）。
-
-        - 相邻相同路径不入栈（避免重复）
-        - 历史导航触发的切换不记录（避免循环）
-        """
-        if self._navigating_from_history:
-            return
-        # 相邻相同路径去重
-        if self._current_nav_path == dir_path:
-            return
-        if self._current_nav_path is not None:
-            self._nav_back_stack.append(self._current_nav_path)
-        # 进入新目录时清空前进栈（标准浏览器行为）
-        self._nav_forward_stack.clear()
-        self._current_nav_path = dir_path
-        self._update_nav_buttons()
+        """记录浏览历史（委托 NavigationController）。"""
+        self._navigation_controller.record(dir_path)
 
     def _update_nav_buttons(self) -> None:
-        """根据栈状态更新前进/后退按钮可用性。"""
-        self._nav_back_button.setEnabled(len(self._nav_back_stack) > 0)
-        self._nav_forward_button.setEnabled(len(self._nav_forward_stack) > 0)
+        """根据栈状态更新前进/后退按钮可用性（委托 NavigationController）。"""
+        self._navigation_controller.update_buttons()
 
     # --- Stage 5 Task 1：视图切换 + 缩放 ---
 
     def _switch_view(self, view_index: int) -> None:
-        """切换文件列表视图（列表 ↔ 卡片）。
-
-        Q1=A：视图切换按钮组独立一行。
-        Q4=A：选中状态跨视图保持（用 entry.path 匹配，行号可能因排序不同而变化）。
-        """
-        if view_index == self._current_view_index:
-            return
-        # 记录当前选中条目的 path 集合（从当前活动视图读取）
-        selected_paths: set[str] = set()
-        current_view = (
-            self._card_view if self._current_view_index == VIEW_INDEX_CARD else self._content_view
-        )
-        current_model = (
-            self._card_list_model
-            if self._current_view_index == VIEW_INDEX_CARD
-            else self._content_list_model
-        )
-        sm = current_view.selectionModel()
-        if sm is not None:
-            for idx in sm.selectedRows():
-                entry = current_model.entry_at(idx.row())
-                if entry is not None:
-                    selected_paths.add(entry.path)
-        # 切换视图
-        self._content_stack.setCurrentIndex(view_index)
-        self._current_view_index = view_index
-        # 在新视图中恢复选中
-        target_view = self._card_view if view_index == VIEW_INDEX_CARD else self._content_view
-        target_model = (
-            self._card_list_model if view_index == VIEW_INDEX_CARD else self._content_list_model
-        )
-        target_sm = target_view.selectionModel()
-        if target_sm is not None and selected_paths:
-            # 清除现有选中
-            target_sm.clearSelection()
-            # 按 path 重新选中对应行（select 会自动触发 selectionChanged 信号）
-            # 注意：QTableView 多列场景必须用 Select | Rows 才能选中整行，
-            # 仅 Select 只选中 (row, 0) 单元格，selectedRows() 返回空。
-            for row in range(target_model.rowCount()):
-                entry = target_model.entry_at(row) if hasattr(target_model, "entry_at") else None
-                if entry is not None and entry.path in selected_paths:
-                    idx = target_model.index(row, 0)
-                    target_sm.select(
-                        idx,
-                        QItemSelectionModel.SelectionFlag.Select
-                        | QItemSelectionModel.SelectionFlag.Rows,
-                    )
-        # 持久化视图模式（Q1=A）
-        view_mode = "card" if view_index == VIEW_INDEX_CARD else "list"
-        self._qsettings.setValue(ui.QSETTINGS_KEY_VIEW_MODE, view_mode)
-        # UI合理性3：同步菜单栏视图选中态
-        self._menu_bar.set_view(view_mode)
-        # UI合理性3 验收反馈：菜单切换时同步中栏列表/卡片按钮选中态
-        # （按钮自身点击时 Qt 已自动勾选，此处幂等）
-        if view_index == VIEW_INDEX_CARD:
-            self._view_card_button.setChecked(True)
-        else:
-            self._view_list_button.setChecked(True)
+        """切换文件列表视图（列表 ↔ 卡片，委托 ViewStateController）。"""
+        self._view_state_controller.switch_view(view_index)
 
     def _on_zoom_combo_changed(self, index: int) -> None:
-        """缩放下拉框变化：应用缩放并持久化。"""
-        size = self._zoom_combo.itemData(index)
-        if not isinstance(size, int):
-            return
-        self._apply_zoom(size)
+        """缩放下拉框变化：应用缩放并持久化（委托 ViewStateController）。"""
+        self._view_state_controller.on_zoom_combo_changed(index)
 
     def _apply_zoom(self, value: int) -> None:
-        """应用缩放值：调整卡片图标尺寸并持久化。"""
-        self._card_icon_size = value
-        self._card_view.setIconSize(QSize(value, value))
-        # Task 2 验收修复：iconSize 变化时同步 gridSize，保持固定网格
-        self._card_view.setGridSize(
-            QSize(
-                value + ui.CARD_GRID_PADDING_H,
-                value + ui.CARD_GRID_PADDING_V,
-            )
-        )
-        self._card_list_model.set_icon_size(value)
-        self._card_view.doItemsLayout()
-        self._qsettings.setValue(ui.QSETTINGS_KEY_ZOOM, value)
+        """应用缩放值：调整卡片图标尺寸并持久化（委托 ViewStateController）。"""
+        self._view_state_controller.apply_zoom(value)
 
     def _restore_view_state(self) -> None:
-        """从 QSettings 恢复缩放值与视图模式（Q1=A）。"""
-        zoom = self._qsettings.value(ui.QSETTINGS_KEY_ZOOM, ui.ZOOM_SLIDER_DEFAULT, type=int)
-        if zoom in ui.ZOOM_PRESET_SIZES:
-            index = ui.ZOOM_PRESET_SIZES.index(zoom)
-            self._zoom_combo.setCurrentIndex(index)
-            self._card_view.setIconSize(QSize(zoom, zoom))
-            # Task 2 验收修复：恢复时同步 gridSize
-            self._card_view.setGridSize(
-                QSize(
-                    zoom + ui.CARD_GRID_PADDING_H,
-                    zoom + ui.CARD_GRID_PADDING_V,
-                )
-            )
-            self._card_list_model.set_icon_size(zoom)
-            self._card_view.doItemsLayout()
-            self._card_icon_size = zoom
-        # 恢复视图模式
-        view_mode = self._qsettings.value(ui.QSETTINGS_KEY_VIEW_MODE, "list", type=str)
-        if view_mode == "card":
-            self._view_card_button.setChecked(True)
-            self._switch_view(VIEW_INDEX_CARD)
-        else:
-            self._view_list_button.setChecked(True)
-            self._switch_view(VIEW_INDEX_LIST)
+        """从 QSettings 恢复缩放值与视图模式（委托 ViewStateController）。"""
+        self._view_state_controller.restore_state()
 
     def _restore_splitter_state(self) -> None:
         """UI合理性2：恢复分割线尺寸（无存档时应用默认比例，接线级）。"""
@@ -1606,9 +1444,8 @@ class MainWindow(QMainWindow):
         self._content_view.viewport().update()
 
     def _on_menu_view_switch(self, mode: str) -> None:
-        """UI合理性3：菜单视图切换 → 复用既有 _switch_view。"""
-        view_index = VIEW_INDEX_CARD if mode == "card" else VIEW_INDEX_LIST
-        self._switch_view(view_index)
+        """UI合理性3：菜单视图切换（委托 ViewStateController）。"""
+        self._view_state_controller.menu_view_switch(mode)
 
     def _on_open_in_explorer(self, path: str) -> None:
         """在 Windows 资源管理器中打开并选中指定路径（Stage 5 Task 1）。
