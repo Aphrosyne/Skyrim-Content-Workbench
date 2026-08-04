@@ -615,6 +615,59 @@ def test_assembly_file_op_delete(qapp, main_window_env, monkeypatch) -> None:
     assert window.assembly_panel_entry_count() == 1
 
 
+def test_pinned_assembly_delete_keeps_middle_directory(qapp, main_window_env, monkeypatch) -> None:
+    """修复：钉住文件夹后，在装配面板删除文件 → 中栏不跳入被钉住的文件夹。"""
+    window, _, root_dir, _ = main_window_env
+    _select_staging(qapp, window)
+    qapp.processEvents()
+
+    unit, mod_folder = _create_mod_group(qapp, window, "BDOR Black Knight 1.0.7z", "ModA")
+    (mod_folder / "extra.txt").write_text("data", encoding="utf-8")
+    window._assembly_panel.pin()  # noqa: SLF001
+    window._assembly_panel.refresh_current()  # noqa: SLF001
+    qapp.processEvents()
+    assert window._assembly_panel.entry_count() == 2
+
+    # 中栏当前显示暂存区（Stash）内容
+    def _middle_names() -> set[str]:
+        model = window._content_list_model  # noqa: SLF001
+        return {
+            model.entry_at(i).name
+            for i in range(model.entry_count())
+            if model.entry_at(i) is not None
+        }
+
+    assert "preview.jpg" in _middle_names()
+    assert "extra_patch.zip" in _middle_names()
+
+    # 在装配面板中找到 extra.txt 并删除
+    panel = window._assembly_panel  # noqa: SLF001
+    extra_entry = None
+    for i in range(panel.entry_count()):
+        e = panel.entry_at(i)
+        if e is not None and e.name == "extra.txt":
+            extra_entry = e
+            break
+    assert extra_entry is not None
+
+    monkeypatch.setattr(
+        "app.main_window.QMessageBox.question",
+        lambda *a, **kw: __import__("PySide6").QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+    window._on_assembly_file_op("delete", [extra_entry])  # noqa: SLF001
+    qapp.processEvents()
+
+    # 文件已删除 + 装配面板刷新
+    assert not (mod_folder / "extra.txt").exists()
+    assert window._assembly_panel.entry_count() == 1
+    # 中栏不跳入被钉住的 mod_folder，仍停留在 Stash：
+    # 列表显示 Stash 剩余条目（preview.jpg / extra_patch.zip），不含 mod_folder 内的 7z
+    names = _middle_names()
+    assert "BDOR Black Knight 1.0.7z" not in names
+    assert "preview.jpg" in names
+    assert "extra_patch.zip" in names
+
+
 def test_assembly_file_op_copy_path(qapp, main_window_env, monkeypatch) -> None:
     """装配面板右键复制路径：路径写入系统剪贴板。"""
     window, _, _, _ = main_window_env

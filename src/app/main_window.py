@@ -328,6 +328,7 @@ class MainWindow(QMainWindow):
             refresh_assembly_if_affected=self._refresh_assembly_if_affected,
             get_selected_entries=self._get_selected_entries,
             current_displayed_dir=self._current_displayed_dir,
+            current_nav_path=lambda: self._current_nav_path,
             handle_error=self._handle_service_error,
             dialog_parent=self,
             host=self,
@@ -1308,9 +1309,9 @@ class MainWindow(QMainWindow):
         """右键条目 → 重命名（委托 FileOperationsController）。"""
         self._file_operations_controller.rename_entry(entry)
 
-    def _on_delete_entries(self, entries: list[FileEntry]) -> None:
+    def _on_delete_entries(self, entries: list[FileEntry], *, refresh_middle: bool = True) -> None:
         """右键条目 → 删除（移至回收站，委托 FileOperationsController）。"""
-        self._file_operations_controller.delete_entries(entries)
+        self._file_operations_controller.delete_entries(entries, refresh_middle=refresh_middle)
 
     # --- 装配面板（阶段 3 Task 4） ---
 
@@ -1511,7 +1512,9 @@ class MainWindow(QMainWindow):
             else:
                 self._assembly_panel.refresh_current()
         elif action == "delete":
-            self._on_delete_entries(entries)
+            # 修复：装配面板删除不刷新中栏到被删文件父目录，
+            # 避免中栏跳入被钉住的文件夹（保留中栏当前显示目录）
+            self._on_delete_entries(entries, refresh_middle=False)
             self._assembly_panel.refresh_current()
         elif action == "copy_path" and len(entries) == 1:
             self._copy_path_to_clipboard(entries[0].path)

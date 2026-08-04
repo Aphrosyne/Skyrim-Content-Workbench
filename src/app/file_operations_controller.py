@@ -62,6 +62,7 @@ class FileOperationsController(QObject):
         refresh_assembly_if_affected: Callable[..., None],
         get_selected_entries: Callable[[], list[FileEntry]],
         current_displayed_dir: Callable[[], str | None],
+        current_nav_path: Callable[[], str | None],
         handle_error: Callable[[Exception, str], None],
         dialog_parent: QWidget,
         host: object,
@@ -92,6 +93,7 @@ class FileOperationsController(QObject):
         self._refresh_assembly_if_affected = refresh_assembly_if_affected
         self._get_selected_entries = get_selected_entries
         self._current_displayed_dir = current_displayed_dir
+        self._current_nav_path = current_nav_path
         self._handle_error = handle_error
         self._dialog_parent = dialog_parent
         self._host = host
@@ -224,8 +226,15 @@ class FileOperationsController(QObject):
 
     # === 删除 ===
 
-    def delete_entries(self, entries: list[FileEntry]) -> None:
-        """右键条目 → 删除（移至回收站）。"""
+    def delete_entries(self, entries: list[FileEntry], *, refresh_middle: bool = True) -> None:
+        """右键条目 → 删除（移至回收站）。
+
+        Args:
+            entries: 待删除条目列表。
+            refresh_middle: True（中栏删除）刷新中栏到被删条目父目录；
+                False（装配面板删除）保留中栏当前显示目录，避免中栏跳入
+                被钉住的文件夹（与重命名 refresh_middle 语义一致）。
+        """
         if self._file_operation_service is None:
             return
         # 确认对话框
@@ -259,6 +268,12 @@ class FileOperationsController(QObject):
         # 保存删除条目所在父目录路径（取第一个条目的父目录）：
         # _refresh_tree 后 selection 可能失效，用此路径直接刷新列表
         dir_path = str(paths[0].parent) if paths else None
+        # 装配面板删除时保留中栏当前显示目录（避免中栏跳入被钉住文件夹）。
+        # 优先取导航路径（中栏实际显示目录，目录树选中丢失时仍可靠），
+        # 回退到目录树选中节点路径。
+        preserved_display_dir = None
+        if not refresh_middle:
+            preserved_display_dir = self._current_nav_path() or self._current_displayed_dir()
         try:
             # delete_to_recycle_bin 返回 (histories, sync_errors)：
             # - SHFileOperation 失败时抛 FileOperationError（文件未删除，可 rollback）
@@ -266,7 +281,10 @@ class FileOperationsController(QObject):
             histories, sync_errors = self._file_operation_service.delete_to_recycle_bin(paths)
             self._tx.commit()
             self._refresh_tree()
-            self.refresh_content_list_after_file_op(dir_path)
+            if refresh_middle:
+                self.refresh_content_list_after_file_op(dir_path)
+            elif preserved_display_dir is not None:
+                self.restore_middle_after_tree_refresh(preserved_display_dir)
             # 修复1：若删除发生在钉住的装配面板文件夹内，同步刷新装配面板
             if dir_path is not None:
                 self._refresh_assembly_if_affected(dir_path)
