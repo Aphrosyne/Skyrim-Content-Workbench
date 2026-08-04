@@ -552,46 +552,6 @@ class ContentService:
         """
         return Path(path).suffix.lower() in _COVER_IMAGE_EXTENSIONS
 
-    def quick_set_cover(self, unit_id: str) -> bool:
-        """快速设置封面（Stage 5 Task 1）。
-
-        取内容单元目录下第一张图片（list_cover_candidates 已排序）设为封面。
-        若已有手动封面则不覆盖。仅文件夹内容单元可用。
-
-        Args:
-            unit_id: 内容单元 ID。
-
-        Returns:
-            True 表示设置成功；False 表示无可用图片或非文件夹内容单元（不报错）。
-
-        Raises:
-            ContentUnitNotFoundError: unit_id 不存在。
-        """
-        unit = self._repo.get_by_id(unit_id)
-        if unit is None:
-            raise ContentUnitNotFoundError(f"内容单元不存在：{unit_id}")
-
-        # 仅文件夹内容单元可用；压缩包内容单元直接跳过
-        try:
-            if not Path(unit.path).is_dir():
-                return False
-        except OSError:
-            return False
-
-        # 已有手动封面不覆盖
-        if unit.cover_path:
-            return False
-
-        candidates = self.list_cover_candidates(unit.path)
-        if not candidates:
-            return False  # 无图片，不报错
-
-        first = candidates[0]
-        rel_path = first.name
-        # 走 update_metadata 以复用 cover_path 校验 + 缩略图 invalidate 链路
-        self.update_metadata(unit_id, cover_path=rel_path)
-        return True
-
     def _build_entry(self, child: Path) -> FileEntry | None:
         """从单个 Path 构建 FileEntry（单次精确查询 content_unit）。跳过符号链接。"""
         try:

@@ -483,36 +483,6 @@ class ContentListController(QObject):
 
     # --- 条目级内容单元动作 ---
 
-    def on_quick_set_cover(self, unit_id: str) -> None:
-        """快速设置封面（Stage 5 Task 1）。
-
-        调用 ContentService.quick_set_cover 取目录内第一张图设为封面。
-        根据返回值在状态栏反馈结果，无图片或已有封面均不报错。
-        """
-        if self._content_service is None:
-            return
-        try:
-            ok = self._content_service.quick_set_cover(unit_id)
-        except Exception as e:  # noqa: BLE001
-            self._handle_error(e, "快速设置封面失败")
-            return
-
-        if ok:
-            self._tx.commit()
-            self._status_bar.showMessage(ui.MENU_QUICK_SET_COVER_OK, 3000)
-        else:
-            # quick_set_cover 返回 False 的语义：无图片或已有封面
-            # 需要区分两种情况给用户更精准的反馈
-            unit = self._content_service.get_by_id(unit_id)
-            if unit is None:
-                return
-            if unit.cover_path:
-                # 已有封面，未覆盖
-                self._status_bar.showMessage(ui.MENU_QUICK_SET_COVER_ALREADY_SET, 3000)
-            else:
-                # 无图片
-                self._status_bar.showMessage(ui.MENU_QUICK_SET_COVER_NO_IMAGE, 3000)
-
     # === 操作便捷性8（2026-08-04）：N 网网址自动填入 / 打开 ===
 
     def on_autofill_url(self, entry: FileEntry) -> None:

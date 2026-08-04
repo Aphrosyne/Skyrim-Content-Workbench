@@ -96,10 +96,6 @@ MENU_BATCH_UNMARK_CONTENT_UNIT = "批量取消内容单元标记"
 MENU_BATCH_TAG = "批量打标签"
 MENU_ADD_RECENT_TAG = "添加最近标签"
 # UX 重构 Phase 1 Task 2（B2-2）：移除 MENU_ADD_TO_ASSEMBLY，Task 4 由「添加到钉住文件夹」替代
-MENU_QUICK_SET_COVER = "快速设置封面"
-MENU_QUICK_SET_COVER_NO_IMAGE = "该目录无可用图片"
-MENU_QUICK_SET_COVER_ALREADY_SET = "已设置封面，未覆盖"
-MENU_QUICK_SET_COVER_OK = "封面已设置"
 # 操作便捷性8（2026-08-04）：N 网网址
 MENU_AUTOFILL_URL = "自动填入网址"
 MENU_OPEN_URL = "打开网址"
@@ -401,11 +397,6 @@ PANEL_REGION_STYLE_TEMPLATE = (
 )
 # 区块小标题（「最近使用」「已有标签」等）：独立成行、无背景、字号稍小
 PANEL_SECTION_TITLE_STYLE = "font-size: 11px; color: #888;"
-# 标签按钮本身：背景跟随容器 {bg}（与区块同色），浅灰边框区分，避免白底白字
-METADATA_TAG_BUTTON_STYLE = (
-    "QPushButton {{ background: {bg}; border: 1px solid #c0c0c0; "
-    "border-radius: 4px; padding: 2px 8px; }}"
-)
 
 # BatchTagDialog 批量打标签对话框（Stage 4 Task 2）
 BATCH_TAG_DIALOG_TITLE = "批量打标签"
@@ -665,6 +656,10 @@ QSETTINGS_KEY_URL_SEARCH_PREFIX = "url/search_prefix"
 # 归档设置（功能增加1，2026-08-04）
 QSETTINGS_KEY_ARCHIVE_ROOT = "archive/root_path"
 QSETTINGS_KEY_ARCHIVE_LAST_TARGET = "archive/last_target"
+# 右键功能开关配置（设计合理性1，2026-08-04）
+QSETTINGS_KEY_FEATURE_TOGGLE_PREFIX = "context_menu"
+# 快捷键配置（2026-08-04，设计合理性1 附带）
+QSETTINGS_KEY_SHORTCUT_PREFIX = "shortcut"
 # === 布局默认值（UI合理性2/3，2026-08-03） ===
 # 所有分割线/列宽默认值集中在此，用户可手动调整后重启生效。
 # 注意：文件列表中"名称"列使用 Stretch 模式（自动吸收剩余宽度），
@@ -689,8 +684,7 @@ MENU_VIEW_RESET_LAYOUT = "重置布局"
 MENU_VIEW_CONTENT_UNIT_MARKER = "内容单元标记设置…"
 MENU_VIEW_FILE_TYPE_ICON_COLORS = "文件类型图标颜色…"
 MENU_VIEW_URL_SETTINGS = "网址与搜索设置…"
-MENU_VIEW_SHORTCUTS = "快捷键设置…"
-MENU_VIEW_SHORTCUTS_TODO = "快捷键自定义待独立任务实现（UI合理性3 二期）"
+MENU_TOOLS_SETTINGS = "设置…"
 MENU_TOOLS_TAG_MANAGER = "标签管理…"
 MENU_TOOLS_OPERATION_HISTORY = "操作历史…"
 LAYOUT_RESET_STATUS = "布局已重置为默认比例"
@@ -718,6 +712,134 @@ URL_SETTINGS_RESET = "恢复默认"
 URL_SETTINGS_DEFAULT_NEXUS_PREFIX = "https://www.nexusmods.com/skyrimspecialedition/mods/"
 URL_SETTINGS_DEFAULT_SEARCH_ENGINE = "https://www.bing.com/search"
 URL_SETTINGS_DEFAULT_SEARCH_PREFIX = "skyrim "
+
+# === 右键功能开关（设计合理性1，2026-08-04） ===
+# group id -> 分组标题（配置界面分组显示）
+FEATURE_TOGGLE_GROUPS = {
+    "content_unit": "内容单元",
+    "network": "网络与搜索",
+    "archive": "归档",
+    "file_ops": "文件操作",
+    "view": "视图与其他",
+}
+# feature id -> 中文标签（菜单项文本一致）
+FEATURE_TOGGLE_LABELS = {
+    "create_mod_group": "创建 Mod 组",
+    "mark_content_unit": "标记/取消标记内容单元（含批量）",
+    "batch_tag": "批量打标签",
+    "recent_tag": "添加最近标签",
+    "autofill_url": "自动填入网址",
+    "open_url": "打开网址",
+    "browser_search": "浏览器搜索",
+    "archive_quick": "快速归档",
+    "archive_to": "归档到…",
+    "mark_archive": "标记/取消归档根目录",
+    "generate_manifest": "生成归档内容清单",
+    "open": "打开",
+    "new_folder": "新建文件夹",
+    "rename": "重命名",
+    "delete": "删除",
+    "copy": "复制",
+    "cut": "剪切",
+    "paste": "粘贴",
+    "move_to": "移动到…",
+    "move_to_recent": "移动到最近目录",
+    "strip": "提取内容",
+    "add_to_pinned": "添加到钉住文件夹",
+    "pin_folder": "钉住/取消钉住此文件夹",
+    "open_in_explorer": "在资源管理器中打开",
+    "copy_path": "复制路径",
+    "collapse_all": "折叠全部",
+}
+# feature id -> group id
+FEATURE_TOGGLE_GROUP_MAP = {
+    "create_mod_group": "content_unit",
+    "mark_content_unit": "content_unit",
+    "batch_tag": "content_unit",
+    "recent_tag": "content_unit",
+    "autofill_url": "network",
+    "open_url": "network",
+    "browser_search": "network",
+    "archive_quick": "archive",
+    "archive_to": "archive",
+    "mark_archive": "archive",
+    "generate_manifest": "archive",
+    "open": "file_ops",
+    "new_folder": "file_ops",
+    "rename": "file_ops",
+    "delete": "file_ops",
+    "copy": "file_ops",
+    "cut": "file_ops",
+    "paste": "file_ops",
+    "move_to": "file_ops",
+    "move_to_recent": "file_ops",
+    "strip": "file_ops",
+    "add_to_pinned": "view",
+    "pin_folder": "view",
+    "open_in_explorer": "view",
+    "copy_path": "view",
+    "collapse_all": "view",
+}
+
+# === 快捷键条目（2026-08-04，设计合理性1 附带） ===
+# id -> 中文标签 / 默认按键 / 适用范围
+SHORTCUT_LABELS = {
+    "select_all": "全选（中栏）",
+    "undo": "撤销",
+    "rename": "重命名",
+    "delete": "删除",
+    "copy": "复制",
+    "cut": "剪切",
+    "paste": "粘贴",
+    "move_to": "移动到…",
+    "move_to_latest": "移动到最近目录",
+    "archive_quick": "快速归档",
+    "refresh": "刷新当前目录",
+    "toggle_pin": "钉住/取消钉住文件夹预览",
+}
+SHORTCUT_DEFAULT_KEYS = {
+    "select_all": "Ctrl+A",
+    "undo": "Ctrl+Z",
+    "rename": "F2",
+    "delete": "Del",
+    "copy": "Ctrl+C",
+    "cut": "Ctrl+X",
+    "paste": "Ctrl+V",
+    "move_to": "Ctrl+M",
+    "move_to_latest": "Ctrl+Q",
+    "archive_quick": "Ctrl+W",
+    "refresh": "F5",
+    "toggle_pin": "Ctrl+P",
+}
+SHORTCUT_SCOPES = {
+    "select_all": "中栏",
+    "undo": "全局",
+    "rename": "中栏 / 目录树 / 文件夹预览",
+    "delete": "中栏 / 目录树 / 文件夹预览",
+    "copy": "中栏 / 目录树 / 文件夹预览",
+    "cut": "中栏 / 目录树 / 文件夹预览",
+    "paste": "中栏 / 目录树 / 文件夹预览",
+    "move_to": "中栏 / 目录树 / 文件夹预览",
+    "move_to_latest": "中栏 / 目录树 / 文件夹预览",
+    "archive_quick": "全局",
+    "refresh": "全局",
+    "toggle_pin": "全局",
+}
+
+# === 设置对话框（设计合理性1 + 快捷键配置，2026-08-04） ===
+SETTINGS_DIALOG_TITLE = "设置"
+SETTINGS_TAB_FEATURES = "右键功能"
+SETTINGS_TAB_SHORTCUTS = "快捷键"
+SETTINGS_FEATURES_HINT = "关闭后对应右键菜单项不再显示（立即生效）。"
+SETTINGS_FEATURES_RESET = "全部启用"
+SETTINGS_SHORTCUTS_HINT = "点击按键输入框后按下新组合；清空输入框 = 禁用该快捷键。"
+SETTINGS_SHORTCUTS_COL_FEATURE = "功能"
+SETTINGS_SHORTCUTS_COL_KEY = "快捷键"
+SETTINGS_SHORTCUTS_COL_SCOPE = "适用范围"
+SETTINGS_SHORTCUTS_RESET = "恢复默认"
+SETTINGS_SHORTCUTS_CONFLICT_TOOLTIP = "该快捷键已同时分配给：{others}"
+SETTINGS_SHORTCUTS_CONFLICT_BG = "#f8d7da"
+SETTINGS_APPLIED = "设置已保存并生效"
 
 # === 内容单元标记设置对话框（UI合理性21，2026-08-04） ===
 MARKER_CONFIG_DIALOG_TITLE = "内容单元标记设置"

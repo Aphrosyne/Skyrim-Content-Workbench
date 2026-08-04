@@ -24,6 +24,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from app import ui_constants as ui
 from app.file_list_model import FileListModel
+from app.shortcut_config import ShortcutConfig
 from application.assembly_service import AssemblyService, is_image_file
 from application.errors import ContentUnitNotFoundError
 from domain.models import ContentUnit, FileEntry
@@ -71,6 +73,7 @@ class AssemblyPanel(QFrame):
         on_file_op: Callable[[str, list[FileEntry]], None] | None = None,
         on_pin_changed: Callable[[bool], None] | None = None,
         on_drop_files: Callable[[list[Path]], None] | None = None,
+        shortcut_config: ShortcutConfig | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -86,6 +89,9 @@ class AssemblyPanel(QFrame):
         # UX 重构 Phase 1 Task 4：拖拽文件到装配面板回调
         # 参数为拖入的文件路径列表（仅文件，不含文件夹——A4 决策）。
         self._on_drop_files = on_drop_files
+        # 2026-08-04（设计合理性1 附带）：文件夹预览快捷键配置（与中栏/目录树共用）
+        self._shortcut_config = shortcut_config
+        self._panel_shortcuts: list[QShortcut] = []
         self._current_unit: ContentUnit | None = None
         # 当前透视的文件夹路径（bind_folder 设置，bind_mod_group 同步设置）
         self._current_folder_path: Path | None = None
@@ -106,20 +112,28 @@ class AssemblyPanel(QFrame):
         与中栏/目录树同键不冲突：全部用 WidgetShortcut 绑定到面板列表视图，
         仅面板聚焦时生效（此时中栏/目录树的同名快捷键不触发）。
         文件操作复用右键菜单同一 on_file_op 分发。
+        2026-08-04：按键从 ShortcutConfig 读取（空键 = 禁用该项）。
         """
         if self._on_file_op is None:
             return
-        from PySide6.QtGui import QKeySequence, QShortcut  # noqa: PLC0415
 
+        # action -> 共用快捷键 id（与中栏/目录树 ShortcutRegistry 同一配置）
         bindings = (
-            ("Ctrl+C", "copy"),
-            ("Ctrl+X", "cut"),
-            ("Ctrl+V", "paste"),
-            ("Delete", "delete"),
-            ("Ctrl+M", "move_to"),
-            ("Ctrl+Q", "move_to_recent"),
+            ("copy", "copy"),
+            ("cut", "cut"),
+            ("paste", "paste"),
+            ("delete", "delete"),
+            ("move_to", "move_to"),
+            ("move_to_recent", "move_to_latest"),
         )
-        for key, action in bindings:
+        for action, shortcut_id in bindings:
+            key = (
+                self._shortcut_config.key_for(shortcut_id)
+                if self._shortcut_config is not None
+                else ui.SHORTCUT_DEFAULT_KEYS[shortcut_id]
+            )
+            if not key:
+                continue  # 用户已禁用该快捷键
             shortcut = QShortcut(QKeySequence(key), self._list_view)
             shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
             shortcut.activated.connect(
@@ -127,6 +141,19 @@ class AssemblyPanel(QFrame):
             )
             # 挂到面板属性上（防 GC + 供测试检查注入开关）
             setattr(self, f"_shortcut_{action}", shortcut)
+            self._panel_shortcuts.append(shortcut)
+
+    def reload_shortcuts(self, shortcut_config: ShortcutConfig) -> None:
+        """快捷键配置变更后重新安装（禁用旧的并重建）。"""
+        self._shortcut_config = shortcut_config
+        for shortcut in getattr(self, "_panel_shortcuts", []):
+            shortcut.setEnabled(False)
+            shortcut.deleteLater()
+        self._panel_shortcuts = []
+        for action in ("copy", "cut", "paste", "delete", "move_to", "move_to_recent"):
+            if hasattr(self, f"_shortcut_{action}"):
+                delattr(self, f"_shortcut_{action}")
+        self._install_shortcuts()
 
     def _setup_ui(self) -> None:
         # 装配面板与左栏「受管理根目录 / 目录树」同构（UI合理性8 布局修复）：

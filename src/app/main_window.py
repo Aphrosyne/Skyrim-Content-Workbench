@@ -81,6 +81,7 @@ from app.content_unit_marker_dialog import ContentUnitMarkerDialog
 from app.content_views import _DragDropListView, _RubberBandTableView
 from app.context_menu_builder import ContextMenuBuilder
 from app.entry_dialogs import show_create_mod_group_dialog, show_rename_dialog
+from app.feature_toggle_config import FeatureToggleConfig
 from app.file_list_model import (
     COL_MODIFIED,
     COL_NAME,
@@ -108,6 +109,8 @@ from app.scan_controller import ScanController
 from app.scan_ui_state import ScanUiState
 from app.search_controller import SearchController
 from app.selection_memory import SelectionMemory
+from app.settings_dialog import SettingsDialog
+from app.shortcut_config import ShortcutConfig
 from app.shortcut_registry import ShortcutRegistry
 from app.sort_combo_box import PressSelectComboBox
 from app.splitter_state import SplitterStateHelper
@@ -226,6 +229,9 @@ class MainWindow(QMainWindow):
         # 功能增加1（2026-08-04）：归档设置（归档根目录 + 上次归档位置）
         self._archive_settings = ArchiveSettings(self._qsettings)
         self._archive_manifest_service = ArchiveManifestService()
+        # 设计合理性1（2026-08-04）：右键功能开关 + 快捷键配置（QSettings 持久化）
+        self._feature_toggle_config = FeatureToggleConfig.load(self._qsettings)
+        self._shortcut_config = ShortcutConfig.load(self._qsettings)
         # 操作便捷性7：目录 → 最后一次选中路径列表（后退/前进时恢复）
         self._selection_memory = SelectionMemory()
 
@@ -326,6 +332,7 @@ class MainWindow(QMainWindow):
             dialog_parent=self,
             host=self,
             archive_settings=self._archive_settings,
+            feature_toggle_config=self._feature_toggle_config,
         )
         # TD-M21 阶段 6：文件操作编排控制器（新建/重命名/删除/粘贴/移动到/撤销）
         self._file_operations_controller = FileOperationsController(
@@ -567,6 +574,7 @@ class MainWindow(QMainWindow):
         self._menu_bar = MainMenuBar(self)
         self._menu_bar.layout_reset_requested.connect(self._on_layout_reset)
         self._menu_bar.switch_view_requested.connect(self._on_menu_view_switch)
+        self._menu_bar.settings_requested.connect(self._on_settings_clicked)
         self._menu_bar.marker_config_requested.connect(self._on_marker_config_clicked)
         self._menu_bar.url_settings_requested.connect(self._on_url_settings_clicked)
         self._menu_bar.tag_manager_requested.connect(self._on_tag_manager_clicked)
@@ -991,6 +999,7 @@ class MainWindow(QMainWindow):
                 on_file_op=self._on_assembly_file_op,
                 on_pin_changed=self._on_assembly_pin_changed,
                 on_drop_files=self._on_drop_to_assembly,
+                shortcut_config=self._shortcut_config,
             )
             self._right_splitter.addWidget(self._assembly_panel)
             # 初始比例与持久化由 SplitterStateHelper 恢复（默认值见 ui_constants）
@@ -1216,6 +1225,21 @@ class MainWindow(QMainWindow):
             return
         dialog.resulting_config().save(self._qsettings)
 
+    def _on_settings_clicked(self) -> None:
+        """设计合理性1：菜单「工具 → 设置…」→ 保存并立即生效。"""
+        dialog = SettingsDialog(self._feature_toggle_config, self._shortcut_config, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._feature_toggle_config = dialog.resulting_feature_config()
+        self._feature_toggle_config.save(self._qsettings)
+        self._shortcut_config = dialog.resulting_shortcut_config()
+        self._shortcut_config.save(self._qsettings)
+        # 快捷键立即重注册：中栏/目录树由 ShortcutRegistry，文件夹预览由面板重装
+        self._setup_shortcuts()
+        if self._assembly_panel is not None:
+            self._assembly_panel.reload_shortcuts(self._shortcut_config)
+        self.statusBar().showMessage(ui.SETTINGS_APPLIED, 3000)
+
     def _on_asset_credits_clicked(self) -> None:
         """UI合理性4 资产引用：菜单「帮助 → 开源资产致谢…」打开致谢对话框。"""
         AssetCreditsDialog(self).exec()
@@ -1281,10 +1305,6 @@ class MainWindow(QMainWindow):
         if clipboard is not None:
             clipboard.setText(path)
         self.statusBar().showMessage(ui.CONTEXT_MENU_COPY_PATH_OK, 3000)
-
-    def _on_quick_set_cover(self, unit_id: str) -> None:
-        """快速设置封面（委托 ContentListController）。"""
-        self._content_list_controller.on_quick_set_cover(unit_id)
 
     def _on_autofill_url(self, entry: FileEntry) -> None:
         """右键「自动填入网址」（委托 ContentListController）。"""
@@ -1633,7 +1653,7 @@ class MainWindow(QMainWindow):
 
     def _setup_shortcuts(self) -> None:
         """注册键盘快捷键（委托 ShortcutRegistry，_shortcut_* 属性挂在窗口上）。"""
-        ShortcutRegistry(self).register()
+        ShortcutRegistry(self, self._shortcut_config).register()
 
     def _on_shortcut_rename_content(self) -> None:
         """F2：重命名中栏选中条目（委托 FileOperationsController）。"""

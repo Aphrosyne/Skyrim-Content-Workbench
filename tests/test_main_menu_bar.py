@@ -79,10 +79,17 @@ def test_reset_layout_action_emits_signal(qapp) -> None:
     assert captured["reset"] == [True]
 
 
-def test_shortcuts_action_disabled_placeholder(qapp) -> None:
+def test_settings_action_emits_signal(qapp) -> None:
+    """设计合理性1：工具菜单「设置…」动作发射 settings_requested。"""
     menu_bar = MainMenuBar()
-    assert not menu_bar.shortcuts_action().isEnabled()
-    assert ui.MENU_VIEW_SHORTCUTS_TODO in menu_bar.shortcuts_action().toolTip()
+    captured: list[bool] = []
+    menu_bar.settings_requested.connect(lambda: captured.append(True))
+
+    action = menu_bar.settings_action()
+    assert action.text() == ui.MENU_TOOLS_SETTINGS
+    action.trigger()
+
+    assert captured == [True]
 
 
 def test_url_settings_action_emits_signal(qapp) -> None:

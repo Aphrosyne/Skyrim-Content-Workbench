@@ -833,6 +833,15 @@ class MetadataPanel(QWidget):
                 return widget.isEnabled()
         return False
 
+    def recent_tag_style(self, tag_name: str) -> str:
+        """返回指定最近标签按钮的 styleSheet（供测试）。"""
+        for i in range(self._recent_flow_layout.count()):
+            item = self._recent_flow_layout.itemAt(i)
+            widget = item.widget() if item is not None else None
+            if isinstance(widget, QPushButton) and widget.text() == tag_name:
+                return widget.styleSheet()
+        return ""
+
     def is_save_button_enabled(self) -> bool:
         return self._save_button.isEnabled()
 
@@ -1181,12 +1190,16 @@ class MetadataPanel(QWidget):
             self._recent_widget.setVisible(False)
             self._recent_title.setVisible(False)
             return
-        # 映射 id → Tag（list_categories_with_tags 一次获取全部）
+        # 映射 id → Tag 与 id → 分类色相（list_categories_with_tags 一次获取全部；
+        # 不依赖 _category_hues，避免 _refresh_recent_list 先于 _refresh_preset_list
+        # 执行时着色缺失）
         id_to_tag: dict[str, Tag] = {}
+        id_to_hue: dict[str, int | None] = {}
         try:
-            for _category, tags in self._tag_service.list_categories_with_tags():
+            for category, tags in self._tag_service.list_categories_with_tags():
                 for t in tags:
                     id_to_tag[t.id] = t
+                    id_to_hue[t.id] = category.color_hue
         except ApplicationError:
             self._recent_widget.setVisible(False)
             self._recent_title.setVisible(False)
@@ -1198,7 +1211,14 @@ class MetadataPanel(QWidget):
             if tag is None:
                 continue  # 标签已删除，跳过
             btn = QPushButton(tag.name, self._recent_widget)
-            btn.setStyleSheet(ui.METADATA_TAG_BUTTON_STYLE.format(bg=self._region_bg))
+            # 修复（2026-08-04 验收反馈）：最近标签与预选/ chip 一致使用分类色
+            hue = id_to_hue.get(tag.id)
+            btn.setStyleSheet(
+                ui.TAG_BUTTON_FILLED_STYLE.format(
+                    color=category_color_hex(hue) if hue is not None else "#c0c0c0",
+                    text=text_color_hex(hue) if hue is not None else "#1a1a1a",
+                )
+            )
             if tag.id in current_ids:
                 btn.setEnabled(False)  # 已在 chip：灰显不可点
             btn.clicked.connect(lambda checked=False, t=tag: self._apply_tag_toggle(t, True))

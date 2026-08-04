@@ -92,6 +92,46 @@ class TestPanelShortcuts:
         finally:
             panel.close()
 
+    def test_shortcuts_custom_config_applied(self, qapp, assembly_service) -> None:
+        """注入自定义快捷键配置 → 按键替换；空键禁用该项。"""
+        from app.shortcut_config import ShortcutConfig  # noqa: PLC0415
+
+        config = ShortcutConfig.defaults()
+        config.set_key("copy", "Ctrl+G")
+        config.set_key("delete", "")
+        panel = AssemblyPanel(
+            assembly_service,
+            on_file_op=lambda *a: None,
+            shortcut_config=config,
+        )
+        try:
+            assert panel._shortcut_copy.key() == QKeySequence("Ctrl+G")  # noqa: SLF001
+            assert not hasattr(panel, "_shortcut_delete")
+            assert panel._shortcut_cut.key() == QKeySequence("Ctrl+X")  # noqa: SLF001
+        finally:
+            panel.close()
+
+    def test_reload_shortcuts_applies_new_config(self, qapp, assembly_service) -> None:
+        """reload_shortcuts：禁用项重建、自定义键生效。"""
+        from app.shortcut_config import ShortcutConfig  # noqa: PLC0415
+
+        config = ShortcutConfig.defaults()
+        config.set_key("paste", "")
+        panel = AssemblyPanel(
+            assembly_service,
+            on_file_op=lambda *a: None,
+            shortcut_config=config,
+        )
+        try:
+            assert not hasattr(panel, "_shortcut_paste")
+            new_config = ShortcutConfig.defaults()
+            new_config.set_key("copy", "Ctrl+H")
+            panel.reload_shortcuts(new_config)
+            assert panel._shortcut_copy.key() == QKeySequence("Ctrl+H")  # noqa: SLF001
+            assert hasattr(panel, "_shortcut_paste")  # 恢复默认
+        finally:
+            panel.close()
+
     def test_shortcut_trigger_dispatches_file_op(self, qapp, assembly_service) -> None:
         """触发快捷键 → 以对应 action 分发 on_file_op。"""
         service, _ = assembly_service

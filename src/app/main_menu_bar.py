@@ -1,9 +1,10 @@
-"""顶部菜单栏视图（UI合理性3，2026-08-03）。
+"""顶部菜单栏视图（UI合理性3，2026-08-03；2026-08-04 设置入口）。
 
 只负责构建菜单/动作并发信号，不包含业务逻辑；MainWindow 仅接线：
-- 「视图」：列表/卡片视图（checkable 互斥）、重置布局、快捷键设置（占位，二期实现）
-- 「工具」：标签管理、操作历史（可用性由 MainWindow 按注入服务开关）、
-  网址与搜索设置（操作便捷性8/9，2026-08-04）
+- 「视图」：列表/卡片视图（checkable 互斥）、重置布局、内容单元标记设置、
+  文件类型图标颜色
+- 「工具」：设置（设计合理性1：右键功能开关 + 快捷键自定义）、标签管理、
+  操作历史（可用性由 MainWindow 按注入服务开关）、网址与搜索设置
 """
 
 from __future__ import annotations
@@ -28,8 +29,8 @@ class MainMenuBar(QMenuBar):
     file_type_icon_colors_requested = Signal()
     # 网址与搜索设置请求（操作便捷性8/9）
     url_settings_requested = Signal()
-    # 快捷键设置请求（占位，二期实现自定义快捷键）
-    shortcuts_requested = Signal()
+    # 设置请求（设计合理性1，2026-08-04：右键功能开关 + 快捷键自定义）
+    settings_requested = Signal()
     # 工具菜单请求（复用 MainWindow 既有 handler）
     tag_manager_requested = Signal()
     operation_history_requested = Signal()
@@ -85,18 +86,17 @@ class MainMenuBar(QMenuBar):
         )
         view_menu.addAction(self._file_type_icon_colors_action)
 
-        # 快捷键自定义：二期独立任务实现，占位保持禁用（AGENTS 待确认需求保留 TODO）
-        self._shortcuts_action = QAction(ui.MENU_VIEW_SHORTCUTS, self)
-        self._shortcuts_action.setEnabled(False)
-        self._shortcuts_action.setToolTip(ui.MENU_VIEW_SHORTCUTS_TODO)
-        # TODO(UI合理性3 二期)：实现快捷键自定义对话框，启用后连接 shortcuts_requested
-        self._shortcuts_action.triggered.connect(
-            lambda checked=False: self.shortcuts_requested.emit()
-        )
-        view_menu.addAction(self._shortcuts_action)
-
     def _build_tools_menu(self) -> None:
         tools_menu = self.addMenu(ui.MENU_BAR_TOOLS)
+
+        # 设计合理性1（2026-08-04）：统一设置（右键功能开关 + 快捷键自定义）
+        self._settings_action = QAction(ui.MENU_TOOLS_SETTINGS, self)
+        self._settings_action.triggered.connect(
+            lambda checked=False: self.settings_requested.emit()
+        )
+        tools_menu.addAction(self._settings_action)
+
+        tools_menu.addSeparator()
 
         self._tag_manager_action = QAction(ui.MENU_TOOLS_TAG_MANAGER, self)
         self._tag_manager_action.triggered.connect(
@@ -165,8 +165,8 @@ class MainMenuBar(QMenuBar):
     def url_settings_action(self) -> QAction:
         return self._url_settings_action
 
-    def shortcuts_action(self) -> QAction:
-        return self._shortcuts_action
+    def settings_action(self) -> QAction:
+        return self._settings_action
 
     def tag_manager_action(self) -> QAction:
         return self._tag_manager_action

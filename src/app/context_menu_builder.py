@@ -14,12 +14,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QPoint
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QAbstractItemView, QMenu, QWidget
 
 from app import ui_constants as ui
 from app.archive_settings import ArchiveSettings
 from app.card_list_model import CardListModel
 from app.content_views import _DragDropListView, _RubberBandTableView
+from app.feature_toggle_config import FeatureToggleConfig
 from app.file_list_model import FileListModel
 from app.folder_tree_model import FolderTreeModel
 from app.path_display import make_display_path_from_service
@@ -62,6 +64,7 @@ class ContextMenuBuilder:
         dialog_parent: QWidget,
         host: object,
         archive_settings: ArchiveSettings | None = None,
+        feature_toggle_config: FeatureToggleConfig | None = None,
     ) -> None:
         """初始化菜单构建器。
 
@@ -87,6 +90,27 @@ class ContextMenuBuilder:
         self._dialog_parent = dialog_parent
         self._host = host
         self._archive_settings = archive_settings
+        self._feature_toggle_config = feature_toggle_config
+
+    def _feature_enabled(self, feature_id: str) -> bool:
+        """右键功能开关：未注入配置时默认全部启用（向前兼容）。"""
+        return self._feature_toggle_config is None or self._feature_toggle_config.is_enabled(
+            feature_id
+        )
+
+    def _add_action(
+        self,
+        menu: QMenu,
+        label: str,
+        feature_id: str,
+        enabled: bool = True,
+    ) -> QAction | None:
+        """添加受开关控制的菜单项；关闭时返回 None，调用方身份判断自然跳过。"""
+        if not self._feature_enabled(feature_id):
+            return None
+        action = menu.addAction(label)
+        action.setEnabled(enabled)
+        return action
 
     def _make_menu(self) -> QMenu:
         """构造右键菜单。
@@ -160,46 +184,57 @@ class ContextMenuBuilder:
         if node is not None:
             # 新建文件夹 / 删除（Stage 5 Task 3a，仅需 FileOperationService）
             if self._file_operation_service is not None:
-                new_folder_action = menu.addAction(ui.MENU_NEW_FOLDER)
+                new_folder_action = self._add_action(menu, ui.MENU_NEW_FOLDER, "new_folder")
                 if self._clipboard_service is not None:
-                    copy_action = menu.addAction(ui.MENU_COPY)
-                    cut_action = menu.addAction(ui.MENU_CUT)
+                    copy_action = self._add_action(menu, ui.MENU_COPY, "copy")
+                    cut_action = self._add_action(menu, ui.MENU_CUT, "cut")
                     # 粘贴项仅在剪贴板非空时启用
-                    paste_action = menu.addAction(ui.MENU_PASTE)
-                    paste_action.setEnabled(self._clipboard_service.get() is not None)
-                move_to_action = menu.addAction(ui.MENU_MOVE_TO)
+                    paste_action = self._add_action(menu, ui.MENU_PASTE, "paste")
+                    if paste_action is not None:
+                        paste_action.setEnabled(self._clipboard_service.get() is not None)
+                move_to_action = self._add_action(menu, ui.MENU_MOVE_TO, "move_to")
                 # 功能增加1（2026-08-04）：归档根内部条目不再显示归档移动/标记入口；
                 # 归档根内文件夹（含归档根自身）仅保留「生成归档内容清单」
                 node_path = Path(node.real_path)
                 node_inside_archive = self._is_inside_archive_root(node_path)
                 if not node_inside_archive:
-                    archive_quick_action = menu.addAction(ui.MENU_ARCHIVE_QUICK)
-                    archive_to_action = menu.addAction(ui.MENU_ARCHIVE_TO)
+                    archive_quick_action = self._add_action(
+                        menu, ui.MENU_ARCHIVE_QUICK, "archive_quick"
+                    )
+                    archive_to_action = self._add_action(menu, ui.MENU_ARCHIVE_TO, "archive_to")
                 if self._archive_settings is not None:
                     if self._is_archive_root(node_path):
-                        unmark_archive_action = menu.addAction(ui.MENU_UNMARK_ARCHIVE_ROOT)
-                        manifest_action = menu.addAction(ui.MENU_GENERATE_ARCHIVE_MANIFEST)
+                        unmark_archive_action = self._add_action(
+                            menu, ui.MENU_UNMARK_ARCHIVE_ROOT, "mark_archive"
+                        )
+                        manifest_action = self._add_action(
+                            menu, ui.MENU_GENERATE_ARCHIVE_MANIFEST, "generate_manifest"
+                        )
                     elif node_inside_archive:
                         # 归档根内的子文件夹：生成该子目录的归档内容清单
-                        manifest_action = menu.addAction(ui.MENU_GENERATE_ARCHIVE_MANIFEST)
+                        manifest_action = self._add_action(
+                            menu, ui.MENU_GENERATE_ARCHIVE_MANIFEST, "generate_manifest"
+                        )
                     else:
-                        mark_archive_action = menu.addAction(ui.MENU_MARK_ARCHIVE_ROOT)
-                delete_action = menu.addAction(ui.MENU_DELETE)
+                        mark_archive_action = self._add_action(
+                            menu, ui.MENU_MARK_ARCHIVE_ROOT, "mark_archive"
+                        )
+                delete_action = self._add_action(menu, ui.MENU_DELETE, "delete")
             # 在资源管理器中打开（Stage 5 Task 1，节点有效时显示）
-            explorer_action = menu.addAction(ui.MENU_OPEN_IN_EXPLORER)
+            explorer_action = self._add_action(menu, ui.MENU_OPEN_IN_EXPLORER, "open_in_explorer")
 
             # UX 重构 Phase 2 Task 5（Q2=C）：钉住/取消钉住
             if self._assembly_panel is not None:
                 if self._assembly_panel.is_pinned():
-                    unpin_action = menu.addAction(ui.MENU_UNPIN_FOLDER)
+                    unpin_action = self._add_action(menu, ui.MENU_UNPIN_FOLDER, "pin_folder")
                 else:
                     # 未钉住 → 显示「钉住此文件夹」
-                    pin_action = menu.addAction(ui.MENU_PIN_FOLDER)
+                    pin_action = self._add_action(menu, ui.MENU_PIN_FOLDER, "pin_folder")
 
         # 折叠全部（Stage 5 Task 7，无论是否选中节点都显示）
         if node is not None:
             menu.addSeparator()
-        collapse_action = menu.addAction(ui.MENU_COLLAPSE_ALL)
+        collapse_action = self._add_action(menu, ui.MENU_COLLAPSE_ALL, "collapse_all")
 
         # 操作便捷性3：在「移动到...」后插入「移动到最近目录」子菜单（节点有效时）
         if node is not None and move_to_action is not None:
@@ -327,22 +362,23 @@ class ContextMenuBuilder:
         if current_dir is None:
             return
         menu = self._make_menu()
-        new_folder_action = menu.addAction(ui.MENU_NEW_FOLDER)
+        new_folder_action = self._add_action(menu, ui.MENU_NEW_FOLDER, "new_folder")
         # 粘贴项（Stage 5 Task 3b，仅注入 ClipboardService 且剪贴板非空时显示）
         paste_action = None
         if self._clipboard_service is not None:
-            paste_action = menu.addAction(ui.MENU_PASTE)
-            paste_action.setEnabled(self._clipboard_service.get() is not None)
+            paste_action = self._add_action(menu, ui.MENU_PASTE, "paste")
+            if paste_action is not None:
+                paste_action.setEnabled(self._clipboard_service.get() is not None)
 
         # UX 重构 Phase 2 Task 5（Q2=C）：钉住/取消钉住
         pin_action = None
         unpin_action = None
         if self._assembly_panel is not None:
             if self._assembly_panel.is_pinned():
-                unpin_action = menu.addAction(ui.MENU_UNPIN_FOLDER)
+                unpin_action = self._add_action(menu, ui.MENU_UNPIN_FOLDER, "pin_folder")
             else:
                 # 当前目录未钉住 → 显示「钉住此文件夹」
-                pin_action = menu.addAction(ui.MENU_PIN_FOLDER)
+                pin_action = self._add_action(menu, ui.MENU_PIN_FOLDER, "pin_folder")
 
         chosen = menu.exec(active_view.viewport().mapToGlobal(pos))
         if chosen is new_folder_action:
@@ -370,7 +406,7 @@ class ContextMenuBuilder:
 
         # UX 重构 Phase 2 Task 5（Q1=B）：「打开」项（单选时显示，行为与双击一致）
         # 所有类型（普通文件/文件夹/已标记内容单元）都显示
-        if len(entries) == 1:
+        if self._feature_enabled("open") and len(entries) == 1:
             entry = entries[0]
             actions.append(
                 (ui.MENU_OPEN, lambda: self._host._on_entry_activated_for_entry(entry), True)
@@ -379,7 +415,8 @@ class ContextMenuBuilder:
         # 创建 Mod 组：单选或多选 + 全部为文件（非目录）+ 注入了 ContentUnitCreationService
         # UX 重构 Phase 1 Task 1 Commit 3：支持多选（E1：仅全文件时显示）
         if (
-            self._content_unit_creation_service is not None
+            self._feature_enabled("create_mod_group")
+            and self._content_unit_creation_service is not None
             and len(entries) >= 1
             and all(not e.is_dir for e in entries)
         ):
@@ -391,7 +428,7 @@ class ContextMenuBuilder:
         # Task 4 将由「添加到钉住文件夹」+ 拖拽替代。
 
         # 标记/取消标记
-        if len(entries) == 1:
+        if self._feature_enabled("mark_content_unit") and len(entries) == 1:
             entry = entries[0]
             if entry.content_unit is None:
                 actions.append(
@@ -409,7 +446,7 @@ class ContextMenuBuilder:
                         True,
                     )
                 )
-        else:
+        elif self._feature_enabled("mark_content_unit"):
             # 多选：根据选中项状态动态显示批量操作
             # - 全部未标记：仅显示"批量标记"
             # - 全部已标记：仅显示"批量取消"
@@ -434,28 +471,20 @@ class ContextMenuBuilder:
                 )
 
         # 批量打标签（Stage 4 Task 2）：多选且至少一个内容单元 + 注入了 TagService
-        if self._tag_service is not None and len(entries) > 1:
+        if (
+            self._feature_enabled("batch_tag")
+            and self._tag_service is not None
+            and len(entries) > 1
+        ):
             has_any_unit = any(e.content_unit is not None for e in entries)
             if has_any_unit:
                 actions.append((ui.MENU_BATCH_TAG, lambda: self._host._on_batch_tag(entries), True))
 
-        # 快速设置封面（Stage 5 Task 1）：单选已标记文件夹内容单元
-        if len(entries) == 1 and entries[0].content_unit is not None:
-            entry = entries[0]
-            # 仅文件夹内容单元可用；压缩包内容单元灰显
-            enabled = entry.is_dir
-            actions.append(
-                (
-                    ui.MENU_QUICK_SET_COVER,
-                    lambda: self._host._on_quick_set_cover(entry.content_unit.id),
-                    enabled,
-                )
-            )
-
         # 添加到钉住文件夹（UX 重构 Phase 1 Task 4）：
         # A1：仅装配面板钉住时显示；B1：支持多选；B6：放在「移动到...」之前。
         if (
-            self._assembly_service is not None
+            self._feature_enabled("add_to_pinned")
+            and self._assembly_service is not None
             and self._assembly_panel is not None
             and self._assembly_panel.is_pinned()
             and self._assembly_panel.current_folder_path() is not None
@@ -465,7 +494,7 @@ class ContextMenuBuilder:
             )
 
         # UX 重构 Phase 2 Task 5（Q2=C）：钉住/取消钉住右键菜单
-        if self._assembly_panel is not None:
+        if self._feature_enabled("pin_folder") and self._assembly_panel is not None:
             # 单选文件夹 → 显示「钉住此文件夹」（若该文件夹未钉住）
             if len(entries) == 1 and entries[0].is_dir:
                 folder_path = Path(entries[0].path)
@@ -496,32 +525,54 @@ class ContextMenuBuilder:
             if len(entries) == 1:
                 entry = entries[0]
                 # 新建文件夹：基于选中条目的父目录创建子文件夹
-                actions.append(
-                    (ui.MENU_NEW_FOLDER, lambda: self._host._on_new_folder_for_entry(entry), True)
-                )
+                if self._feature_enabled("new_folder"):
+                    actions.append(
+                        (
+                            ui.MENU_NEW_FOLDER,
+                            lambda: self._host._on_new_folder_for_entry(entry),
+                            True,
+                        )
+                    )
                 # 重命名：单选
-                actions.append((ui.MENU_RENAME, lambda: self._host._on_rename_entry(entry), True))
+                if self._feature_enabled("rename"):
+                    actions.append(
+                        (ui.MENU_RENAME, lambda: self._host._on_rename_entry(entry), True)
+                    )
             # 复制 / 剪切：需 ClipboardService
             if self._clipboard_service is not None:
-                actions.append((ui.MENU_COPY, self._host._on_shortcut_copy, True))
-                actions.append((ui.MENU_CUT, self._host._on_shortcut_cut, True))
+                if self._feature_enabled("copy"):
+                    actions.append((ui.MENU_COPY, self._host._on_shortcut_copy, True))
+                if self._feature_enabled("cut"):
+                    actions.append((ui.MENU_CUT, self._host._on_shortcut_cut, True))
                 # 粘贴：粘贴到当前中栏目录（不是右键的文件夹内部）
                 # 剪贴板空时灰显
-                has_clipboard = self._clipboard_service.get() is not None
-                actions.append((ui.MENU_PASTE, self._host._on_shortcut_paste, has_clipboard))
+                if self._feature_enabled("paste"):
+                    has_clipboard = self._clipboard_service.get() is not None
+                    actions.append((ui.MENU_PASTE, self._host._on_shortcut_paste, has_clipboard))
             # Stage 5 Task 5：移动到...（Q4=A 中栏 + 目录树均添加）
-            actions.append((ui.MENU_MOVE_TO, lambda: self._host._on_move_to(entries), True))
+            if self._feature_enabled("move_to"):
+                actions.append((ui.MENU_MOVE_TO, lambda: self._host._on_move_to(entries), True))
             # 功能增加1（2026-08-04）：快速归档 / 归档到…（归档根内部条目不显示）
-            if all(not self._is_inside_archive_root(Path(e.path)) for e in entries):
+            if self._feature_enabled("archive_quick") and all(
+                not self._is_inside_archive_root(Path(e.path)) for e in entries
+            ):
                 actions.append(
                     (ui.MENU_ARCHIVE_QUICK, lambda: self._host._on_archive_quick(entries), True)
                 )
+            if self._feature_enabled("archive_to") and all(
+                not self._is_inside_archive_root(Path(e.path)) for e in entries
+            ):
                 actions.append(
                     (ui.MENU_ARCHIVE_TO, lambda: self._host._on_archive_to(entries), True)
                 )
             # 归档根自身：取消标记 + 生成清单；根内子文件夹：生成该子目录清单；
             # 普通文件夹：标记为归档根目录（单选文件夹）
-            if len(entries) == 1 and entries[0].is_dir and self._archive_settings is not None:
+            if (
+                self._feature_enabled("mark_archive")
+                and len(entries) == 1
+                and entries[0].is_dir
+                and self._archive_settings is not None
+            ):
                 folder_path = Path(entries[0].path)
                 if self._is_archive_root(folder_path):
                     actions.append(
@@ -531,14 +582,17 @@ class ContextMenuBuilder:
                             True,
                         )
                     )
-                    actions.append(
-                        (
-                            ui.MENU_GENERATE_ARCHIVE_MANIFEST,
-                            lambda: self._host._on_generate_archive_manifest(folder_path),
-                            True,
+                    if self._feature_enabled("generate_manifest"):
+                        actions.append(
+                            (
+                                ui.MENU_GENERATE_ARCHIVE_MANIFEST,
+                                lambda: self._host._on_generate_archive_manifest(folder_path),
+                                True,
+                            )
                         )
-                    )
-                elif self._is_inside_archive_root(folder_path):
+                elif self._is_inside_archive_root(folder_path) and self._feature_enabled(
+                    "generate_manifest"
+                ):
                     actions.append(
                         (
                             ui.MENU_GENERATE_ARCHIVE_MANIFEST,
@@ -557,7 +611,8 @@ class ContextMenuBuilder:
             # 操作便捷性1（2026-08-04）：剥离（提取内容）
             # 单选普通文件夹（未标记内容单元）+ 注入 StripService 时显示
             if (
-                self._strip_service is not None
+                self._feature_enabled("strip")
+                and self._strip_service is not None
                 and len(entries) == 1
                 and entries[0].is_dir
                 and entries[0].content_unit is None
@@ -570,22 +625,29 @@ class ContextMenuBuilder:
                     )
                 )
             # 删除：单选或批量
-            actions.append((ui.MENU_DELETE, lambda: self._host._on_delete_entries(entries), True))
+            if self._feature_enabled("delete"):
+                actions.append(
+                    (ui.MENU_DELETE, lambda: self._host._on_delete_entries(entries), True)
+                )
 
         # 操作便捷性8（2026-08-04）：单选内容单元 → 自动填入网址 / 打开网址
         # 打开网址内部会先尝试自动填入（source_url 为空时），故两项都常显。
         if len(entries) == 1 and entries[0].content_unit is not None:
-            actions.append(
-                (
-                    ui.MENU_AUTOFILL_URL,
-                    lambda: self._host._on_autofill_url(entries[0]),
-                    True,
+            if self._feature_enabled("autofill_url"):
+                actions.append(
+                    (
+                        ui.MENU_AUTOFILL_URL,
+                        lambda: self._host._on_autofill_url(entries[0]),
+                        True,
+                    )
                 )
-            )
-            actions.append((ui.MENU_OPEN_URL, lambda: self._host._on_open_url(entries[0]), True))
+            if self._feature_enabled("open_url"):
+                actions.append(
+                    (ui.MENU_OPEN_URL, lambda: self._host._on_open_url(entries[0]), True)
+                )
 
         # 操作便捷性9（2026-08-04）：单选条目（文件或文件夹）→ 浏览器搜索
-        if len(entries) == 1:
+        if self._feature_enabled("browser_search") and len(entries) == 1:
             actions.append(
                 (
                     ui.MENU_BROWSER_SEARCH,
@@ -595,7 +657,7 @@ class ContextMenuBuilder:
             )
 
         # 在资源管理器中打开（Stage 5 Task 1，始终显示，单选时可用）
-        if len(entries) == 1:
+        if self._feature_enabled("open_in_explorer") and len(entries) == 1:
             actions.append(
                 (
                     ui.MENU_OPEN_IN_EXPLORER,
@@ -605,13 +667,14 @@ class ContextMenuBuilder:
             )
 
         # 复制路径（始终）
-        actions.append(
-            (
-                ui.CONTEXT_MENU_COPY_PATH,
-                lambda: self._host._copy_path_to_clipboard(entries[0].path),
-                True,
+        if self._feature_enabled("copy_path"):
+            actions.append(
+                (
+                    ui.CONTEXT_MENU_COPY_PATH,
+                    lambda: self._host._copy_path_to_clipboard(entries[0].path),
+                    True,
+                )
             )
-        )
 
         return actions
 
@@ -623,6 +686,8 @@ class ContextMenuBuilder:
         操作便捷性3（2026-08-02）：最近移动目标快捷入口。
         无最近目标时不插入；子菜单项文本用路径简化显示，Tooltip 为完整路径。
         """
+        if not self._feature_enabled("move_to_recent"):
+            return
         recent = self._host._recent_move_targets.list_recent()
         if not recent:
             return
@@ -650,6 +715,8 @@ class ContextMenuBuilder:
         列出最近使用标签，点击直接 attach + 提交，避免打开完整标签面板。
         无最近标签或 TagService 未注入时不插入。
         """
+        if not self._feature_enabled("recent_tag"):
+            return
         if self._host._tag_service is None or self._host._recent_tags is None:
             return
         tag_ids = self._host._recent_tags.list_recent()

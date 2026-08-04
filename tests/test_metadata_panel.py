@@ -937,6 +937,20 @@ def test_recent_tag_already_in_chip_disabled(qapp, unit_with_tags, tmp_path):
     assert not panel.is_recent_tag_enabled(tag1.name)
 
 
+def test_recent_tag_button_uses_category_color(qapp, unit_with_tags, tmp_path):
+    """验收反馈（2026-08-04）：最近标签按钮与预选/ chip 一致使用分类色。"""
+    from app.tag_colors import category_color_hex  # noqa: PLC0415
+
+    content_service, tag_service, _, _, unit, cat1, cat2, tag1, tag2 = unit_with_tags
+    recent = _make_recent_tags(tmp_path, [tag2.id])
+    panel = MetadataPanel(content_service, tag_service, recent_tags=recent)
+    panel.load_unit(unit)
+
+    style = panel.recent_tag_style(tag2.name)
+    assert "background:" in style
+    assert category_color_hex(cat2.color_hue) in style
+
+
 def test_immediate_tag_add_records_recent(qapp, unit_with_tags, tmp_path):
     """操作便捷性4：即时添加标签后记录到最近标签。"""
     content_service, tag_service, _, _, unit, cat1, cat2, tag1, tag2 = unit_with_tags
