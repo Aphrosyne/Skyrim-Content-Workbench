@@ -19,9 +19,11 @@ from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QDialog, QInputDialog, QMessageBox, QStatusBar, QTreeView, QWidget
 
 from app import ui_constants as ui
+from app.archive_settings import ArchiveSettings
 from app.file_list_model import FileListModel
 from app.folder_tree_model import FolderTreeModel
 from app.transaction_scope import TransactionScope
+from application.archive_manifest_service import ArchiveManifestService
 from application.clipboard_service import ClipboardService
 from application.content_service import ContentService
 from application.errors import (
@@ -69,6 +71,8 @@ class FileOperationsController(QObject):
         dialog_parent: QWidget,
         host: object,
         strip_service: StripService | None = None,
+        archive_settings: ArchiveSettings | None = None,
+        archive_manifest_service: ArchiveManifestService | None = None,
         parent: QObject | None = None,
     ) -> None:
         """初始化文件操作控制器。
@@ -89,6 +93,8 @@ class FileOperationsController(QObject):
         self._service = managed_root_service
         self._assembly_panel = assembly_panel
         self._strip_service = strip_service
+        self._archive_settings = archive_settings
+        self._archive_manifest_service = archive_manifest_service
         self._tx = transaction_scope
         self._status_bar = status_bar
         self._refresh_tree = refresh_tree
@@ -807,7 +813,9 @@ class FileOperationsController(QObject):
         ok_msg: str = ui.SHORTCUT_MOVE_TO_OK,
         fail_title: str = ui.MOVE_TO_DIALOG_TITLE,
         partial_msg: str = ui.SHORTCUT_MOVE_TO_PARTIAL,
-    ) -> None:
+        before_commit: Callable[[list[Path]], None] | None = None,
+        record_recent_target: bool = True,
+    ) -> int:
         """执行移动到目标目录（复用 ConflictResolutionService 处理冲突）。
 
         流程与 perform_paste 类似，但 operation 固定为 'cut'（移动），
@@ -815,6 +823,15 @@ class FileOperationsController(QObject):
 
         UX 重构 Phase 1 Task 4 修复3：拖拽 / 添加到钉住文件夹也走此路径，
         统一冲突解决流程（重命名/跳过/覆盖询问），统一自目录检测（修复4）。
+
+        功能增加1（2026-08-04）：新增 before_commit 钩子（提交事务前调用，
+        传入本次成功移动后的目标路径列表，供归档删除内容单元标记使用），
+        并返回成功移动条数（既有调用方忽略返回值，向后兼容）。
+        record_recent_target=False 时（归档移动）不写入「最近移动目标」，
+        避免归档目标污染 Ctrl+Q 快速移动的记忆（验收反馈 2026-08-04）。
+
+        Returns:
+            成功移动的条目数。
         """
         from application.conflict_resolution_service import (  # noqa: PLC0415
             ConflictResolutionService,
@@ -823,7 +840,7 @@ class FileOperationsController(QObject):
         )
 
         if self._file_operation_service is None:
-            return
+            return 0
 
         conflict_service = ConflictResolutionService()
         conflicts = conflict_service.scan_conflicts(src_paths, target_dir, operation="cut")
@@ -833,7 +850,7 @@ class FileOperationsController(QObject):
             QMessageBox.information(
                 self._dialog_parent, fail_title, ui.SHORTCUT_MOVE_TO_CROSS_DRIVE
             )
-            return
+            return 0
 
         # 冲突解决（Q5=A 复用 ConflictResolutionDialog）
         if has_conflict(conflicts):
@@ -841,7 +858,7 @@ class FileOperationsController(QObject):
 
             conflict_dialog = ConflictResolutionDialog(conflicts, self._dialog_parent)
             if conflict_dialog.exec() != QDialog.DialogCode.Accepted:
-                return  # 用户取消
+                return 0  # 用户取消
             decisions = conflict_dialog.decisions()
         else:
             # 无冲突，全部用默认目标路径
@@ -853,6 +870,7 @@ class FileOperationsController(QObject):
         ok_count = 0
         fail_count = 0
         errors: list[str] = []
+        moved_dsts: list[Path] = []
         for action in actions:
             if action.skipped:
                 continue
@@ -861,6 +879,7 @@ class FileOperationsController(QObject):
                     action.src, action.dst, overwrite=action.overwrite
                 )
                 ok_count += 1
+                moved_dsts.append(action.dst)
             except SourceNotFoundError:
                 fail_count += 1
                 errors.append(ui.SHORTCUT_MOVE_TO_SRC_NOT_FOUND.format(name=action.src.name))
@@ -874,9 +893,15 @@ class FileOperationsController(QObject):
                 fail_count += 1
                 errors.append(ui.SHORTCUT_MOVE_TO_FAILED.format(error=str(e)))
 
-        # 操作便捷性3：记录最近移动目标（至少 1 项成功）
-        if ok_count > 0:
+        # 操作便捷性3：记录最近移动目标（至少 1 项成功）。
+        # 归档移动不写入（record_recent_target=False），
+        # 归档目标只记忆在 ArchiveSettings.archive/last_target，与快速移动互不干扰。
+        if ok_count > 0 and record_recent_target:
             self._host._recent_move_targets.record(target_dir)
+
+        # 功能增加1：提交前钩子（与移动同一事务，如归档删除内容单元标记）
+        if before_commit is not None:
+            before_commit(moved_dsts)
 
         # 提交事务 + 刷新 UI
         self._tx.commit()
@@ -904,6 +929,170 @@ class FileOperationsController(QObject):
                 fail_title,
                 partial_msg.format(ok=ok_count, fail=fail_count) + "\n\n" + "\n".join(errors[:5]),
             )
+
+        return ok_count
+
+    # === 功能增加1（2026-08-04）：归档 ===
+
+    def _current_archive_settings(self) -> ArchiveSettings | None:
+        """返回 ArchiveSettings（构造注入优先，测试/旧宿主回退 host 属性）。"""
+        if self._archive_settings is not None:
+            return self._archive_settings
+        return getattr(self._host, "_archive_settings", None)
+
+    def _archive_selected_src_paths(self) -> list[Path]:
+        """获取 Ctrl+W 选中的源路径（目录树聚焦优先，与 Ctrl+Q 对称）。"""
+        if self._tree_view.hasFocus():
+            tree_path = self._host._tree_selected_path()  # noqa: SLF001
+            if tree_path is None:
+                self._status_bar.showMessage(ui.ARCHIVE_NO_SELECTION, 2000)
+                return []
+            return [tree_path]
+        entries = self._get_selected_entries()
+        if not entries:
+            self._status_bar.showMessage(ui.ARCHIVE_NO_SELECTION, 2000)
+            return []
+        return [Path(e.path) for e in entries]
+
+    def on_shortcut_archive_quick(self) -> None:
+        """Ctrl+W：快速归档（目录树/中栏选中项 → 上次归档位置）。"""
+        self._perform_archive_with_selection(self._archive_selected_src_paths())
+
+    def on_archive_quick(self, entries: list[FileEntry]) -> None:
+        """中栏右键「快速归档」。"""
+        self._perform_archive_with_selection([Path(e.path) for e in entries])
+
+    def on_archive_quick_tree(self, node) -> None:
+        """目录树右键「快速归档」。"""
+        self._perform_archive_with_selection([Path(node.real_path)])
+
+    def _perform_archive_with_selection(self, src_paths: list[Path]) -> None:
+        """快速归档：有上次归档位置（且仍存在）直接归档，否则打开归档选择。"""
+        if not src_paths:
+            return
+        settings = self._current_archive_settings()
+        last = settings.last_target() if settings is not None else None
+        if last is not None and Path(last).is_dir():
+            self.perform_archive(src_paths, Path(last))
+            return
+        self._open_archive_dialog(src_paths)
+
+    def on_archive_to(self, entries: list[FileEntry]) -> None:
+        """中栏右键「归档到…」。"""
+        if not entries:
+            self._status_bar.showMessage(ui.ARCHIVE_NO_SELECTION, 2000)
+            return
+        self._open_archive_dialog([Path(e.path) for e in entries])
+
+    def on_archive_to_tree(self, node) -> None:
+        """目录树右键「归档到…」。"""
+        self._open_archive_dialog([Path(node.real_path)])
+
+    def _open_archive_dialog(self, src_paths: list[Path]) -> None:
+        """打开归档目标选择对话框（以归档根为根的目录树，默认选中归档根）。"""
+        from app.move_to_dialog import MoveToDialog  # noqa: PLC0415
+
+        root_path: Path | None = None
+        default_expand: Path | None = None
+        settings = self._current_archive_settings()
+        if settings is not None and settings.root_path() is not None:
+            root = Path(settings.root_path())
+            if root.is_dir():
+                # 功能增加1：归档选择只显示归档目录为根的子树，并默认选中归档根
+                root_path = root
+                default_expand = root
+        if default_expand is None:
+            default_expand = Path(src_paths[0]).parent
+
+        dialog = MoveToDialog(
+            folder_tree_service=self._tree_service,
+            src_paths=src_paths,
+            default_expand_path=default_expand,
+            recent_targets=self._host._recent_move_targets.list_recent(),  # noqa: SLF001
+            root_path=root_path,
+            parent=self._dialog_parent,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self._status_bar.showMessage(ui.SHORTCUT_MOVE_TO_CANCELLED, 2000)
+            return
+        target_dir = dialog.selected_target_path()
+        if target_dir is None:
+            self._status_bar.showMessage(ui.SHORTCUT_MOVE_TO_NO_TARGET, 2000)
+            return
+        self.perform_archive(src_paths, target_dir)
+
+    def perform_archive(self, src_paths: list[Path], target_dir: Path) -> None:
+        """归档移动：复用 perform_move_to 全流程 + 移动后删除内容单元标记。
+
+        - before_commit 钩子：删除本次成功移动项（含子项）的 ContentUnit 记录，
+          与移动同一事务提交；撤销只移回文件、不恢复标记（已知行为）。
+        - 成功后记录上次归档位置（archive/last_target），供 Ctrl+W 复用。
+        """
+        try:
+            ok_count = self.perform_move_to(
+                src_paths,
+                target_dir,
+                before_commit=self._delete_marks_under,
+                ok_msg=ui.ARCHIVE_OK,
+                fail_title=ui.ARCHIVE_FAILED,
+                partial_msg=ui.ARCHIVE_PARTIAL,
+                record_recent_target=False,
+            )
+        except Exception as e:  # noqa: BLE001 - UI 边界统一兜底
+            self._handle_error(e, ui.ARCHIVE_FAILED)
+            return
+        if ok_count > 0:
+            settings = self._current_archive_settings()
+            if settings is not None:
+                settings.record_target(target_dir)
+
+    def _delete_marks_under(self, moved_paths: list[Path]) -> None:
+        """删除移动后目标路径（含子项）的内容单元记录（归档语义）。"""
+        for moved in moved_paths:
+            self._content_service.unmark_path_and_descendants(moved)
+
+    def on_mark_archive_root(self, path: Path) -> None:
+        """标记归档根目录：写入 QSettings + 立即清除根内内容单元标记。"""
+        settings = self._current_archive_settings()
+        if settings is None:
+            return
+        settings.set_root(path)
+        try:
+            removed = self._content_service.unmark_path_and_descendants(path)
+        except Exception as e:  # noqa: BLE001 - UI 边界统一兜底
+            settings.clear_root()
+            self._handle_error(e, ui.ARCHIVE_FAILED)
+            return
+        self._tx.commit()
+        self._refresh_tree()
+        self._refresh_middle_current()
+        if removed > 0:
+            self._status_bar.showMessage(ui.ARCHIVE_MARKED_WITH_CLEANUP.format(n=removed), 3000)
+        else:
+            self._status_bar.showMessage(ui.ARCHIVE_MARKED, 3000)
+
+    def on_unmark_archive_root(self, path: Path) -> None:
+        """取消归档根目录标记（仅清 QSettings；根内记录保留，扫描恢复候选）。"""
+        settings = self._current_archive_settings()
+        if settings is None:
+            return
+        settings.clear_root()
+        # 功能增加1：取消标记后刷新目录树，移除归档根图标/后缀标记
+        self._refresh_tree()
+        self._status_bar.showMessage(ui.ARCHIVE_UNMARKED, 3000)
+
+    def on_generate_archive_manifest(self, path: Path) -> None:
+        """归档根目录右键「生成归档内容清单」（输出到其上级目录）。"""
+        service = self._archive_manifest_service
+        if service is None:
+            return
+        target_dir = Path(path)
+        try:
+            output_file = service.generate_manifest(target_dir, target_dir.parent)
+        except OSError as e:
+            self._status_bar.showMessage(ui.ARCHIVE_MANIFEST_FAILED.format(error=str(e)), 4000)
+            return
+        self._status_bar.showMessage(ui.ARCHIVE_MANIFEST_OK.format(path=str(output_file)), 5000)
 
     # === 操作便捷性1（2026-08-04）：剥离（提取内容） ===
 

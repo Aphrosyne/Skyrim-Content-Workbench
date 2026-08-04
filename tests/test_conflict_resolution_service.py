@@ -43,6 +43,38 @@ class TestScanConflicts:
         # has_conflict 应为 False
         assert has_conflict(conflicts) is False
 
+    def test_same_location_move_is_noop(self, tmp_path: Path) -> None:
+        """目标路径等于源路径（移动到自身所在目录）→ 自动跳过、无冲突（验收反馈 2026-08-04）。"""
+        svc = ConflictResolutionService()
+        src = tmp_path / "a.txt"
+        src.write_text("src")
+
+        conflicts = svc.scan_conflicts([src], tmp_path, operation="cut")
+
+        assert conflicts == []
+        assert has_conflict(conflicts) is False
+        # 空冲突列表 + 空决策 → 空操作列表（调用方不会执行任何移动）
+        assert svc.resolve(conflicts, []) == []
+
+    def test_same_location_skipped_while_other_conflicts_kept(self, tmp_path: Path) -> None:
+        """混合场景：同位置条目被剔除，其他真实冲突保留。"""
+        svc = ConflictResolutionService()
+        dst_dir = tmp_path / "dst"
+        dst_dir.mkdir()
+        src_same = dst_dir / "same.txt"
+        src_same.write_text("src")
+        other_dir = tmp_path / "other"
+        other_dir.mkdir()
+        src_other = other_dir / "b.txt"
+        src_other.write_text("src2")
+        (dst_dir / "b.txt").write_text("existing")
+
+        conflicts = svc.scan_conflicts([src_same, src_other], dst_dir, operation="cut")
+
+        assert len(conflicts) == 1
+        assert conflicts[0].src == src_other
+        assert has_conflict(conflicts) is True
+
     def test_conflict_when_dst_exists(self, tmp_path: Path) -> None:
         """目标目录已有同名文件时，has_conflict 返回 True。"""
         svc = ConflictResolutionService()

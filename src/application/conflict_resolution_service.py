@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from application.errors import FileOperationError
+from infrastructure.path_utils import make_path_key
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,9 @@ class ConflictResolutionService:
         跨盘剪切（operation='cut' 且 src 与 dst_dir 不同盘）标记 is_cross_drive=True，
         UI 层应拒绝执行并提示（Q7=B）。
 
+        验收反馈（2026-08-04）：目标路径等于源路径（如快速移动目标就是文件所在
+        目录）属于无操作，直接从冲突列表剔除，不弹「覆盖/跳过/重命名」对话框。
+
         Args:
             src_paths: 源路径列表。
             dst_dir: 目标目录。
@@ -95,6 +99,9 @@ class ConflictResolutionService:
         conflicts: list[ConflictItem] = []
         for src in src_paths:
             default_dst = dst_dir / src.name
+            # 移动到自身所在目录 = 无操作：不弹冲突对话框、不执行（自动跳过）
+            if make_path_key(default_dst) == make_path_key(src):
+                continue
             suggested_dst = self._suggest_rename(default_dst)
             is_cross_drive = self._check_cross_drive(src, dst_dir, operation)
             conflicts.append(

@@ -775,3 +775,120 @@ def test_save_expanded_empty_model(db_connection: sqlite3.Connection, qapp: QApp
 
     view.deleteLater()
     qapp.processEvents()
+
+
+class TestArchiveRootMarker:
+    """目录树归档根标记（功能增加1，2026-08-04）。"""
+
+    def test_archive_root_node_shows_marker(
+        self, db_connection: sqlite3.Connection, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        """归档根节点显示〔归档〕后缀 + 工具提示（无图标）。"""
+        from app import ui_constants as ui
+
+        managed_service = _make_managed_root_service(db_connection)
+        root = tmp_path / "mods"
+        root.mkdir()
+        archive_dir = root / "99_归档"
+        archive_dir.mkdir()
+        managed = managed_service.add_root(root)
+        _make_scan_service(db_connection).scan_root(managed.id, incremental=False)
+
+        model = FolderTreeModel(
+            _make_tree_service(db_connection),
+            is_archive_root=lambda p: p == str(archive_dir),
+        )
+        model.refresh()
+        root_idx = model.index(0, 0)
+        model.fetchMore(root_idx)
+        archive_idx = None
+        for i in range(model.rowCount(root_idx)):
+            child = model.index(i, 0, root_idx)
+            display = model.data(child, Qt.DisplayRole)
+            if display and "99_归档" in display:
+                archive_idx = child
+                break
+        assert archive_idx is not None
+        assert ui.TREE_ARCHIVE_ROOT_HINT in model.data(archive_idx, Qt.DisplayRole)
+        assert model.data(archive_idx, Qt.DecorationRole) is None
+        assert ui.TREE_ARCHIVE_ROOT_TOOLTIP in model.data(archive_idx, Qt.ToolTipRole)
+
+    def test_non_archive_nodes_unchanged(
+        self, db_connection: sqlite3.Connection, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        """非归档根节点不附加归档标记。"""
+        from app import ui_constants as ui
+
+        managed_service = _make_managed_root_service(db_connection)
+        root = tmp_path / "mods"
+        root.mkdir()
+        (root / "99_归档").mkdir()
+        managed = managed_service.add_root(root)
+        _make_scan_service(db_connection).scan_root(managed.id, incremental=False)
+
+        model = FolderTreeModel(
+            _make_tree_service(db_connection),
+            is_archive_root=lambda p: p == str(root / "99_归档"),
+        )
+        model.refresh()
+        root_idx = model.index(0, 0)
+        model.fetchMore(root_idx)
+        for i in range(model.rowCount(root_idx)):
+            child = model.index(i, 0, root_idx)
+            display = model.data(child, Qt.DisplayRole)
+            if display and "99_归档" not in display:
+                assert ui.TREE_ARCHIVE_ROOT_HINT not in display
+
+    def test_no_callback_no_marker(
+        self, db_connection: sqlite3.Connection, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        """未注入回调（如 MoveToDialog）时行为与旧版一致。"""
+        from app import ui_constants as ui
+
+        managed_service = _make_managed_root_service(db_connection)
+        root = tmp_path / "mods"
+        root.mkdir()
+        (root / "99_归档").mkdir()
+        managed = managed_service.add_root(root)
+        _make_scan_service(db_connection).scan_root(managed.id, incremental=False)
+
+        model = FolderTreeModel(_make_tree_service(db_connection))
+        model.refresh()
+        root_idx = model.index(0, 0)
+        model.fetchMore(root_idx)
+        for i in range(model.rowCount(root_idx)):
+            child = model.index(i, 0, root_idx)
+            display = model.data(child, Qt.DisplayRole)
+            if display and "99_归档" in display:
+                assert ui.TREE_ARCHIVE_ROOT_HINT not in display
+
+    def test_root_path_roots_tree_at_folder(
+        self, db_connection: sqlite3.Connection, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        """root_path 注入后目录树以该目录为根（归档选择对话框）。"""
+        managed_service = _make_managed_root_service(db_connection)
+        root = tmp_path / "mods"
+        root.mkdir()
+        archive = root / "99_归档"
+        archive.mkdir()
+        (archive / "批次").mkdir()
+        (archive / "a.7z").write_bytes(b"\x00")
+        other = root / "其他"
+        other.mkdir()
+        managed = managed_service.add_root(root)
+        _make_scan_service(db_connection).scan_root(managed.id, incremental=False)
+
+        model = FolderTreeModel(_make_tree_service(db_connection), root_path=str(archive))
+        model.refresh()
+
+        assert model.root_node_count() == 1
+        root_idx = model.index(0, 0)
+        assert "99_归档" in model.data(root_idx, Qt.DisplayRole)
+        model.fetchMore(root_idx)
+        names = [
+            model.data(model.index(i, 0, root_idx), Qt.DisplayRole)
+            for i in range(model.rowCount(root_idx))
+        ]
+        assert "批次" in names
+        # 完整树中的其他目录不出现（树已以归档根为根）
+        assert "其他" not in names

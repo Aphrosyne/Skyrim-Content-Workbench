@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from PySide6.QtCore import QAbstractItemModel, QModelIndex, Qt
 
@@ -56,10 +57,24 @@ class FolderTreeModel(QAbstractItemModel):
         tree_view.setModel(model)
     """
 
-    def __init__(self, service: FolderTreeService, parent=None) -> None:
+    def __init__(
+        self,
+        service: FolderTreeService,
+        parent=None,
+        is_archive_root: Callable[[str], bool] | None = None,
+        root_path: str | None = None,
+    ) -> None:
         super().__init__(parent)
         self._service = service
+        self._is_archive_root = is_archive_root
+        # 功能增加1（2026-08-04）：root_path 非 None 时，目录树以该目录为根
+        # （归档选择对话框：打开以归档目录为根的树，而非完整受管理根树）。
+        self._root_path = root_path
         self._root_nodes: list[_Node] = []
+
+    def _is_archive_node(self, tree_node: TreeNode) -> bool:
+        """判断目录树节点是否为归档根目录（功能增加1，2026-08-04）。"""
+        return self._is_archive_root is not None and self._is_archive_root(tree_node.real_path)
 
     # --- QAbstractItemModel 必需方法 ---
 
@@ -131,8 +146,12 @@ class FolderTreeModel(QAbstractItemModel):
             name = tn.display_name
             if tn.category == "unscanned_root":
                 name = f"{name}{ui.TREE_UNSCANNED_HINT}"
+            if self._is_archive_node(tn):
+                name = f"{name}{ui.TREE_ARCHIVE_ROOT_HINT}"
             return name
         if role == Qt.ToolTipRole:
+            if self._is_archive_node(tn):
+                return f"{tn.real_path}\n{ui.TREE_ARCHIVE_ROOT_TOOLTIP}"
             return tn.real_path
         if role == Qt.UserRole:
             return tn.node_id
@@ -182,18 +201,26 @@ class FolderTreeModel(QAbstractItemModel):
     # --- 刷新 ---
 
     def refresh(self) -> None:
-        """重新加载根节点列表，重置所有缓存。"""
+        """重新加载根节点列表，重置所有缓存。
+
+        root_path 注入时只加载该目录为根的单个顶层节点（归档选择对话框）；
+        否则加载全部受管理根目录。
+        """
         self.beginResetModel()
         try:
-            root_tns = self._service.list_root_nodes()
+            if self._root_path is not None:
+                root_tn = self._service.get_node_by_path(self._root_path)
+                self._root_nodes = [_Node(root_tn, parent=None)] if root_tn is not None else []
+            else:
+                root_tns = self._service.list_root_nodes()
+                self._root_nodes = []
+                for i, tn in enumerate(root_tns):
+                    node = _Node(tn, parent=None)
+                    node.row_in_parent = i
+                    self._root_nodes.append(node)
         except Exception:  # noqa: BLE001 - model 边界需捕获所有异常
             logger.exception("加载目录树根节点失败")
-            root_tns = []
-        self._root_nodes = []
-        for i, tn in enumerate(root_tns):
-            node = _Node(tn, parent=None)
-            node.row_in_parent = i
-            self._root_nodes.append(node)
+            self._root_nodes = []
         self.endResetModel()
 
     def save_expanded_paths(self, view) -> set[str]:

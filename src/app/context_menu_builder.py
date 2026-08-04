@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QAbstractItemView, QMenu, QWidget
 
 from app import ui_constants as ui
+from app.archive_settings import ArchiveSettings
 from app.card_list_model import CardListModel
 from app.content_views import _DragDropListView, _RubberBandTableView
 from app.file_list_model import FileListModel
@@ -59,6 +61,7 @@ class ContextMenuBuilder:
         current_displayed_dir: Callable[[], str | None],
         dialog_parent: QWidget,
         host: object,
+        archive_settings: ArchiveSettings | None = None,
     ) -> None:
         """初始化菜单构建器。
 
@@ -83,6 +86,7 @@ class ContextMenuBuilder:
         self._current_displayed_dir = current_displayed_dir
         self._dialog_parent = dialog_parent
         self._host = host
+        self._archive_settings = archive_settings
 
     def _make_menu(self) -> QMenu:
         """构造右键菜单。
@@ -104,6 +108,23 @@ class ContextMenuBuilder:
         from app import main_window as mw_module  # noqa: PLC0415
 
         return mw_module.QMenu(title, parent)
+
+    def _is_archive_root(self, path: Path) -> bool:
+        """判断路径是否为当前归档根目录（功能增加1，2026-08-04）。"""
+        return self._archive_settings is not None and self._archive_settings.is_root(path)
+
+    def _is_inside_archive_root(self, path: Path) -> bool:
+        """判断路径是否位于归档根目录内（含归档根自身）（功能增加1，2026-08-04）。"""
+        if self._archive_settings is None:
+            return False
+        root = self._archive_settings.root_path()
+        if root is None:
+            return False
+        key = make_path_key(path)
+        root_key = make_path_key(root)
+        if key == root_key:
+            return True
+        return key.startswith(root_key.rstrip(os.sep) + os.sep)
 
     # --- 目录树右键菜单 ---
 
@@ -128,6 +149,11 @@ class ContextMenuBuilder:
         cut_action = None
         paste_action = None
         move_to_action = None
+        archive_quick_action = None
+        archive_to_action = None
+        mark_archive_action = None
+        unmark_archive_action = None
+        manifest_action = None
         explorer_action = None
         pin_action = None
         unpin_action = None
@@ -142,6 +168,22 @@ class ContextMenuBuilder:
                     paste_action = menu.addAction(ui.MENU_PASTE)
                     paste_action.setEnabled(self._clipboard_service.get() is not None)
                 move_to_action = menu.addAction(ui.MENU_MOVE_TO)
+                # 功能增加1（2026-08-04）：归档根内部条目不再显示归档移动/标记入口；
+                # 归档根内文件夹（含归档根自身）仅保留「生成归档内容清单」
+                node_path = Path(node.real_path)
+                node_inside_archive = self._is_inside_archive_root(node_path)
+                if not node_inside_archive:
+                    archive_quick_action = menu.addAction(ui.MENU_ARCHIVE_QUICK)
+                    archive_to_action = menu.addAction(ui.MENU_ARCHIVE_TO)
+                if self._archive_settings is not None:
+                    if self._is_archive_root(node_path):
+                        unmark_archive_action = menu.addAction(ui.MENU_UNMARK_ARCHIVE_ROOT)
+                        manifest_action = menu.addAction(ui.MENU_GENERATE_ARCHIVE_MANIFEST)
+                    elif node_inside_archive:
+                        # 归档根内的子文件夹：生成该子目录的归档内容清单
+                        manifest_action = menu.addAction(ui.MENU_GENERATE_ARCHIVE_MANIFEST)
+                    else:
+                        mark_archive_action = menu.addAction(ui.MENU_MARK_ARCHIVE_ROOT)
                 delete_action = menu.addAction(ui.MENU_DELETE)
             # 在资源管理器中打开（Stage 5 Task 1，节点有效时显示）
             explorer_action = menu.addAction(ui.MENU_OPEN_IN_EXPLORER)
@@ -176,6 +218,16 @@ class ContextMenuBuilder:
             self._host._on_shortcut_paste_tree()
         elif move_to_action is not None and chosen is move_to_action:
             self._host._on_move_to_tree(node)
+        elif archive_quick_action is not None and chosen is archive_quick_action:
+            self._host._on_archive_quick_tree(node)
+        elif archive_to_action is not None and chosen is archive_to_action:
+            self._host._on_archive_to_tree(node)
+        elif mark_archive_action is not None and chosen is mark_archive_action:
+            self._host._on_mark_archive_root(Path(node.real_path))
+        elif unmark_archive_action is not None and chosen is unmark_archive_action:
+            self._host._on_unmark_archive_root(Path(node.real_path))
+        elif manifest_action is not None and chosen is manifest_action:
+            self._host._on_generate_archive_manifest(Path(node.real_path))
         elif delete_action is not None and chosen is delete_action:
             self._host._on_shortcut_delete_tree()
         elif explorer_action is not None and chosen is explorer_action:
@@ -459,6 +511,49 @@ class ContextMenuBuilder:
                 actions.append((ui.MENU_PASTE, self._host._on_shortcut_paste, has_clipboard))
             # Stage 5 Task 5：移动到...（Q4=A 中栏 + 目录树均添加）
             actions.append((ui.MENU_MOVE_TO, lambda: self._host._on_move_to(entries), True))
+            # 功能增加1（2026-08-04）：快速归档 / 归档到…（归档根内部条目不显示）
+            if all(not self._is_inside_archive_root(Path(e.path)) for e in entries):
+                actions.append(
+                    (ui.MENU_ARCHIVE_QUICK, lambda: self._host._on_archive_quick(entries), True)
+                )
+                actions.append(
+                    (ui.MENU_ARCHIVE_TO, lambda: self._host._on_archive_to(entries), True)
+                )
+            # 归档根自身：取消标记 + 生成清单；根内子文件夹：生成该子目录清单；
+            # 普通文件夹：标记为归档根目录（单选文件夹）
+            if len(entries) == 1 and entries[0].is_dir and self._archive_settings is not None:
+                folder_path = Path(entries[0].path)
+                if self._is_archive_root(folder_path):
+                    actions.append(
+                        (
+                            ui.MENU_UNMARK_ARCHIVE_ROOT,
+                            lambda: self._host._on_unmark_archive_root(folder_path),
+                            True,
+                        )
+                    )
+                    actions.append(
+                        (
+                            ui.MENU_GENERATE_ARCHIVE_MANIFEST,
+                            lambda: self._host._on_generate_archive_manifest(folder_path),
+                            True,
+                        )
+                    )
+                elif self._is_inside_archive_root(folder_path):
+                    actions.append(
+                        (
+                            ui.MENU_GENERATE_ARCHIVE_MANIFEST,
+                            lambda: self._host._on_generate_archive_manifest(folder_path),
+                            True,
+                        )
+                    )
+                else:
+                    actions.append(
+                        (
+                            ui.MENU_MARK_ARCHIVE_ROOT,
+                            lambda: self._host._on_mark_archive_root(folder_path),
+                            True,
+                        )
+                    )
             # 操作便捷性1（2026-08-04）：剥离（提取内容）
             # 单选普通文件夹（未标记内容单元）+ 注入 StripService 时显示
             if (

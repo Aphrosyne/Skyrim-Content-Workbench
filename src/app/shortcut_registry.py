@@ -80,6 +80,11 @@ class ShortcutRegistry:
             host._shortcut_move_to_latest.setContext(Qt.ShortcutContext.WindowShortcut)
             host._shortcut_move_to_latest.activated.connect(host._on_shortcut_move_to_latest)
 
+            # 功能增加1（2026-08-04）：Ctrl+W 快速归档（窗口级，与 Ctrl+Q 一致）。
+            host._shortcut_archive_quick = QShortcut(QKeySequence("Ctrl+W"), host)
+            host._shortcut_archive_quick.setContext(Qt.ShortcutContext.WindowShortcut)
+            host._shortcut_archive_quick.activated.connect(host._on_shortcut_archive_quick)
+
         # Ctrl+C / Ctrl+X / Ctrl+V 依赖 FileOperationService + ClipboardService
         if host._file_operation_service is not None and host._clipboard_service is not None:
             # 中栏 Ctrl+C / Ctrl+X / Ctrl+V（Task 3b 真实逻辑）

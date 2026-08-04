@@ -64,11 +64,15 @@ class MoveToDialog(QDialog):
         src_paths: list[Path],
         default_expand_path: Path | None = None,
         recent_targets: list[str] | None = None,
+        root_path: Path | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._src_paths: list[Path] = list(src_paths)
         self._default_expand_path = default_expand_path
+        # 功能增加1（2026-08-04）：root_path 非 None 时，目录树以该目录为根
+        # （归档选择：只显示归档目录子树，而不是完整受管理根目录树）。
+        self._root_path = root_path
         # 操作便捷性3：最近移动目标（MainWindow 注入，用于顶部快捷区 + 默认定位）
         self._recent_targets: list[str] = list(recent_targets or [])
         self._selected_target: Path | None = None
@@ -77,7 +81,10 @@ class MoveToDialog(QDialog):
         self.resize(640, 480)
 
         # 独立的 FolderTreeModel 实例（R2：不共享主窗口 model）
-        self._tree_model = FolderTreeModel(folder_tree_service)
+        self._tree_model = FolderTreeModel(
+            folder_tree_service,
+            root_path=str(root_path) if root_path is not None else None,
+        )
         self._tree_model.refresh()
 
         self._setup_ui()

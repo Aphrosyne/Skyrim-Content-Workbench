@@ -37,6 +37,8 @@ STATUS_SCAN_FAILED = "扫描失败"
 TREE_GROUP_TITLE = "目录树"
 TREE_EMPTY_HINT = "尚未扫描任何目录。请先在左侧选择根目录并点击「扫描」。"
 TREE_UNSCANNED_HINT = "（未扫描）"
+TREE_ARCHIVE_ROOT_HINT = "〔归档〕"
+TREE_ARCHIVE_ROOT_TOOLTIP = "归档根目录"
 
 # 选中目录详情区域
 DETAIL_GROUP_TITLE = "选中目录详情"
@@ -243,6 +245,23 @@ SHORTCUT_MOVE_TO_SRC_NOT_FOUND = "源文件不存在，可能已被外部删除�
 SHORTCUT_MOVE_TO_FAILED = "移动失败：{error}"
 SHORTCUT_MOVE_TO_CROSS_DRIVE = "跨盘移动暂不支持"
 SHORTCUT_MOVE_TO_SELF_SUBDIR = "不能移动到自身或子目录"
+
+# 功能增加1（2026-08-04）：归档
+MENU_ARCHIVE_QUICK = "快速归档"
+MENU_ARCHIVE_TO = "归档到…"
+MENU_MARK_ARCHIVE_ROOT = "标记为归档根目录"
+MENU_UNMARK_ARCHIVE_ROOT = "取消归档根目录标记"
+MENU_GENERATE_ARCHIVE_MANIFEST = "生成归档内容清单"
+ARCHIVE_OK = "已归档 {n} 项到 {dir_name}"
+ARCHIVE_PARTIAL = "部分归档失败：成功 {ok} 项，失败 {fail} 项"
+ARCHIVE_FAILED = "归档失败"
+ARCHIVE_NO_SELECTION = "未选中任何条目"
+ARCHIVE_NO_LAST_TARGET = "暂无上次归档位置，请先使用「归档到…」选择一次目标"
+ARCHIVE_MARKED = "已标记为归档根目录"
+ARCHIVE_MARKED_WITH_CLEANUP = "已标记为归档根目录，并清理其下 {n} 条内容单元标记"
+ARCHIVE_UNMARKED = "已取消归档根目录标记"
+ARCHIVE_MANIFEST_OK = "已生成归档内容清单：{path}"
+ARCHIVE_MANIFEST_FAILED = "生成归档内容清单失败：{error}"
 
 MOVE_TO_DIALOG_TITLE = "移动到..."
 MOVE_TO_DIALOG_HINT = "请选择目标目录（将移动 {n} 项）："
@@ -643,6 +662,9 @@ QSETTINGS_KEY_MARKER_STRIPE_COLOR = "marker/stripe_color"
 QSETTINGS_KEY_URL_NEXUS_PREFIX = "url/nexus_url_prefix"
 QSETTINGS_KEY_URL_SEARCH_ENGINE = "url/search_engine_url"
 QSETTINGS_KEY_URL_SEARCH_PREFIX = "url/search_prefix"
+# 归档设置（功能增加1，2026-08-04）
+QSETTINGS_KEY_ARCHIVE_ROOT = "archive/root_path"
+QSETTINGS_KEY_ARCHIVE_LAST_TARGET = "archive/last_target"
 # === 布局默认值（UI合理性2/3，2026-08-03） ===
 # 所有分割线/列宽默认值集中在此，用户可手动调整后重启生效。
 # 注意：文件列表中"名称"列使用 Stretch 模式（自动吸收剩余宽度），

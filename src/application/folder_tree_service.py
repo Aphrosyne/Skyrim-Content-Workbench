@@ -156,6 +156,18 @@ class FolderTreeService:
             return self._get_folder_cache_node(node_id[3:])
         return None
 
+    def get_node_by_path(self, path: str) -> TreeNode | None:
+        """按 real_path 查找节点（功能增加1，2026-08-04）。
+
+        用于归档选择对话框：以归档目录为根构建树时，将归档根（folder_cache
+        中已有记录的目录）包装为单个顶层节点。仅支持已扫描的目录；
+        未找到返回 None。
+        """
+        fc = self._folder_cache_repo.get_by_path(path)
+        if fc is None:
+            return None
+        return self._get_folder_cache_node(fc.id)
+
     def count_children(self, node_id: str) -> int:
         """返回直接子节点数量。无效 node_id 返回 0。"""
         return len(self.list_children(node_id))

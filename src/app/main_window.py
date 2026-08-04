@@ -68,6 +68,7 @@ from PySide6.QtWidgets import (
 
 from app import file_type_icon_colors, file_type_icons
 from app import ui_constants as ui
+from app.archive_settings import ArchiveSettings
 from app.assembly_controller import AssemblyController
 from app.assembly_panel import AssemblyPanel
 from app.asset_credits_dialog import AssetCreditsDialog
@@ -116,6 +117,7 @@ from app.transaction_scope import TransactionScope
 from app.tree_roots_controller import TreeRootsController
 from app.url_settings import UrlSettingsConfig, UrlSettingsDialog
 from app.view_state_controller import ViewStateController
+from application.archive_manifest_service import ArchiveManifestService
 from application.assembly_service import AssemblyService
 from application.clipboard_service import ClipboardService
 from application.content_service import ContentService
@@ -221,6 +223,9 @@ class MainWindow(QMainWindow):
         self._recent_move_targets = RecentMoveTargets(self._qsettings)
         # UI合理性8（2026-08-02）：最近使用标签（面板最近区 / 右键「添加最近标签」）
         self._recent_tags = RecentTags(self._qsettings)
+        # 功能增加1（2026-08-04）：归档设置（归档根目录 + 上次归档位置）
+        self._archive_settings = ArchiveSettings(self._qsettings)
+        self._archive_manifest_service = ArchiveManifestService()
         # 操作便捷性7：目录 → 最后一次选中路径列表（后退/前进时恢复）
         self._selection_memory = SelectionMemory()
 
@@ -241,6 +246,7 @@ class MainWindow(QMainWindow):
             set_status=self._set_status,
             refresh_tree=self._refresh_tree,
             refresh_content_list=self._refresh_content_list,
+            archive_root_provider=self._archive_settings.root_path,
         )
         # TD-M21 阶段 2：导航历史与视图状态控制器（状态归控制器，MainWindow 镜像/委托）
         self._navigation_controller = NavigationController(
@@ -319,6 +325,7 @@ class MainWindow(QMainWindow):
             current_displayed_dir=self._current_displayed_dir,
             dialog_parent=self,
             host=self,
+            archive_settings=self._archive_settings,
         )
         # TD-M21 阶段 6：文件操作编排控制器（新建/重命名/删除/粘贴/移动到/撤销）
         self._file_operations_controller = FileOperationsController(
@@ -345,6 +352,8 @@ class MainWindow(QMainWindow):
             handle_error=self._handle_service_error,
             dialog_parent=self,
             host=self,
+            archive_settings=self._archive_settings,
+            archive_manifest_service=self._archive_manifest_service,
             parent=self,
         )
         # UX 重构 Task 7 Step 3/4：装配面板与元数据控制器
@@ -674,7 +683,11 @@ class MainWindow(QMainWindow):
         self._tree_view.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self._tree_view.setSelectionMode(QTreeView.SelectionMode.SingleSelection)
         self._tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._tree_model = FolderTreeModel(self._tree_service)
+        # 功能增加1（2026-08-04）：归档根目录在目录树中显示标记（图标 + 〔归档〕后缀）
+        self._tree_model = FolderTreeModel(
+            self._tree_service,
+            is_archive_root=self._archive_settings.is_root,
+        )
         self._tree_view.setModel(self._tree_model)
         self._tree_view.selectionModel().selectionChanged.connect(self._on_tree_selection_changed)
         self._tree_view.customContextMenuRequested.connect(self._on_tree_context_menu)
@@ -1713,6 +1726,40 @@ class MainWindow(QMainWindow):
     def _on_strip_folder(self, entry: FileEntry) -> None:
         """中栏右键「提取内容」入口（委托 FileOperationsController）。"""
         self._file_operations_controller.on_strip_folder(entry)
+
+    # --- 功能增加1（2026-08-04）：归档入口（委托 FileOperationsController） ---
+
+    def _on_shortcut_archive_quick(self) -> None:
+        """Ctrl+W：快速归档（目录树/中栏选中项 → 上次归档位置）。"""
+        self._file_operations_controller.on_shortcut_archive_quick()
+
+    def _on_archive_quick(self, entries: list[FileEntry]) -> None:
+        """中栏右键「快速归档」入口。"""
+        self._file_operations_controller.on_archive_quick(entries)
+
+    def _on_archive_to(self, entries: list[FileEntry]) -> None:
+        """中栏右键「归档到…」入口。"""
+        self._file_operations_controller.on_archive_to(entries)
+
+    def _on_archive_quick_tree(self, node) -> None:
+        """目录树右键「快速归档」入口。"""
+        self._file_operations_controller.on_archive_quick_tree(node)
+
+    def _on_archive_to_tree(self, node) -> None:
+        """目录树右键「归档到…」入口。"""
+        self._file_operations_controller.on_archive_to_tree(node)
+
+    def _on_mark_archive_root(self, path: Path) -> None:
+        """右键「标记为归档根目录」入口。"""
+        self._file_operations_controller.on_mark_archive_root(path)
+
+    def _on_unmark_archive_root(self, path: Path) -> None:
+        """右键「取消归档根目录标记」入口。"""
+        self._file_operations_controller.on_unmark_archive_root(path)
+
+    def _on_generate_archive_manifest(self, path: Path) -> None:
+        """右键「生成归档内容清单」入口。"""
+        self._file_operations_controller.on_generate_archive_manifest(path)
 
     def _insert_recent_move_submenu(self, menu, src_paths: list[Path]) -> None:
         """插入「移动到最近目录」子菜单（委托 ContextMenuBuilder）。"""

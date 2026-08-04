@@ -602,6 +602,30 @@ def test_ctrl_q_moves_to_latest(qapp, move_to_env, tmp_path: Path) -> None:
     assert (target / "file1.7z").exists()
 
 
+def test_ctrl_q_same_dir_auto_skips_without_dialog(
+    qapp, move_to_env, tmp_path: Path, monkeypatch
+) -> None:
+    """快速移动目标=文件所在目录 → 自动跳过，不弹「覆盖/跳过/重命名」对话框（2026-08-04 反馈）。"""
+    window, _, root_dir, _, _ = move_to_env
+    _isolate_recent_targets(window, tmp_path)
+    # 最近目标 = Stash（file1.7z 所在目录）→ 移动到自身所在目录 = 无操作
+    window._recent_move_targets.record(str(root_dir / "Stash"))  # noqa: SLF001
+    _select_stash(qapp, window)
+    _select_entry(qapp, window, "file1.7z")
+    qapp.processEvents()
+
+    def _fail_dialog(*args, **kwargs):  # noqa: ANN002, ANN003 - 仅用于断言不弹窗
+        raise AssertionError("同位置移动不应弹出冲突对话框")
+
+    monkeypatch.setattr("app.conflict_resolution_dialog.ConflictResolutionDialog", _fail_dialog)
+
+    window._on_shortcut_move_to_latest()  # noqa: SLF001
+    qapp.processEvents()
+
+    # 文件仍在原目录，未被移动（自动跳过）
+    assert (root_dir / "Stash" / "file1.7z").is_file()
+
+
 def test_ctrl_q_tree_moves_selected_directory(qapp, move_to_env, tmp_path: Path) -> None:
     """Ctrl+Q 目录树聚焦时 → 移动树选中节点并刷新目录树（BugFix1）。"""
     window, conn, root_dir, _, _ = move_to_env
