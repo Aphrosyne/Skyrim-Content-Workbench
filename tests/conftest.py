@@ -64,3 +64,32 @@ def db_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         conn.close()
+
+
+@pytest.fixture(autouse=True)
+def _clean_shared_qsettings() -> Iterator[None]:
+    """清理测试共享的默认 QSettings 持久化键（既有测试隔离缺陷，2026-08-04）。
+
+    背景：test_main_window_assembly.py / test_main_window_move_to.py 的部分用例
+    通过 ``_perform_move_to`` 把最近移动目标写入 MainWindow 默认 QSettings
+    （真实注册表 ``HKCU\\Software\\SkyrimContentWorkbench\\SkyrimContentWorkbench``），
+    跨用例/跨 pytest 进程污染后续运行；test_main_window_metadata.py 的 FakeMenu
+    用例在污染状态下会因真实子菜单以 FakeMenu 为父构造而崩溃。
+
+    修复：本 fixture 在每个测试前后移除 ``recent_move_targets`` / ``recent_tags``
+    键（测试各自隔离的临时 INI QSettings 实例不受影响），保证共享状态不跨测试残留。
+    """
+    from PySide6.QtCore import QSettings  # noqa: PLC0415
+
+    from app import ui_constants as ui  # noqa: PLC0415
+
+    settings = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
+    settings.remove("recent_move_targets")
+    settings.remove("recent_tags")
+    settings.sync()
+    try:
+        yield
+    finally:
+        settings.remove("recent_move_targets")
+        settings.remove("recent_tags")
+        settings.sync()
