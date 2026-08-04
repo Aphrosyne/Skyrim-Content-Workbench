@@ -204,3 +204,55 @@ class TestSymlink:
         paths = {e.path for e in result.scanned_dirs}
         # link_to_target 不应出现在扫描结果中
         assert str(root / "link_to_target") not in paths
+
+
+class TestScanArchiveRoot:
+    """归档根目录扫描跳过（功能增加1，2026-08-04）。"""
+
+    def test_candidates_under_archive_root_excluded(self, tmp_path: Path) -> None:
+        """归档根及子目录内的压缩包不进入候选；根外候选保留。"""
+        root = tmp_path / "mods"
+        root.mkdir()
+        archive_root = root / "99_归档"
+        archive_root.mkdir()
+        (archive_root / "batch1.7z").write_bytes(b"\x00" * 10)
+        (archive_root / "子目录").mkdir()
+        (archive_root / "子目录" / "nested.zip").write_bytes(b"\x00" * 10)
+        keep = root / "keep.7z"
+        keep.write_bytes(b"\x00" * 10)
+
+        scanner = FileScanner(archive_root=archive_root)
+        result = scanner.scan_full(root)
+
+        assert str(keep) in result.archive_candidates
+        assert all(str(archive_root) not in p for p in result.archive_candidates)
+        assert result.archive_candidates == [str(keep)]
+
+    def test_dirs_still_recorded_for_tree(self, tmp_path: Path) -> None:
+        """归档根及其子目录仍被访问记录，保证目录树 folder_cache 完整。"""
+        root = tmp_path / "mods"
+        root.mkdir()
+        archive_root = root / "99_归档"
+        archive_root.mkdir()
+        (archive_root / "batch1.7z").write_bytes(b"\x00" * 10)
+        (archive_root / "子目录").mkdir()
+
+        scanner = FileScanner(archive_root=archive_root)
+        result = scanner.scan_full(root)
+
+        visited = {os.path.normcase(p) for p in result.all_visited_dirs}
+        assert os.path.normcase(str(archive_root)) in visited
+        assert os.path.normcase(str(archive_root / "子目录")) in visited
+
+    def test_no_archive_root_behaves_as_before(self, tmp_path: Path) -> None:
+        """未配置归档根时行为不变。"""
+        root = tmp_path / "mods"
+        root.mkdir()
+        (root / "a.7z").write_bytes(b"\x00" * 10)
+        (root / "sub").mkdir()
+        (root / "sub" / "b.zip").write_bytes(b"\x00" * 10)
+
+        scanner = FileScanner()
+        result = scanner.scan_full(root)
+
+        assert len(result.archive_candidates) == 2

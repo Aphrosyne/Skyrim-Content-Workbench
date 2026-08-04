@@ -53,11 +53,18 @@ class ScanWorker(QObject):
     scan_finished = Signal(object)  # ScanSummary
     scan_failed = Signal(str)  # 用户可读错误消息
 
-    def __init__(self, db_path: Path, root_id: str, incremental: bool = True) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        root_id: str,
+        incremental: bool = True,
+        archive_root: Path | None = None,
+    ) -> None:
         super().__init__()
         self._db_path = db_path
         self._root_id = root_id
         self._incremental = incremental
+        self._archive_root = archive_root
 
     def run(self) -> None:
         """执行扫描。在 worker 所在线程内同步运行。
@@ -83,6 +90,7 @@ class ScanWorker(QObject):
                 folder_cache_repo=folder_cache_repo,
                 content_unit_repo=content_unit_repo,
                 uow=UnitOfWork(conn),
+                archive_root=self._archive_root,
             )
 
             self.scan_started.emit()

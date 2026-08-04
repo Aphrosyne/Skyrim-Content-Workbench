@@ -47,7 +47,12 @@ class ScanController(QObject):
         """返回当前是否有扫描在进行。"""
         return self._is_scanning
 
-    def start_scan(self, root_id: str, incremental: bool = True) -> None:
+    def start_scan(
+        self,
+        root_id: str,
+        incremental: bool = True,
+        archive_root: Path | None = None,
+    ) -> None:
         """启动后台扫描；扫描进行中重复调用忽略。"""
         if self._is_scanning:
             return
@@ -55,7 +60,12 @@ class ScanController(QObject):
         self.scan_started.emit()
 
         self._thread = QThread()
-        self._worker = ScanWorker(self._db_path, root_id, incremental=incremental)
+        self._worker = ScanWorker(
+            self._db_path,
+            root_id,
+            incremental=incremental,
+            archive_root=archive_root,
+        )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         # TD-M13：转发进度文本（ScanWorker 目前仅发送"正在扫描…"）

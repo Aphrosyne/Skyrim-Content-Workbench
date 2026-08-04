@@ -36,6 +36,7 @@ class ScanUiState:
         set_status: Callable[[str], None],
         refresh_tree: Callable[[], None],
         refresh_content_list: Callable[[str], None],
+        archive_root_provider: Callable[[], str | None] | None = None,
     ) -> None:
         """初始化扫描 UI 状态。"""
         self._scan_button = scan_button
@@ -49,6 +50,7 @@ class ScanUiState:
         self._set_status = set_status
         self._refresh_tree = refresh_tree
         self._refresh_content_list = refresh_content_list
+        self._archive_root_provider = archive_root_provider
 
     def on_scan(self, incremental: bool = True) -> None:
         """启动后台扫描。扫描期间禁用扫描入口。"""
@@ -61,7 +63,10 @@ class ScanUiState:
 
         self.begin()
         # UX 重构 Task 7 Step 2：线程生命周期由 ScanController 管理
-        self._scan_controller.start_scan(root_id, incremental=incremental)
+        archive_root = self._archive_root_provider() if self._archive_root_provider else None
+        self._scan_controller.start_scan(
+            root_id, incremental=incremental, archive_root=archive_root
+        )
 
     def begin(self) -> None:
         """扫描开始：禁用扫描入口与根目录操作按钮（UI 状态）。"""

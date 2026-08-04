@@ -644,3 +644,72 @@ class TestStaleContentUnitCleanup:
 
         assert summary.has_errors
         assert str(stale) in self._row_paths(db_connection)
+
+
+class TestScanArchiveRoot:
+    """ScanService 注入归档根目录（功能增加1，2026-08-04）。"""
+
+    def test_archive_root_produces_no_content_units_but_keeps_tree(
+        self, db_connection, managed_root_service, tmp_path
+    ) -> None:
+        """归档根内压缩包不创建内容单元；folder_cache 目录记录完整。"""
+        counter = {"n": 0}
+
+        def fake_uuid() -> str:
+            counter["n"] += 1
+            return f"uuid-{counter['n']}"
+
+        svc = ScanService(
+            managed_root_repo=ManagedRootRepository(db_connection),
+            folder_cache_repo=FolderCacheRepository(db_connection),
+            content_unit_repo=ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-08-04T00:00:00Z",
+            uuid_provider=fake_uuid,
+        )
+        root = tmp_path / "mods"
+        root.mkdir()
+        archive_root = root / "99_归档"
+        archive_root.mkdir()
+        (archive_root / "batch1.7z").write_bytes(b"\x00" * 10)
+        (archive_root / "子目录").mkdir()
+        (archive_root / "子目录" / "nested.zip").write_bytes(b"\x00" * 10)
+        keep = root / "keep.7z"
+        keep.write_bytes(b"\x00" * 10)
+        managed = managed_root_service.add_root(root)
+
+        archive_svc = ScanService(
+            managed_root_repo=ManagedRootRepository(db_connection),
+            folder_cache_repo=FolderCacheRepository(db_connection),
+            content_unit_repo=ContentUnitRepository(db_connection),
+            now_provider=lambda: "2026-08-04T00:00:00Z",
+            uuid_provider=fake_uuid,
+            archive_root=archive_root,
+        )
+        summary = archive_svc.scan_root(managed.id, incremental=False)
+
+        assert summary.content_units_found == 1
+        cu_paths = {
+            r["path"] for r in db_connection.execute("SELECT path FROM content_unit").fetchall()
+        }
+        # 归档根内直接/嵌套压缩包均未入库；根外候选正常入库
+        assert str(archive_root / "batch1.7z") not in cu_paths
+        assert str(archive_root / "子目录" / "nested.zip") not in cu_paths
+        assert str(keep) in cu_paths
+        # 归档根及其子目录的 folder_cache 记录完整（目录树不丢子目录）
+        fc_paths = {
+            r["path"] for r in db_connection.execute("SELECT path FROM folder_cache").fetchall()
+        }
+        assert str(archive_root) in fc_paths
+        assert str(archive_root / "子目录") in fc_paths
+
+        # 对照组：未注入 archive_root 的扫描会把归档根内压缩包也作为候选
+        svc.scan_root(managed.id, incremental=False)
+        assert (
+            len(
+                db_connection.execute(
+                    "SELECT path FROM content_unit WHERE path = ?",
+                    (str(archive_root / "batch1.7z"),),
+                ).fetchall()
+            )
+            == 1
+        )

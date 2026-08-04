@@ -84,6 +84,7 @@ class ScanService:
         now_provider: Callable[[], str] | None = None,
         uuid_provider: Callable[[], str] | None = None,
         uow: UnitOfWork | None = None,
+        archive_root: Path | None = None,
     ) -> None:
         """初始化 ScanService。
 
@@ -100,11 +101,14 @@ class ScanService:
                 执行，保证原子性。None 时保持原行为（调用方控制事务边界，
                 如 ScanWorker.run 末尾的 conn.commit()）。单个 content_unit
                 创建失败的预期异常仍在事务内捕获，不触发回滚。
+            archive_root: 归档根目录（功能增加1，2026-08-04）。注入 FileScanner
+                后，该目录及其子目录内的压缩包不再作为内容单元候选（扫描跳过），
+                目录树 folder_cache 仍完整记录。
         """
         self._managed_root_repo = managed_root_repo
         self._folder_cache_repo = folder_cache_repo
         self._content_unit_repo = content_unit_repo
-        self._scanner = scanner or FileScanner()
+        self._scanner = scanner or FileScanner(archive_root=archive_root)
         self._now = now_provider or _default_now_utc
         self._new_uuid = uuid_provider or _default_uuid_provider
         self._uow = uow

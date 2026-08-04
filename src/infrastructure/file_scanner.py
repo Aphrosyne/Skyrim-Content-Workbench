@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -69,6 +70,16 @@ class ScanResult:
 
 class FileScanner:
     """只读文件系统扫描器。"""
+
+    def __init__(self, archive_root: Path | None = None) -> None:
+        """初始化扫描器。
+
+        Args:
+            archive_root: 归档根目录（功能增加1，2026-08-04）。非 None 时，
+                该目录及其子目录内的压缩包不再作为内容单元候选（扫描跳过），
+                但仍递归记录目录（保证目录树 folder_cache 完整，子目录不丢失）。
+        """
+        self._archive_root = archive_root
 
     def scan_full(self, root: Path) -> ScanResult:
         """全量扫描：无视 folder_cache，递归扫描所有子目录。"""
@@ -157,8 +168,9 @@ class FileScanner:
                     subdirs.append(entry)
                 elif entry.is_file():
                     ext = get_extension(entry.name)
-                    if ext in ARCHIVE_EXTENSIONS:
-                        # 压缩包文件作为内容单元候选（spec §5.4 2026-07-13 修正）
+                    if ext in ARCHIVE_EXTENSIONS and not self._is_under_archive_root(entry):
+                        # 压缩包文件作为内容单元候选（spec §5.4 2026-07-13 修正）；
+                        # 归档根目录内（含子目录）不再成为候选（功能增加1 决策 2026-08-04）
                         result.archive_candidates.append(str(entry))
             except OSError as e:
                 result.errors.append(ScanError(path=str(entry), message=f"无法读取条目：{e}"))
@@ -192,6 +204,19 @@ class FileScanner:
                 folder_mtime_map=folder_mtime_map,
                 result=result,
             )
+
+    def _is_under_archive_root(self, path: Path) -> bool:
+        """判断路径是否位于归档根目录内（含归档根自身）。
+
+        使用 make_path_key() 归一化前缀比较，避免大小写/分隔符差异。
+        """
+        if self._archive_root is None:
+            return False
+        key = make_path_key(path)
+        root_key = make_path_key(self._archive_root)
+        if key == root_key:
+            return True
+        return key.startswith(root_key.rstrip(os.sep) + os.sep)
 
     @staticmethod
     def mtime_equal(cached: float, current: float) -> bool:
