@@ -109,6 +109,7 @@ from app.tag_filter import TagFilterBar
 from app.thumbnail_coordinator import ThumbnailCoordinator
 from app.transaction_scope import TransactionScope
 from app.tree_roots_controller import TreeRootsController
+from app.url_settings import UrlSettingsConfig, UrlSettingsDialog
 from app.view_state_controller import ViewStateController
 from application.assembly_service import AssemblyService
 from application.clipboard_service import ClipboardService
@@ -552,6 +553,7 @@ class MainWindow(QMainWindow):
         self._menu_bar.layout_reset_requested.connect(self._on_layout_reset)
         self._menu_bar.switch_view_requested.connect(self._on_menu_view_switch)
         self._menu_bar.marker_config_requested.connect(self._on_marker_config_clicked)
+        self._menu_bar.url_settings_requested.connect(self._on_url_settings_clicked)
         self._menu_bar.tag_manager_requested.connect(self._on_tag_manager_clicked)
         self._menu_bar.operation_history_requested.connect(self._on_operation_history_clicked)
         # 工具菜单项按注入服务开关（与工具栏按钮可见性一致）
@@ -1192,6 +1194,14 @@ class MainWindow(QMainWindow):
             delegate.set_config(new_config)
         self._content_view.viewport().update()
 
+    def _on_url_settings_clicked(self) -> None:
+        """操作便捷性8/9：菜单「网址与搜索设置…」→ 配置对话框，确定后保存。"""
+        current = UrlSettingsConfig.load(self._qsettings)
+        dialog = UrlSettingsDialog(current, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        dialog.resulting_config().save(self._qsettings)
+
     def _on_menu_view_switch(self, mode: str) -> None:
         """UI合理性3：菜单视图切换（委托 ViewStateController）。"""
         self._view_state_controller.menu_view_switch(mode)
@@ -1243,6 +1253,18 @@ class MainWindow(QMainWindow):
     def _on_quick_set_cover(self, unit_id: str) -> None:
         """快速设置封面（委托 ContentListController）。"""
         self._content_list_controller.on_quick_set_cover(unit_id)
+
+    def _on_autofill_url(self, entry: FileEntry) -> None:
+        """右键「自动填入网址」（委托 ContentListController）。"""
+        self._content_list_controller.on_autofill_url(entry)
+
+    def _on_open_url(self, entry: FileEntry) -> None:
+        """右键「打开网址」（委托 ContentListController）。"""
+        self._content_list_controller.on_open_url(entry)
+
+    def _on_browser_search(self, entry: FileEntry) -> None:
+        """右键「浏览器搜索」（委托 ContentListController）。"""
+        self._content_list_controller.on_browser_search(entry)
 
     def _on_create_mod_group(self, entries: list[FileEntry]) -> None:
         """创建 Mod 组（委托 ContentListController）。"""

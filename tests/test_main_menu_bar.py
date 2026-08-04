@@ -84,6 +84,17 @@ def test_shortcuts_action_disabled_placeholder(qapp) -> None:
     assert ui.MENU_VIEW_SHORTCUTS_TODO in menu_bar.shortcuts_action().toolTip()
 
 
+def test_url_settings_action_emits_signal(qapp) -> None:
+    """操作便捷性8/9：网址与搜索设置动作发射 url_settings_requested。"""
+    menu_bar = MainMenuBar()
+    captured: list[bool] = []
+    menu_bar.url_settings_requested.connect(lambda: captured.append(True))
+
+    menu_bar.url_settings_action.trigger()  # property 访问器（与 marker_config_action 一致）
+
+    assert captured == [True]
+
+
 def test_tools_actions_emit_signals_and_toggle_visibility(qapp) -> None:
     menu_bar = MainMenuBar()
     captured = _capture_signals(menu_bar)

@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import webbrowser
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import urlencode
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QSettings
 from PySide6.QtWidgets import QLabel, QMessageBox, QStatusBar
 
 from app import ui_constants as ui
@@ -27,8 +29,10 @@ from app.selection_memory import SelectionMemory
 from app.tag_filter import TagFilterBar
 from app.tag_manager_dialog import TagManagerDialog
 from app.transaction_scope import TransactionScope
+from app.url_settings import UrlSettingsConfig
 from application.content_service import ContentService
 from application.content_unit_creation_service import ContentUnitCreationService
+from application.nexus_filename import build_nexus_url, mod_search_query
 from application.tag_service import TagService
 from domain.models import ContentUnit, FileEntry
 
@@ -510,6 +514,97 @@ class ContentListController(QObject):
             else:
                 # 无图片
                 self._status_bar.showMessage(ui.MENU_QUICK_SET_COVER_NO_IMAGE, 3000)
+
+    # === 操作便捷性8（2026-08-04）：N 网网址自动填入 / 打开 ===
+
+    def on_autofill_url(self, entry: FileEntry) -> None:
+        """右键「自动填入网址」：source_url 为空时按规则补填，否则完全静默。"""
+        unit = self._get_content_unit(entry)
+        if unit is None or unit.source_url:
+            return
+        # 无法识别 / 写入失败均静默（用户确认 2026-08-04：不报错、不弹窗）
+        self._try_fill_nexus_url(unit)
+
+    def on_open_url(self, entry: FileEntry) -> None:
+        """右键「打开网址」：URL 为空先尝试自动填入，仍无 URL 则静默不操作。"""
+        unit = self._get_content_unit(entry)
+        if unit is None:
+            return
+        url = unit.source_url
+        if not url:
+            if not self._try_fill_nexus_url(unit):
+                return  # 静默
+            unit = self._content_service.get_by_id(unit.id)
+            if unit is None or not unit.source_url:
+                return
+            url = unit.source_url
+        self._open_url_in_browser(url)
+
+    def _get_content_unit(self, entry: FileEntry) -> ContentUnit | None:
+        """按条目关联 ID 查最新内容单元（条目可能已过期）。"""
+        if entry.content_unit is None:
+            return None
+        try:
+            return self._content_service.get_by_id(entry.content_unit.id)
+        except Exception:  # noqa: BLE001 - UI 边界静默降级
+            logger.exception("查询内容单元失败：unit_id=%s", entry.content_unit.id)
+            return None
+
+    def _try_fill_nexus_url(self, unit: ContentUnit) -> bool:
+        """按规则补填 source_url（文件自身名 / 文件夹内部最小 ID）。
+
+        返回 True 表示已写入；无法识别或失败返回 False（调用方静默跳过，
+        绝不允许"前缀+空值"）。
+        """
+        config = UrlSettingsConfig.load(QSettings())
+        url = build_nexus_url(Path(unit.path), config.nexus_url_prefix)
+        if url is None:
+            return False
+        try:
+            updated = self._content_service.update_metadata(unit.id, source_url=url)
+            self._tx.commit()
+        except Exception:  # noqa: BLE001 - 静默降级
+            logger.exception("自动填入网址失败：unit_id=%s", unit.id)
+            return False
+        # 刷新中栏（条目 source_url 变化）+ 元数据面板（若正显示该单元）
+        self.refresh_content_list_for_current_mode()
+        self._update_metadata(updated)
+        return True
+
+    def _open_url_in_browser(self, url: str) -> None:
+        """打开外部浏览器；失败仅记日志（保持静默语义）。"""
+        try:
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001 - 打开失败不打扰用户
+            logger.exception("打开网址失败：%s", url)
+
+    # === 操作便捷性9（2026-08-04）：快速浏览器搜索 ===
+
+    def on_browser_search(self, entry: FileEntry) -> None:
+        """右键「浏览器搜索」：前缀 + extract_mod_name(名字)（_/-→空格）。"""
+        config = UrlSettingsConfig.load(QSettings())
+        query = mod_search_query(entry.name, config.search_prefix)
+        if not query:
+            return  # 静默
+        url = self._build_search_url(config.search_engine_url, query)
+        self._open_url_in_browser(url)
+
+    def _build_search_url(self, engine_url: str, query: str) -> str:
+        """搜索引擎基础地址 + 查询参数。
+
+        配置存基础地址（不含 ?q=，避免地址栏出现 `?q=q=…`）；
+        兼容用户手动输入带 `?q=` / `&q=` 的地址（先剥掉尾随查询参数），
+        地址已含其他 ? 参数时用 & 拼接。
+        """
+        base = engine_url.strip()
+        for suffix in ("?q=", "&q="):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        if not base:
+            base = engine_url
+        sep = "&" if "?" in base else "?"
+        return base + sep + urlencode({"q": query})
 
     def on_create_mod_group(self, entries: list[FileEntry]) -> None:
         """创建 Mod 组：弹出对话框选择/编辑名称，调用 ContentUnitCreationService。

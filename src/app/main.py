@@ -202,6 +202,11 @@ def main() -> int:
     )
 
     app = QApplication(sys.argv)
+    # 输入控件右键菜单中文化（验收反馈 2026-08-04）：应用级事件过滤器，
+    # 覆盖 QLineEdit / QTextEdit / QPlainTextEdit 的复制/剪切/粘贴/全选。
+    from app.chinese_input_menu import ChineseInputContextMenuFilter  # noqa: PLC0415
+
+    app.installEventFilter(ChineseInputContextMenuFilter(app))
     window = MainWindow(
         managed_root_service,
         folder_tree_service,

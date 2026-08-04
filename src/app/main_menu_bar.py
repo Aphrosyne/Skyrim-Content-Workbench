@@ -2,7 +2,8 @@
 
 只负责构建菜单/动作并发信号，不包含业务逻辑；MainWindow 仅接线：
 - 「视图」：列表/卡片视图（checkable 互斥）、重置布局、快捷键设置（占位，二期实现）
-- 「工具」：标签管理、操作历史（可用性由 MainWindow 按注入服务开关）
+- 「工具」：标签管理、操作历史（可用性由 MainWindow 按注入服务开关）、
+  网址与搜索设置（操作便捷性8/9，2026-08-04）
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ class MainMenuBar(QMenuBar):
     layout_reset_requested = Signal()
     # 内容单元标记设置请求（UI合理性21）
     marker_config_requested = Signal()
+    # 网址与搜索设置请求（操作便捷性8/9）
+    url_settings_requested = Signal()
     # 快捷键设置请求（占位，二期实现自定义快捷键）
     shortcuts_requested = Signal()
     # 工具菜单请求（复用 MainWindow 既有 handler）
@@ -96,6 +99,14 @@ class MainMenuBar(QMenuBar):
         )
         tools_menu.addAction(self._operation_history_action)
 
+        # 操作便捷性8/9（2026-08-04）：网址与搜索设置（验收反馈：从「视图」移至「工具」）
+        tools_menu.addSeparator()
+        self._url_settings_action = QAction(ui.MENU_VIEW_URL_SETTINGS, self)
+        self._url_settings_action.triggered.connect(
+            lambda checked=False: self.url_settings_requested.emit()
+        )
+        tools_menu.addAction(self._url_settings_action)
+
     # --- MainWindow 接线辅助 ---
 
     def set_view(self, mode: str) -> None:
@@ -126,6 +137,10 @@ class MainMenuBar(QMenuBar):
 
     def marker_config_action(self) -> QAction:
         return self._marker_config_action
+
+    @property
+    def url_settings_action(self) -> QAction:
+        return self._url_settings_action
 
     def shortcuts_action(self) -> QAction:
         return self._shortcuts_action

@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +41,7 @@ from application.errors import (
     SourceNotInStagingError,
 )
 from application.file_operation_service import FileOperationService
+from application.nexus_filename import extract_mod_name  # noqa: F401  (re-export)
 from application.tag_service import TagService
 from domain.models import ContentUnit
 from infrastructure.path_utils import make_path_key
@@ -74,91 +74,6 @@ class CreateContentUnitResult:
     unit: ContentUnit
     success_count: int
     failure_count: int
-
-
-# Nexus Mods 下载文件名正则模式。
-#
-# Nexus 下载文件命名规律：`Mod名称-数字ID-版本号-时间戳`
-# 例如：
-#   "Alt-Tab Fix-148466-1-0-0-1745430887.zip"
-#   "monster race crash fix-19899-1-2-1583905408.zip"
-#   "Erin Suzu preset-173150-1-0-1771738716"
-#
-# 关键特征：第一个以 `-` 分隔的纯数字段是 Nexus Mod ID，
-# ID 之后的所有内容（版本号、时间戳）都应剔除，
-# ID 之前的内容是 Mod 名称（保留原样，包括名称内部的 `-`）。
-#
-# 模式解释：
-#   ^(?P<name>.+?)       — 名称部分（非贪婪，包含名称内部的 `-`）
-#   -                    — 名称与 ID 之间的分隔符
-#   (?P<id>\d+)          — 纯数字 Mod ID
-#   (?:-\d+)+            — 后续至少一个版本号段 / 时间戳段（每段以 - 开头）
-#   $                    — 末尾
-#
-# 非贪婪 + 后续至少一个数字段，确保 name 不会吞掉 ID。
-# 要求 ID 后至少有一个段，避免误匹配 "Mod-123" 这种短名。
-_NEXUS_PATTERN = re.compile(r"^(?P<name>.+?)-(?P<id>\d+)(?:-\d+)+$")
-
-
-# 通用版本号正则模式（回退策略，用于非 Nexus 命名）
-# 匹配末尾的 " 1.0" / " v2.3" / " - 3.1" / " 1.0.0" / " 5.1 SE" 等形式
-# 不匹配下划线分隔（避免误剔除 "ModName_1.0" 这种可能是名字本身的情况）
-_VERSION_PATTERN = re.compile(
-    r"""
-    \s*              # 前导空白（可选）
-    (?:-\s*)?        # 可选的 - 分隔符
-    v?               # 可选的 v 前缀
-    \d+              # 至少一位数字
-    (?:\.\d+)+       # 至少一个 .数字 组合（如 .0 / .1.0 / .5.1）
-    (?:\s*(?:SE|LE|SSE|AE))?  # 可选的 SE/LE/SSE/AE 后缀
-    \s*$             # 末尾空白（可选）
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
-
-def extract_mod_name(filename: str) -> str:
-    """从文件名提取主要名称。
-
-    支持两种命名规则：
-
-    1. Nexus Mods 下载命名：`Mod名称-数字ID-版本号-时间戳`
-       例如：
-         "Alt-Tab Fix-148466-1-0-0-1745430887.zip" → "Alt-Tab Fix"
-         "monster race crash fix-19899-1-2-1583905408.zip" → "monster race crash fix"
-         "Erin Suzu preset-173150-1-0-1771738716" → "Erin Suzu preset"
-
-    2. 通用命名（社区分享、汉化包等）：剔除末尾版本号
-       例如：
-         "BDOR Black Knight 1.0.7z" → "BDOR Black Knight"
-         "SkyUI 5.1 SE.zip" → "SkyUI"
-         "Armor Pack - 2.3.7z" → "Armor Pack"
-         "RealisticWater.7z" → "RealisticWater"（无版本号，仅去扩展名）
-         "寒霜之心 1.0.7z" → "寒霜之心"
-
-    Args:
-        filename: 文件名（含扩展名，不含目录路径）。
-
-    Returns:
-        提取的主要名称。若无版本号且非 Nexus 命名，返回去扩展名的部分。
-    """
-    # 先去扩展名（Path.stem 处理多扩展名场景，如 "file.1.0.7z" → "file.1.0"）
-    stem = Path(filename).stem
-
-    # 优先尝试 Nexus 命名规则
-    # 要求：至少包含 ID + 一个后续段（版本号或时间戳），避免误匹配 "Mod-123" 这种短名
-    nexus_match = _NEXUS_PATTERN.match(stem)
-    if nexus_match:
-        name = nexus_match.group("name").strip()
-        if name:
-            return name
-
-    # 回退：通用版本号剔除（兼容社区分享、汉化包等命名）
-    # rstrip(" .-") 剥离版本号前的分隔符（空格 / - / .）
-    match = _VERSION_PATTERN.search(stem)
-    if match:
-        return stem[: match.start()].rstrip(" .-")
-    return stem
 
 
 class ContentUnitCreationService:

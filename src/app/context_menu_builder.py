@@ -477,6 +477,28 @@ class ContextMenuBuilder:
             # 删除：单选或批量
             actions.append((ui.MENU_DELETE, lambda: self._host._on_delete_entries(entries), True))
 
+        # 操作便捷性8（2026-08-04）：单选内容单元 → 自动填入网址 / 打开网址
+        # 打开网址内部会先尝试自动填入（source_url 为空时），故两项都常显。
+        if len(entries) == 1 and entries[0].content_unit is not None:
+            actions.append(
+                (
+                    ui.MENU_AUTOFILL_URL,
+                    lambda: self._host._on_autofill_url(entries[0]),
+                    True,
+                )
+            )
+            actions.append((ui.MENU_OPEN_URL, lambda: self._host._on_open_url(entries[0]), True))
+
+        # 操作便捷性9（2026-08-04）：单选条目（文件或文件夹）→ 浏览器搜索
+        if len(entries) == 1:
+            actions.append(
+                (
+                    ui.MENU_BROWSER_SEARCH,
+                    lambda: self._host._on_browser_search(entries[0]),
+                    True,
+                )
+            )
+
         # 在资源管理器中打开（Stage 5 Task 1，始终显示，单选时可用）
         if len(entries) == 1:
             actions.append(

@@ -77,7 +77,8 @@ def _clean_shared_qsettings() -> Iterator[None]:
     用例在污染状态下会因真实子菜单以 FakeMenu 为父构造而崩溃。
 
     修复：本 fixture 在每个测试前后移除 ``recent_move_targets`` / ``recent_tags``
-    键（测试各自隔离的临时 INI QSettings 实例不受影响），保证共享状态不跨测试残留。
+    与 ``url/*`` 键（操作便捷性8/9，2026-08-04）（测试各自隔离的临时 INI
+    QSettings 实例不受影响），保证共享状态不跨测试残留。
     """
     from PySide6.QtCore import QSettings  # noqa: PLC0415
 
@@ -86,10 +87,16 @@ def _clean_shared_qsettings() -> Iterator[None]:
     settings = QSettings(ui.QSETTINGS_ORGANIZATION, ui.QSETTINGS_APPLICATION)
     settings.remove("recent_move_targets")
     settings.remove("recent_tags")
+    settings.remove("url/nexus_url_prefix")
+    settings.remove("url/search_engine_url")
+    settings.remove("url/search_prefix")
     settings.sync()
     try:
         yield
     finally:
         settings.remove("recent_move_targets")
         settings.remove("recent_tags")
+        settings.remove("url/nexus_url_prefix")
+        settings.remove("url/search_engine_url")
+        settings.remove("url/search_prefix")
         settings.sync()

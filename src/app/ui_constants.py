@@ -98,11 +98,22 @@ MENU_QUICK_SET_COVER = "快速设置封面"
 MENU_QUICK_SET_COVER_NO_IMAGE = "该目录无可用图片"
 MENU_QUICK_SET_COVER_ALREADY_SET = "已设置封面，未覆盖"
 MENU_QUICK_SET_COVER_OK = "封面已设置"
+# 操作便捷性8（2026-08-04）：N 网网址
+MENU_AUTOFILL_URL = "自动填入网址"
+MENU_OPEN_URL = "打开网址"
+# 操作便捷性9（2026-08-04）：快速浏览器搜索
+MENU_BROWSER_SEARCH = "浏览器搜索"
 MENU_OPEN_IN_EXPLORER = "在资源管理器中打开"
 MENU_OPEN_IN_EXPLORER_FAILED = "无法打开资源管理器"
 # UX 重构 Phase 2 Task 5：右键「打开」项（行为与双击一致）
 MENU_OPEN = "打开"
 MENU_COLLAPSE_ALL = "折叠全部"
+
+# 输入控件右键菜单（中文化，2026-08-04 验收反馈）
+INPUT_MENU_COPY = "复制"
+INPUT_MENU_CUT = "剪切"
+INPUT_MENU_PASTE = "粘贴"
+INPUT_MENU_SELECT_ALL = "全选"
 
 # Stage 5 Task 3a：文件操作菜单项
 MENU_NEW_FOLDER = "新建文件夹"
@@ -341,7 +352,7 @@ METADATA_PANEL_TAG_NOT_FOUND = "标签「{name}」不存在，请先在标签管
 METADATA_PANEL_COVER_NONE = "（未设置）"
 METADATA_PANEL_RENAME_PLACEHOLDER = "输入新名称后回车重命名"
 METADATA_PANEL_RENAME_TOOLTIP = "输入新名称后回车直接重命名文件/文件夹，不经过「保存」按钮"
-METADATA_PANEL_SOURCE_URL_PLACEHOLDER = "https://www.nexusmods.com/skyrim/..."
+METADATA_PANEL_SOURCE_URL_PLACEHOLDER = "https://www.nexusmods.com/..."
 METADATA_PANEL_NOTES_PLACEHOLDER = "备注…"
 METADATA_PANEL_TAGS_LABEL = "标签"
 METADATA_PANEL_COVER_LABEL = "封面"
@@ -608,6 +619,10 @@ QSETTINGS_KEY_MARKER_ICON_ENABLED = "marker/icon_enabled"
 QSETTINGS_KEY_MARKER_ICON_GLYPH = "marker/icon_glyph"
 QSETTINGS_KEY_MARKER_STRIPE_ENABLED = "marker/stripe_enabled"
 QSETTINGS_KEY_MARKER_STRIPE_COLOR = "marker/stripe_color"
+# 网址与搜索配置（操作便捷性8/9，2026-08-04）
+QSETTINGS_KEY_URL_NEXUS_PREFIX = "url/nexus_url_prefix"
+QSETTINGS_KEY_URL_SEARCH_ENGINE = "url/search_engine_url"
+QSETTINGS_KEY_URL_SEARCH_PREFIX = "url/search_prefix"
 
 # === 布局默认值（UI合理性2/3，2026-08-03） ===
 # 所有分割线/列宽默认值集中在此，用户可手动调整后重启生效。
@@ -630,11 +645,22 @@ MENU_VIEW_LIST = "列表视图"
 MENU_VIEW_CARD = "卡片视图"
 MENU_VIEW_RESET_LAYOUT = "重置布局"
 MENU_VIEW_CONTENT_UNIT_MARKER = "内容单元标记设置…"
+MENU_VIEW_URL_SETTINGS = "网址与搜索设置…"
 MENU_VIEW_SHORTCUTS = "快捷键设置…"
 MENU_VIEW_SHORTCUTS_TODO = "快捷键自定义待独立任务实现（UI合理性3 二期）"
 MENU_TOOLS_TAG_MANAGER = "标签管理…"
 MENU_TOOLS_OPERATION_HISTORY = "操作历史…"
 LAYOUT_RESET_STATUS = "布局已重置为默认比例"
+
+# === 网址与搜索设置对话框（操作便捷性8/9，2026-08-04） ===
+URL_SETTINGS_DIALOG_TITLE = "网址与搜索设置"
+URL_SETTINGS_NEXUS_PREFIX_LABEL = "N 网网址前缀："
+URL_SETTINGS_SEARCH_ENGINE_LABEL = "搜索引擎网址（无需 ?q= 参数）："
+URL_SETTINGS_SEARCH_PREFIX_LABEL = "搜索前缀："
+URL_SETTINGS_RESET = "恢复默认"
+URL_SETTINGS_DEFAULT_NEXUS_PREFIX = "https://www.nexusmods.com/skyrimspecialedition/mods/"
+URL_SETTINGS_DEFAULT_SEARCH_ENGINE = "https://www.bing.com/search"
+URL_SETTINGS_DEFAULT_SEARCH_PREFIX = "skyrim "
 
 # === 内容单元标记设置对话框（UI合理性21，2026-08-04） ===
 MARKER_CONFIG_DIALOG_TITLE = "内容单元标记设置"
