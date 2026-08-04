@@ -81,6 +81,23 @@
   （[chinese_input_menu.py](src/app/chinese_input_menu.py) /
   [test_chinese_input_menu.py](tests/test_chinese_input_menu.py)）
 
+**双击打开 + 文件夹预览快捷键 + 中栏拖拽高亮（操作合理性1 / 操作便捷性10 /
+操作便捷性2 调整，2026-08-04）**：
+  - 双击文件（内容单元/普通文件）→ 系统默认程序打开（压缩包/图片快速预览）；
+    双击文件夹进入目录不变；双击/右键「打开」共用同一逻辑（操作合理性1）
+  - 文件夹预览快捷键：面板列表聚焦时 Ctrl+C/X/V、Delete、Ctrl+M、Ctrl+Q
+    （复用右键同一分发）；Ctrl+P（窗口级）钉住/取消钉住文件夹预览（操作便捷性10）
+  - 中栏内部拖拽目标高亮：拖到同视图文件夹行 = 移动，悬停文件夹行自绘高亮、
+    不改变选中（操作便捷性2 调整版）；拖拽到目录树方案**回退**——Qt 原生
+    跨视图拖拽重绘异常（内容轮流消失、高亮不可靠），issue 已记录暂缓
+  - 字体切换功能**回退删除**（UI合理性20）：QFontDialog 为 Qt 自带英文界面，
+    自由选字体易可读性差，用户确认删除，回到系统字体
+  （[content_list_controller.py](src/app/content_list_controller.py) /
+  [content_views.py](src/app/content_views.py) /
+  [assembly_panel.py](src/app/assembly_panel.py) /
+  [shortcut_registry.py](src/app/shortcut_registry.py) /
+  [test_content_views_drop_highlight.py](tests/test_content_views_drop_highlight.py)）
+
 ## [0.50.12] - 2026-08-04
 
 **内容单元标记可配置（UI合理性21）**：
