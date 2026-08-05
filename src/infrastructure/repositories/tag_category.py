@@ -5,6 +5,7 @@
 
 schema v6（Stage 4 Task 1）起 tag_category.name 有 UNIQUE 约束
 （通过 idx_tag_category_name_unique 索引实现）。
+schema v15（2026-08-05）：color_hue → color_hex（完整 #RRGGBB）。
 """
 
 from __future__ import annotations
@@ -36,10 +37,10 @@ class TagCategoryRepository:
         try:
             self._conn.execute(
                 """
-                INSERT INTO tag_category (id, name, color_hue)
+                INSERT INTO tag_category (id, name, color_hex)
                 VALUES (?, ?, ?)
                 """,
-                (category.id, category.name, category.color_hue),
+                (category.id, category.name, category.color_hex),
             )
         except sqlite3.IntegrityError as e:
             raise ConstraintViolationError(f"无法创建 TagCategory：{e}") from e
@@ -88,10 +89,10 @@ class TagCategoryRepository:
                 """
                 UPDATE tag_category SET
                     name = ?,
-                    color_hue = ?
+                    color_hex = ?
                 WHERE id = ?
                 """,
-                (category.name, category.color_hue, category.id),
+                (category.name, category.color_hex, category.id),
             )
         except sqlite3.IntegrityError as e:
             raise ConstraintViolationError(f"无法更新 TagCategory：{e}") from e
@@ -124,5 +125,5 @@ class TagCategoryRepository:
         return TagCategory(
             id=row["id"],
             name=row["name"],
-            color_hue=row["color_hue"],
+            color_hex=row["color_hex"],
         )

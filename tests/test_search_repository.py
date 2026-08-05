@@ -2,7 +2,7 @@
 
 覆盖：
 - 文件名匹配 / 备注匹配 / 标签匹配
-- title 不再参与搜索（title 与文件名不一致时不命中）
+- title 列已随 schema v15 删除，搜索仅按文件名/备注/标签
 - 多字段同时匹配 → 单条记录，matched_field 取优先级（name > tag > notes, Q7=B）
 - 大小写不敏感（ASCII）
 - 中文搜索
@@ -34,22 +34,17 @@ def _create_unit(
     conn: sqlite3.Connection,
     unit_id: str,
     path: str,
-    title: str | None = None,
     notes: str | None = None,
     content_type: str = "mod",
 ) -> None:
-    """插入内容单元记录（v13 schema：纯 DELETE 模式，记录存在即已标记）。
-
-    title 参数仅用于验证"title 不再参与搜索"（UI合理性13）。
-    """
+    """插入内容单元记录（v13 schema：纯 DELETE 模式，记录存在即已标记）。"""
     conn.execute(
-        "INSERT INTO content_unit (id, path, path_key, title, notes, "
-        "content_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO content_unit (id, path, path_key, notes, "
+        "content_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
             unit_id,
             path,
             make_path_key(path),
-            title,
             notes,
             content_type,
             "2026-07-30T00:00:00Z",
@@ -67,7 +62,7 @@ def _create_tag(
 ) -> None:
     """插入标签（含分类）。"""
     conn.execute(
-        "INSERT INTO tag_category (id, name, color_hue) VALUES (?, ?, 0) "
+        "INSERT INTO tag_category (id, name, color_hex) VALUES (?, ?, '#D61A1A') "
         "ON CONFLICT(id) DO NOTHING",
         (category_id, category_id),
     )
@@ -100,14 +95,6 @@ class TestSearchByField:
         assert results[0].unit_id == "u1"
         assert results[0].matched_field == "name"
 
-    def test_title_no_longer_matches(self, search_repo, db_connection) -> None:
-        """title 与文件名不一致时，按 title 搜不到（UI合理性13）。"""
-        _create_unit(db_connection, "u1", "D:/mod1.7z", title="寒霜别名")
-
-        results = search_repo.search("寒霜")
-
-        assert results == []
-
     def test_match_notes(self, search_repo, db_connection) -> None:
         """备注含关键词 → 命中，matched_field='notes'。"""
         _create_unit(db_connection, "u1", "D:/mod1.7z", notes="这是一个测试备注")
@@ -119,7 +106,7 @@ class TestSearchByField:
 
     def test_match_tag(self, search_repo, db_connection) -> None:
         """标签名含关键词 → 命中，matched_field='tag'。"""
-        _create_unit(db_connection, "u1", "D:/mod1.7z", title="无关标题")
+        _create_unit(db_connection, "u1", "D:/mod1.7z")
         _create_tag(db_connection, "t1", "重甲")
         _attach_tag(db_connection, "u1", "t1")
 
@@ -204,7 +191,7 @@ class TestChineseSearch:
 
     def test_chinese_tag(self, search_repo, db_connection) -> None:
         """中文标签搜索正常。"""
-        _create_unit(db_connection, "u1", "D:/mod.7z", title="无标题")
+        _create_unit(db_connection, "u1", "D:/mod.7z")
         _create_tag(db_connection, "t1", "重甲")
         _attach_tag(db_connection, "u1", "t1")
 
@@ -247,7 +234,7 @@ class TestEmptyAndNoMatch:
 
     def test_no_match_returns_empty(self, search_repo, db_connection) -> None:
         """无匹配返回空列表。"""
-        _create_unit(db_connection, "u1", "D:/mod1.7z", title="测试标题")
+        _create_unit(db_connection, "u1", "D:/mod1.7z")
 
         assert search_repo.search("不存在的关键词") == []
 
@@ -293,7 +280,7 @@ class TestSorting:
         # u1: 文件名匹配（最高优先级）
         _create_unit(db_connection, "u1", "D:/测试名.7z")
         # u2: 仅 tag 匹配（中等优先级）
-        _create_unit(db_connection, "u2", "D:/mod2.7z", title="无标题")
+        _create_unit(db_connection, "u2", "D:/mod2.7z")
         _create_tag(db_connection, "t1", "测试标签")
         _attach_tag(db_connection, "u2", "t1")
 

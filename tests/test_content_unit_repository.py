@@ -97,12 +97,10 @@ class TestUpdate:
         unit = repo.get_by_id("u-1")
         assert unit is not None
 
-        unit.title = "新标题"
         unit.notes = "新增备注"
         unit.updated_at = "2026-07-13T00:00:00Z"
         updated = repo.update(unit)
 
-        assert updated.title == "新标题"
         assert updated.notes == "新增备注"
 
     def test_update_not_exist_raises(self, repo: ContentUnitRepository) -> None:

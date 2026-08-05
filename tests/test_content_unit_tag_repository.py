@@ -25,7 +25,7 @@ def _seed_category(
     category_id: str = "c-1",
     name: str = "服装护甲",
 ) -> None:
-    TagCategoryRepository(conn).create(TagCategory(id=category_id, name=name, color_hue=210))
+    TagCategoryRepository(conn).create(TagCategory(id=category_id, name=name, color_hex="#1A78D6"))
 
 
 def _seed_tag(

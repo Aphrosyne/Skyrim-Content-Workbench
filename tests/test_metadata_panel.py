@@ -82,8 +82,8 @@ def unit_with_tags(services, tmp_path):
     conn.commit()
 
     # 创建分类 + 标签
-    cat1 = tag_service.create_category("服装护甲", color_hue=210)
-    cat2 = tag_service.create_category("状态", color_hue=120)
+    cat1 = tag_service.create_category("服装护甲", color_hex="#1A78D6")
+    cat2 = tag_service.create_category("状态", color_hex="#1AD61A")
     tag1 = tag_service.create_tag("重甲", cat1.id)  # 将与 unit 关联
     tag2 = tag_service.create_tag("已测试", cat2.id)  # 不关联
     tag_service.attach_tag_to_unit(unit.id, tag1.id)
@@ -417,7 +417,6 @@ def test_save_writes_metadata(qapp, unit_with_tags):
     # 从数据库重新查询验证
     updated = content_service.get_by_id(unit.id)
     assert updated is not None
-    assert updated.title is None  # UI合理性13：保存不再写 title
     assert updated.source_url == "https://example.com/mod"
     assert updated.notes == "测试备注"
 
@@ -672,8 +671,7 @@ def test_rename_field_shows_real_filename(qapp, unit_with_tags):
     panel = MetadataPanel(content_service, tag_service)
     panel.load_unit(unit)
 
-    # unit 对应文件夹 MyMod（title 为 None），重命名栏显示文件名
-    assert unit.title is None
+    # unit 对应文件夹 MyMod，重命名栏显示文件名
     assert panel.rename_text() == "MyMod"
 
 
@@ -747,7 +745,6 @@ def test_save_chinese_metadata(qapp, unit_with_tags):
 
     updated = content_service.get_by_id(unit.id)
     assert updated is not None
-    assert updated.title is None  # UI合理性13：title 不再被写入
     assert updated.notes == "这是一个中文备注"
 
 
@@ -948,7 +945,7 @@ def test_recent_tag_button_uses_category_color(qapp, unit_with_tags, tmp_path):
 
     style = panel.recent_tag_style(tag2.name)
     assert "background:" in style
-    assert category_color_hex(cat2.color_hue) in style
+    assert category_color_hex(cat2.color_hex) in style
 
 
 def test_immediate_tag_add_records_recent(qapp, unit_with_tags, tmp_path):
@@ -1136,12 +1133,12 @@ def test_chip_and_preset_buttons_colored_by_category(qapp, unit_with_tags):
 
     # chip：tag1 属于 cat1
     chip_btn = next(btn for t, btn in panel._chip_buttons if t.id == tag1.id)  # noqa: SLF001
-    assert category_color_hex(cat1.color_hue) in chip_btn.styleSheet()
+    assert category_color_hex(cat1.color_hex) in chip_btn.styleSheet()
 
     # 预选标签按钮：tag2 属于 cat2
     tag2_btn = next(b for b in panel._preset_buttons if b.text() == tag2.name)  # noqa: SLF001
-    assert category_color_hex(cat2.color_hue) in tag2_btn.styleSheet()
+    assert category_color_hex(cat2.color_hex) in tag2_btn.styleSheet()
 
     # 分组头不着色（验收反馈：分类与标签都上色太杂乱）
     header = next(b for b in panel._preset_content.findChildren(QPushButton) if "状态" in b.text())  # noqa: SLF001
-    assert category_color_hex(cat2.color_hue) not in header.styleSheet()
+    assert category_color_hex(cat2.color_hex) not in header.styleSheet()

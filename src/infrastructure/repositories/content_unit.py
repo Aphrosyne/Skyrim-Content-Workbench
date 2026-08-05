@@ -39,15 +39,14 @@ class ContentUnitRepository:
             self._conn.execute(
                 """
                 INSERT INTO content_unit (
-                    id, path, path_key, title, content_type, source_url,
+                    id, path, path_key, content_type, source_url,
                     cover_path, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     unit.id,
                     unit.path,
                     path_key,
-                    unit.title,
                     unit.content_type,
                     unit.source_url,
                     unit.cover_path,
@@ -155,7 +154,6 @@ class ContentUnitRepository:
                 UPDATE content_unit SET
                     path = ?,
                     path_key = ?,
-                    title = ?,
                     content_type = ?,
                     source_url = ?,
                     cover_path = ?,
@@ -166,7 +164,6 @@ class ContentUnitRepository:
                 (
                     unit.path,
                     path_key,
-                    unit.title,
                     unit.content_type,
                     unit.source_url,
                     unit.cover_path,
@@ -220,7 +217,6 @@ class ContentUnitRepository:
         return ContentUnit(
             id=row["id"],
             path=row["path"],
-            title=row["title"],
             content_type=row["content_type"],
             source_url=row["source_url"],
             cover_path=row["cover_path"],

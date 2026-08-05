@@ -115,11 +115,11 @@ def test_tag_buttons_filled_by_category_and_category_plain(qapp, tag_service_wit
 
     btn = _find_tag_button(bar, "重甲")
     assert btn is not None
-    assert category_color_hex(cat_armor.color_hue) in btn.styleSheet()
+    assert category_color_hex(cat_armor.color_hex) in btn.styleSheet()
 
     cat_btn = _find_category_button(bar, cat_armor.name)
     assert cat_btn is not None
-    assert category_color_hex(cat_armor.color_hue) not in cat_btn.styleSheet()
+    assert category_color_hex(cat_armor.color_hex) not in cat_btn.styleSheet()
 
 
 # === 分类展开/折叠 ===

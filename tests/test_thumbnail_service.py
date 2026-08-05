@@ -36,7 +36,6 @@ def unit_u1(db_connection, content_unit_repo, tmp_path) -> ContentUnit:
     unit = ContentUnit(
         id="u1",
         path=str(tmp_path / "u1"),
-        title="U1",
         content_type="mod",
         created_at="2026-07-01T00:00:00Z",
         updated_at="2026-07-01T00:00:00Z",
@@ -77,7 +76,6 @@ def unit_with_cover(
     updated = ContentUnit(
         id=unit_u1.id,
         path=unit_u1.path,
-        title=unit_u1.title,
         content_type=unit_u1.content_type,
         source_url=unit_u1.source_url,
         cover_path="cover.jpg",

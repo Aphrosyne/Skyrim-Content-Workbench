@@ -834,6 +834,54 @@ def migrate_v13_to_v14(conn: sqlite3.Connection) -> None:
     logger.info("迁移 v13 → v14 完成")
 
 
+def migrate_v14_to_v15(conn: sqlite3.Connection) -> None:
+    """v14 → v15：删除 content_unit.title 列 + tag_category 存储完整颜色
+    （2026-08-05 两个 schema 升级 issue 合并迁移）。
+
+    变更：
+    1. content_unit 删除 title 列（UI合理性14 起已停止读写，无用户语义；
+       遗留别名已清，剩余均为 title == 文件名 的默认值，无有价值数据）。
+    2. tag_category 新增 color_hex TEXT（大写 #RRGGBB，完整颜色），
+       用 hue_to_hex 回填既有行（与既有显示色一致，观感零变化），
+       随后删除 color_hue 列。
+
+    实现说明：
+    - SQLite 3.35+ 支持 ALTER TABLE DROP COLUMN（Python 3.12+ 内置
+      SQLite ≥ 3.40，v5→v6 已使用同模式）。title / color_hue 均无
+      索引或约束引用，可安全 DROP。
+    - color_hex 回填在 Python 侧用 hue_to_hex 计算（与 app.tag_colors
+      共用同一换算，避免 SQL 表达 normcase 类问题）。
+
+    幂等性：title 存在才 DROP；color_hex 不存在才 ADD，color_hue
+    存在才 DROP（每步独立检查，重复执行不报错）。
+    """
+    # === 1. content_unit 删除 title 列 ===
+    cu_cols = {r["name"] for r in conn.execute("PRAGMA table_info(content_unit)")}
+    if "title" in cu_cols:
+        conn.execute("ALTER TABLE content_unit DROP COLUMN title")
+        logger.info("v15 迁移：content_unit.title 列已删除")
+
+    # === 2. tag_category：color_hue → color_hex ===
+    from infrastructure.color_utils import hue_to_hex
+
+    tc_cols = {r["name"] for r in conn.execute("PRAGMA table_info(tag_category)")}
+    if "color_hex" not in tc_cols:
+        conn.execute(
+            "ALTER TABLE tag_category ADD COLUMN color_hex TEXT NOT NULL DEFAULT '#000000'"
+        )
+        rows = conn.execute("SELECT id, color_hue FROM tag_category").fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE tag_category SET color_hex = ? WHERE id = ?",
+                (hue_to_hex(row["color_hue"]), row["id"]),
+            )
+        logger.info("v15 迁移：tag_category.color_hex 已新增并回填 %d 行", len(rows))
+    if "color_hue" in {r["name"] for r in conn.execute("PRAGMA table_info(tag_category)")}:
+        conn.execute("ALTER TABLE tag_category DROP COLUMN color_hue")
+        logger.info("v15 迁移：tag_category.color_hue 列已删除")
+    logger.info("迁移 v14 → v15 完成")
+
+
 # 迁移注册表：(target_version, migrate_fn)
 # init_db 按 target 升序应用 current < target 的迁移。
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -851,4 +899,5 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (12, migrate_v11_to_v12),
     (13, migrate_v12_to_v13),
     (14, migrate_v13_to_v14),
+    (15, migrate_v14_to_v15),
 ]

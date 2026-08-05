@@ -205,7 +205,6 @@ class TestCreateModGroup:
         # ContentUnit 指向新文件夹
         assert isinstance(unit, ContentUnit)
         assert unit.path == str(target_folder)
-        assert unit.title is None  # UI合理性13：创建不再写 title
 
     def test_writes_two_operation_history(self, mod_group_env) -> None:
         """创建 Mod 组写 2 条 operation_history：new_folder + move。"""
@@ -334,11 +333,10 @@ class TestCreateModGroupInheritMetadata:
         src = staging / "寒霜之心 1.0.7z"
         src.write_bytes(b"data")
 
-        unit = svc.create_content_unit_from_file(src, staging)
+        svc.create_content_unit_from_file(src, staging)
 
         target_folder = staging / "寒霜之心"
         assert target_folder.is_dir()
-        assert unit.title is None  # UI合理性13：创建不再写 title
 
     def test_source_not_in_staging_raises(self, mod_group_env, tmp_path: Path) -> None:
         """源文件不在暂存区下抛 SourceNotInStagingError。"""
@@ -374,11 +372,10 @@ class TestCreateModGroupInheritMetadata:
         src = staging / "mod 1.0.7z"
         src.write_bytes(b"data")
 
-        unit = svc.create_content_unit_from_file(src, staging, name="CustomName")
+        svc.create_content_unit_from_file(src, staging, name="CustomName")
 
         target_folder = staging / "CustomName"
         assert target_folder.is_dir()
-        assert unit.title is None  # UI合理性13：创建不再写 title
 
     def test_source_file_content_preserved(self, mod_group_env) -> None:
         """源文件内容在移动后保持不变。"""

@@ -12,6 +12,8 @@ v11→v12 删除 staging_area 表（UX 重构 Phase 1 Task 1 Commit 2：暂存�
 v12→v13 移除 content_unit.is_marked 字段（UX 重构 Task 6：回归纯 DELETE 模式）。
 v13→v14 operation_history.operation_type CHECK 约束扩展 'strip'
 （操作便捷性1：提取内容/剥离操作）。
+v14→v15 删除 content_unit.title 列 + tag_category.color_hue → color_hex
+（2026-08-05 两个 schema 升级 issue 合并迁移）。
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from infrastructure.migrations import (
     migrate_v11_to_v12,
     migrate_v12_to_v13,
     migrate_v13_to_v14,
+    migrate_v14_to_v15,
 )
 
 
@@ -55,11 +58,12 @@ def test_migrations_sorted_by_target() -> None:
     assert MIGRATIONS[11][0] == 12
     assert MIGRATIONS[12][0] == 13
     assert MIGRATIONS[13][0] == 14
+    assert MIGRATIONS[14][0] == 15
 
 
-def test_current_schema_version_is_fourteen() -> None:
-    """操作便捷性1：当前 schema 版本应为 14（operation_type 扩展 'strip'）。"""
-    assert CURRENT_SCHEMA_VERSION == 14
+def test_current_schema_version_is_fifteen() -> None:
+    """schema v15：删除 content_unit.title + tag_category 完整颜色。"""
+    assert CURRENT_SCHEMA_VERSION == 15
 
 
 def test_migrate_v0_to_v1_idempotent() -> None:
@@ -520,7 +524,7 @@ def test_init_db_migrates_from_v0_to_current(tmp_path) -> None:
     db_path = tmp_path / "test.db"
     version = init_db(db_path)
     assert version == CURRENT_SCHEMA_VERSION
-    assert version == 14
+    assert version == 15
 
     # v7 后 managed_root 表仍存在
     conn = sqlite3.connect(str(db_path))
@@ -614,9 +618,9 @@ def test_init_db_migrates_v3_db_to_v6(tmp_path) -> None:
     finally:
         conn.close()
 
-    # init_db 应识别 v3 并依次应用 v3→v4→...→v14
+    # init_db 应识别 v3 并依次应用 v3→v4→...→v15
     version = init_db(db_path)
-    assert version == 14
+    assert version == 15
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -1209,5 +1213,81 @@ def test_migrate_v13_to_v14_skips_when_table_absent() -> None:
             "SELECT name FROM sqlite_master WHERE type='table' AND name='operation_history'"
         ).fetchone()
         assert row is None
+    finally:
+        conn.close()
+
+
+def _apply_v0_to_v14(conn: sqlite3.Connection) -> None:
+    """辅助：将内存数据库迁移到 v14 状态（通过迁移注册表按序应用）。"""
+    for version, fn in MIGRATIONS:
+        if version <= 14:
+            fn(conn)
+
+
+def test_migrate_v14_to_v15_drops_title_column_and_preserves_data() -> None:
+    """v14→v15 迁移应删除 content_unit.title 列并保留其余数据。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v14(conn)
+        conn.execute(
+            "INSERT INTO content_unit (id, path, path_key, title, content_type, "
+            "created_at, updated_at) VALUES "
+            "('cu1', 'D:/a', 'd:/a', '旧标题', 'mod', '2026-08-01T00:00:00Z', "
+            "'2026-08-01T00:00:00Z')"
+        )
+        conn.commit()
+
+        migrate_v14_to_v15(conn)
+
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(content_unit)")}
+        assert "title" not in cols
+        row = conn.execute("SELECT * FROM content_unit WHERE id = 'cu1'").fetchone()
+        assert row is not None
+        assert row["path"] == "D:/a"
+        assert row["content_type"] == "mod"
+    finally:
+        conn.close()
+
+
+def test_migrate_v14_to_v15_backfills_color_hex_and_drops_hue() -> None:
+    """v14→v15 迁移应回填 color_hex（与显示色一致）并删除 color_hue。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v14(conn)
+        conn.execute(
+            "INSERT INTO tag_category (id, name, color_hue) VALUES "
+            "('tc1', '服装护甲', 210), ('tc2', '武器', 30)"
+        )
+        conn.commit()
+
+        migrate_v14_to_v15(conn)
+
+        tc_cols = {r["name"] for r in conn.execute("PRAGMA table_info(tag_category)")}
+        assert "color_hex" in tc_cols
+        assert "color_hue" not in tc_cols
+        row1 = conn.execute("SELECT color_hex FROM tag_category WHERE id = 'tc1'").fetchone()
+        row2 = conn.execute("SELECT color_hex FROM tag_category WHERE id = 'tc2'").fetchone()
+        assert row1["color_hex"] == "#1A78D6"  # hue 210
+        assert row2["color_hex"] == "#D6781A"  # hue 30
+    finally:
+        conn.close()
+
+
+def test_migrate_v14_to_v15_idempotent() -> None:
+    """v14→v15 迁移函数本身幂等（重复调用不报错、列状态不变）。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_v0_to_v14(conn)
+        migrate_v14_to_v15(conn)
+        migrate_v14_to_v15(conn)
+
+        cu_cols = {r["name"] for r in conn.execute("PRAGMA table_info(content_unit)")}
+        tc_cols = {r["name"] for r in conn.execute("PRAGMA table_info(tag_category)")}
+        assert "title" not in cu_cols
+        assert "color_hex" in tc_cols
+        assert "color_hue" not in tc_cols
     finally:
         conn.close()

@@ -71,8 +71,8 @@ class BatchTagDialog(QDialog):
         self._preset_groups: dict[str, QWidget] = {}
         # 折叠分组集合
         self._preset_collapsed: set[str] = set()
-        # 分类色映射（BugFix2）：category_id → color_hue
-        self._category_hues: dict[str, int] = {}
+        # 分类色映射（BugFix2；schema v15 起存完整颜色）：category_id → color_hex
+        self._category_colors: dict[str, str] = {}
         self._region_bg = self.palette().color(QPalette.ColorRole.Base).name()
 
         self.setWindowTitle(ui.BATCH_TAG_DIALOG_TITLE)
@@ -279,11 +279,11 @@ class BatchTagDialog(QDialog):
 
     def _append_tag_chip(self, tag: Tag) -> None:
         btn = QPushButton(f"{tag.name} ×", self._tag_frame)
-        hue = self._category_hues.get(tag.category_id)
+        color = self._category_colors.get(tag.category_id)
         btn.setStyleSheet(
             ui.TAG_BUTTON_FILLED_STYLE.format(
-                color=category_color_hex(hue) if hue is not None else "#c0c0c0",
-                text=text_color_hex(hue) if hue is not None else "#1a1a1a",
+                color=category_color_hex(color) if color is not None else "#c0c0c0",
+                text=text_color_hex(color) if color is not None else "#1a1a1a",
             )
         )
         btn.setToolTip(ui.BATCH_TAG_DIALOG_CHIP_REMOVE_TOOLTIP)
@@ -319,7 +319,7 @@ class BatchTagDialog(QDialog):
         except ApplicationError:
             self._preset_empty_hint.setVisible(True)
             return
-        self._category_hues = {category.id: category.color_hue for category, _tags in grouped}
+        self._category_colors = {category.id: category.color_hex for category, _tags in grouped}
         selected_ids = {t.id for t in self._selected_tags}
         total_shown = 0
         for category, tags in grouped:
@@ -350,8 +350,8 @@ class BatchTagDialog(QDialog):
                 btn = QPushButton(tag.name, flow)
                 btn.setStyleSheet(
                     ui.TAG_BUTTON_FILLED_STYLE.format(
-                        color=category_color_hex(category.color_hue),
-                        text=text_color_hex(category.color_hue),
+                        color=category_color_hex(category.color_hex),
+                        text=text_color_hex(category.color_hex),
                     )
                 )
                 btn.clicked.connect(lambda checked=False, t=tag: self._on_preset_tag_clicked(t))

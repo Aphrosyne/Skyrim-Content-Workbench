@@ -18,7 +18,8 @@
 
 实现说明（UI合理性13）：
 - 原实现用 SQL LIKE 匹配 content_unit.title；title 停用后改为匹配真实文件名。
-  SQLite 无内置 basename / reverse（3.50 验证），且 title 列不再写入新值，
+  SQLite 无内置 basename / reverse（3.50 验证），且 title 列已随 schema v15
+  物理删除，
   故在 Python 侧计算 basename 并做子串匹配，行为与原 LIKE 转义后一致。
 """
 

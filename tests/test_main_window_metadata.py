@@ -282,7 +282,6 @@ def test_select_content_unit_loads_into_panel(qapp, main_window_with_tags):
     panel = window.metadata_panel()
     assert panel is not None
     assert panel.current_unit() is not None
-    assert panel.current_unit().title is None  # UI合理性13：扫描不再写 title
     assert panel.rename_text() == "寒霜之心.7z"  # 重命名栏显示真实文件名
     assert panel.is_form_enabled()
 
@@ -332,7 +331,6 @@ def test_single_click_content_unit_loads_into_panel(qapp, main_window_with_tags)
     panel = window.metadata_panel()
     assert panel is not None
     assert panel.current_unit() is not None
-    assert panel.current_unit().title is None  # UI合理性13：扫描不再写 title
     assert panel.rename_text() == "寒霜之心.7z"
     assert panel.is_form_enabled()
 
@@ -425,10 +423,9 @@ def test_save_metadata_commits_and_shows_status(qapp, main_window_with_tags):
     # 状态栏应有提示
     assert "已保存" in window.statusBar().currentMessage()
 
-    # 数据库中的备注应已更新，title 保持 None
+    # 数据库中的备注应已更新
     unit_id = panel.current_unit().id
-    row = conn.execute("SELECT title, notes FROM content_unit WHERE id = ?", (unit_id,)).fetchone()
-    assert row["title"] is None
+    row = conn.execute("SELECT notes FROM content_unit WHERE id = ?", (unit_id,)).fetchone()
     assert row["notes"] == "新备注"
 
 
@@ -658,7 +655,7 @@ def test_insert_recent_tag_submenu(qapp, main_window_with_tags, tmp_path):
     window._recent_tags = RecentTags(  # noqa: SLF001
         QSettings(str(tmp_path / "recent_tags.ini"), QSettings.Format.IniFormat)
     )
-    cat = tag_service.create_category("分类A", color_hue=10)
+    cat = tag_service.create_category("分类A", color_hex="#D61A1A")
     tag = tag_service.create_tag("测试标签A", cat.id)
     window._recent_tags.record(tag.id)  # noqa: SLF001
 
@@ -679,7 +676,7 @@ def test_on_add_recent_tag_attaches_and_records(qapp, main_window_with_tags, tmp
     window._recent_tags = RecentTags(  # noqa: SLF001
         QSettings(str(tmp_path / "recent_tags.ini"), QSettings.Format.IniFormat)
     )
-    cat = tag_service.create_category("分类B", color_hue=20)
+    cat = tag_service.create_category("分类B", color_hex="#D6781A")
     tag = tag_service.create_tag("测试标签B", cat.id)
 
     unit = window._content_service.get_by_path(  # noqa: SLF001
@@ -701,7 +698,7 @@ def test_batch_tag_action_commits_and_attaches(qapp, main_window_with_tags, monk
     """点击批量打标签 → BatchTagDialog 弹出 → 添加标签 → 提交到数据库。"""
     window, conn, _, tag_service = main_window_with_tags
     # 创建一个标签用于测试
-    cat = tag_service.create_category("服装护甲", color_hue=210)
+    cat = tag_service.create_category("服装护甲", color_hex="#1A78D6")
     created_tag = tag_service.create_tag("重甲", cat.id)
     conn.commit()
 

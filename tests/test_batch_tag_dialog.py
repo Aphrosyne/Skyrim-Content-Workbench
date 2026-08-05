@@ -84,8 +84,8 @@ def env_with_units(services, tmp_path):
         unit_ids.append(unit.id)
     conn.commit()
 
-    cat1 = tag_service.create_category("服装护甲", color_hue=210)
-    cat2 = tag_service.create_category("状态", color_hue=120)
+    cat1 = tag_service.create_category("服装护甲", color_hex="#1A78D6")
+    cat2 = tag_service.create_category("状态", color_hex="#1AD61A")
     tag1 = tag_service.create_tag("重甲", cat1.id)
     tag2 = tag_service.create_tag("轻甲", cat1.id)
     tag3 = tag_service.create_tag("已测试", cat2.id)
@@ -688,11 +688,11 @@ def test_chip_and_preset_buttons_colored_by_category(qapp, env_with_units, monke
 
     dialog.add_tag_via_input(tag1.name)
     chip_btn = next(btn for t, btn in dialog._chip_buttons if t.id == tag1.id)  # noqa: SLF001
-    assert category_color_hex(cat1.color_hue) in chip_btn.styleSheet()
+    assert category_color_hex(cat1.color_hex) in chip_btn.styleSheet()
 
     # tag3（已测试）属于 cat2（状态）
     tag3_btn = next(b for b in dialog._preset_buttons if b.text() == tag3.name)  # noqa: SLF001
-    assert category_color_hex(cat2.color_hue) in tag3_btn.styleSheet()
+    assert category_color_hex(cat2.color_hex) in tag3_btn.styleSheet()
 
     # 分组头不着色（验收反馈：分类与标签都上色太杂乱）
     from PySide6.QtWidgets import QPushButton as _QPushButton
@@ -704,5 +704,5 @@ def test_chip_and_preset_buttons_colored_by_category(qapp, env_with_units, monke
     ]
     assert headers
     assert all(
-        category_color_hex(c.color_hue) not in h.styleSheet() for h in headers for c in (cat1, cat2)
+        category_color_hex(c.color_hex) not in h.styleSheet() for h in headers for c in (cat1, cat2)
     )

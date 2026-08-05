@@ -36,7 +36,6 @@ def service(repo: ContentUnitRepository) -> ContentService:
 def _make_unit(
     unit_id: str,
     path: str,
-    title: str | None = None,
     created_at: str = "2026-07-12T00:00:00Z",
 ) -> ContentUnit:
     return ContentUnit(
@@ -44,7 +43,6 @@ def _make_unit(
         path=path,
         created_at=created_at,
         updated_at=created_at,
-        title=title,
     )
 
 
@@ -57,7 +55,7 @@ class TestListByDirectory:
     ) -> None:
         mods = tmp_path / "mods"
         armor = mods / "armor"
-        unit = _make_unit("u1", str(armor), title="护甲")
+        unit = _make_unit("u1", str(armor))
         repo.create(unit)
 
         result = service.list_by_directory(str(mods))
@@ -69,8 +67,8 @@ class TestListByDirectory:
     ) -> None:
         mods = tmp_path / "mods"
         mods.mkdir()
-        u1 = _make_unit("u1", str(mods / "armor"), title="护甲")
-        u2 = _make_unit("u2", str(mods / "weapons"), title="武器")
+        u1 = _make_unit("u1", str(mods / "armor"))
+        u2 = _make_unit("u2", str(mods / "weapons"))
         repo.create(u1)
         repo.create(u2)
 
@@ -86,8 +84,8 @@ class TestListByDirectory:
         mods_b = tmp_path / "mods_b"
         mods_a.mkdir()
         mods_b.mkdir()
-        u1 = _make_unit("u1", str(mods_a / "armor"), title="护甲")
-        u2 = _make_unit("u2", str(mods_b / "weapons"), title="武器")
+        u1 = _make_unit("u1", str(mods_a / "armor"))
+        u2 = _make_unit("u2", str(mods_b / "weapons"))
         repo.create(u1)
         repo.create(u2)
 
@@ -100,12 +98,12 @@ class TestListByDirectory:
     ) -> None:
         # 构造中文路径（不实际创建文件，ContentUnit 只存字符串路径）
         armor_path = str(tmp_path / "mods" / "护甲")
-        u1 = _make_unit("u1", armor_path, title="寒霜之心")
+        u1 = _make_unit("u1", armor_path)
         repo.create(u1)
 
         result = service.list_by_directory(str(tmp_path / "mods"))
         assert len(result) == 1
-        assert result[0].title == "寒霜之心"
+        assert result[0].path == armor_path
 
 
 class TestListDirectChildren:
@@ -119,9 +117,9 @@ class TestListDirectChildren:
         armor = mods / "armor"
         armor_deep = armor / "deep"
         # 直接子项
-        u1 = _make_unit("u1", str(armor), title="护甲")
+        u1 = _make_unit("u1", str(armor))
         # 深层子项
-        u2 = _make_unit("u2", str(armor_deep), title="深层")
+        u2 = _make_unit("u2", str(armor_deep))
         repo.create(u1)
         repo.create(u2)
 
@@ -136,9 +134,9 @@ class TestListDirectChildren:
         l1 = mods / "L1"
         l2 = l1 / "L2"
         l3 = l2 / "L3"
-        u1 = _make_unit("u1", str(l1), title="L1")
-        u2 = _make_unit("u2", str(l2), title="L2")
-        u3 = _make_unit("u3", str(l3), title="L3")
+        u1 = _make_unit("u1", str(l1))
+        u2 = _make_unit("u2", str(l2))
+        u3 = _make_unit("u3", str(l3))
         repo.create(u1)
         repo.create(u2)
         repo.create(u3)
@@ -166,7 +164,7 @@ class TestListDirectChildren:
     ) -> None:
         """内容单元路径等于目录本身时包含。"""
         mods = tmp_path / "mods"
-        u1 = _make_unit("u1", str(mods), title="Mods 本身")
+        u1 = _make_unit("u1", str(mods))
         repo.create(u1)
 
         result = service.list_direct_children(str(mods))
@@ -178,22 +176,22 @@ class TestListDirectChildren:
     ) -> None:
         armor_path = str(tmp_path / "mods" / "护甲")
         deep_path = str(tmp_path / "mods" / "护甲" / "深层")
-        u1 = _make_unit("u1", armor_path, title="寒霜之心")
-        u2 = _make_unit("u2", deep_path, title="深层")
+        u1 = _make_unit("u1", armor_path)
+        u2 = _make_unit("u2", deep_path)
         repo.create(u1)
         repo.create(u2)
 
         result = service.list_direct_children(str(tmp_path / "mods"))
         assert len(result) == 1
-        assert result[0].title == "寒霜之心"
+        assert result[0].path == armor_path
 
     def test_multiple_direct_children(
         self, repo: ContentUnitRepository, service: ContentService, tmp_path: Path
     ) -> None:
         mods = tmp_path / "mods"
-        u1 = _make_unit("u1", str(mods / "armor"), title="护甲")
-        u2 = _make_unit("u2", str(mods / "weapons"), title="武器")
-        u3 = _make_unit("u3", str(mods / "spells"), title="法术")
+        u1 = _make_unit("u1", str(mods / "armor"))
+        u2 = _make_unit("u2", str(mods / "weapons"))
+        u3 = _make_unit("u3", str(mods / "spells"))
         repo.create(u1)
         repo.create(u2)
         repo.create(u3)
@@ -208,13 +206,12 @@ class TestGetById:
     def test_existing_unit(
         self, repo: ContentUnitRepository, service: ContentService, tmp_path: Path
     ) -> None:
-        unit = _make_unit("u1", str(tmp_path / "armor"), title="护甲")
+        unit = _make_unit("u1", str(tmp_path / "armor"))
         repo.create(unit)
 
         result = service.get_by_id("u1")
         assert result is not None
         assert result.id == "u1"
-        assert result.title == "护甲"
 
     def test_nonexistent_unit(self, service: ContentService) -> None:
         assert service.get_by_id("nonexistent") is None
@@ -313,14 +310,13 @@ class TestListDirectoryEntries:
         archive = armor / "寒霜之心.7z"
         archive.write_bytes(b"\x00" * 100)
         # 创建对应内容单元（path 为压缩包文件路径）
-        repo.create(_make_unit("u1", str(archive), title="寒霜之心.7z"))
+        repo.create(_make_unit("u1", str(archive)))
 
         # 在 armor 目录下查询，应找到压缩包文件并关联
         entries = service.list_directory_entries(str(armor))
         archive_entry = next(e for e in entries if e.name == "寒霜之心.7z")
         assert archive_entry.content_unit is not None
         assert archive_entry.content_unit.id == "u1"
-        assert archive_entry.content_unit.title == "寒霜之心.7z"
 
     def test_non_content_unit_entry_has_none(
         self, repo: ContentUnitRepository, service: ContentService, tmp_path: Path
@@ -333,7 +329,7 @@ class TestListDirectoryEntries:
         (mods / "armor" / "a.7z").write_bytes(b"\x00")
         (mods / "weapons" / "w.7z").write_bytes(b"\x00")
         # 只为 armor/a.7z 创建内容单元
-        repo.create(_make_unit("u1", str(mods / "armor" / "a.7z"), title="a.7z"))
+        repo.create(_make_unit("u1", str(mods / "armor" / "a.7z")))
 
         # 在 mods 目录下查询
         entries = service.list_directory_entries(str(mods))
@@ -409,7 +405,6 @@ class TestCreateContentUnit:
 
         assert unit.id == "uuid-create-1"
         assert unit.path == str(path)
-        assert unit.title is None
         assert unit.content_type == "mod"
         assert unit.created_at == "2026-07-14T00:00:00Z"
         # DB 中可查
@@ -772,8 +767,8 @@ class TestUnmarkContentUnit:
         # 插入一条 content_unit_tag 记录（构造 FK 引用）
         # 注意：tag 表无记录，直接插 content_unit_tag 会 FK 违约，需先插 tag_category + tag
         db_connection.execute(
-            "INSERT INTO tag_category (id, name, color_hue) VALUES (?, ?, ?)",
-            ("cat-1", "测试分类", 0),
+            "INSERT INTO tag_category (id, name, color_hex) VALUES (?, ?, ?)",
+            ("cat-1", "测试分类", "#D61A1A"),
         )
         db_connection.execute(
             "INSERT INTO tag (id, name, category_id) VALUES (?, ?, ?)",
@@ -901,8 +896,8 @@ class TestUnmarkPathAndDescendants:
         archive_root.mkdir()
         unit = svc.create_content_unit(archive_root / "mod.7z")
         db_connection.execute(
-            "INSERT INTO tag_category (id, name, color_hue) VALUES (?, ?, ?)",
-            ("cat-archive", "测试分类", 0),
+            "INSERT INTO tag_category (id, name, color_hex) VALUES (?, ?, ?)",
+            ("cat-archive", "测试分类", "#D61A1A"),
         )
         db_connection.execute(
             "INSERT INTO tag (id, name, category_id) VALUES (?, ?, ?)",
@@ -952,7 +947,7 @@ class TestListByPathPrefixNormalized:
         child = folder / "mod.7z"
         # DB 存正斜杠形式
         posix_child = str(child).replace("\\", "/")
-        repo.create(_make_unit("c1", posix_child, title="child"))
+        repo.create(_make_unit("c1", posix_child))
 
         # 用反斜杠查询（Windows 原生 str(Path)）
         result = repo.list_by_path_prefix_normalized(str(folder))
@@ -966,7 +961,7 @@ class TestListByPathPrefixNormalized:
         """同分隔符（Windows 均反斜杠）：新方法与原方法行为一致。"""
         folder = tmp_path / "ModGroup"
         child = folder / "mod.7z"
-        repo.create(_make_unit("c1", str(child), title="child"))
+        repo.create(_make_unit("c1", str(child)))
 
         result = repo.list_by_path_prefix_normalized(str(folder))
         assert len(result) == 1
@@ -979,8 +974,8 @@ class TestListByPathPrefixNormalized:
         """
         mods = tmp_path / "Mods"
         mods2 = tmp_path / "Mods2"
-        repo.create(_make_unit("u1", str(mods / "armor.7z"), title="armor"))
-        repo.create(_make_unit("u2", str(mods2 / "other.7z"), title="other"))
+        repo.create(_make_unit("u1", str(mods / "armor.7z")))
+        repo.create(_make_unit("u2", str(mods2 / "other.7z")))
 
         result = repo.list_by_path_prefix_normalized(str(mods))
         assert len(result) == 1
@@ -1020,7 +1015,6 @@ class TestListByPathPrefixNormalized:
             ContentUnit(
                 id="stale-child-sep-divergence",
                 path=posix_child_path,
-                title="child",
                 content_type="mod",
                 created_at="2026-07-14T00:00:00Z",
                 updated_at="2026-07-14T00:00:00Z",
@@ -1042,23 +1036,6 @@ class TestListByPathPrefixNormalized:
 
 
 class TestUpdateMetadata:
-    def test_update_does_not_touch_title(
-        self, service: ContentService, db_connection: sqlite3.Connection
-    ) -> None:
-        """UI合理性13：update_metadata 不再写入 title，原值保留。"""
-        unit = _make_unit("u1", "/mods/a")
-        db_connection.execute(
-            "INSERT INTO content_unit (id, path, path_key, title, "
-            "created_at, updated_at) "
-            "VALUES ('u1', '/mods/a', '/mods/a', '原标题', 't', 't')"
-        )
-        db_connection.commit()
-
-        updated = service.update_metadata("u1", notes="新备注")
-        assert updated.title == "原标题"  # title 不再被写入
-        assert updated.notes == "新备注"
-        assert updated.updated_at != unit.updated_at  # updated_at 已更新
-
     def test_update_source_url(
         self, service: ContentService, db_connection: sqlite3.Connection
     ) -> None:
@@ -1099,15 +1076,14 @@ class TestUpdateMetadata:
     ) -> None:
         """None 参数表示不改，应保留原值。"""
         db_connection.execute(
-            "INSERT INTO content_unit (id, path, path_key, title, source_url, notes, "
+            "INSERT INTO content_unit (id, path, path_key, source_url, notes, "
             "created_at, updated_at) "
-            "VALUES ('u1', '/mods/a', '/mods/a', '原标题', 'https://a.com', '原备注', 't', 't')"
+            "VALUES ('u1', '/mods/a', '/mods/a', 'https://a.com', '原备注', 't', 't')"
         )
         db_connection.commit()
 
         # 仅更新 cover_path（这里 None，不改）
         updated = service.update_metadata("u1")
-        assert updated.title == "原标题"
         assert updated.source_url == "https://a.com"
         assert updated.notes == "原备注"
 

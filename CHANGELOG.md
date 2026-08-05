@@ -4,6 +4,32 @@
 
 在 1.0.0 之前，0.MINOR.PATCH 中的 MINOR 用于标记里程碑推进（roadmap 阶段/Task），PATCH 用于同里程碑内的修复与小幅调整。任何可能影响用户数据或破坏已有功能的变化都会使 MINOR 递增。
 
+## [0.51.0] - 2026-08-05
+
+**Schema v15：删除 content_unit.title + tag_category 存储完整颜色（2026-08-05）**：
+  - schema v14 → v15 合并迁移（两个独立 schema 升级 issue，2026-08-03 记录；
+    原 v14 迁移窗口已被操作便捷性1 的 'strip' 占用）：
+    - 删除 `content_unit.title` 列——UI合理性14 起已停止读写、无用户语义
+      （遗留别名已清，剩余均为 title == 文件名 默认值）；同步移除
+      `scripts/clear_legacy_titles.py` 及其测试
+    - `tag_category.color_hue` → `color_hex`（完整 #RRGGBB，大写）：迁移回填
+      用与显示完全一致的换算（纯 Python HSL→RGB，360 色相与 QColor.fromHsl
+      对照 0 偏差），升级后所有分类颜色观感不变；为未来恢复全功能选色
+      （自定义 RGB / 十六进制输入）铺路
+  - 领域模型 / 仓储 / TagService（create_category / update_category_color）/
+    全部 UI 着色调用（tag_colors、标签管理、元数据面板、批量打标签、筛选栏）
+    切换 color_hex；选中/排除三态变体从存储色取色相按原 S/L 重建
+  - 标签 JSON 导入导出升级 schema v2（color_hex），导入兼容旧 v1
+    （color_hue 自动换算）；预置标签库 default_tags.json 升级 v2
+  - 选色 UI 维持 24 色预选表（用户确认 2026-08-05：只做存储升级）
+  （[migrations.py](src/infrastructure/migrations.py) /
+  [color_utils.py](src/infrastructure/color_utils.py) /
+  [models.py](src/domain/models.py) /
+  [tag_service.py](src/application/tag_service.py) /
+  [tag_colors.py](src/app/tag_colors.py) /
+  [color_picker_dialog.py](src/app/color_picker_dialog.py) /
+  [test_migrations.py](tests/test_migrations.py)）
+
 ## [0.50.22] - 2026-08-04
 
 **设置文件化 + 数据目录收紧（2026-08-04，用户反馈）**：

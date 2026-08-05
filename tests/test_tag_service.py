@@ -65,10 +65,10 @@ def _counter_uuid_provider():
 class TestCreateCategory:
     def test_create_basic(self, db_connection: sqlite3.Connection) -> None:
         service = _make_service(db_connection, uuid_provider=lambda: "uuid-1")
-        cat = service.create_category("服装护甲", color_hue=210)
+        cat = service.create_category("服装护甲", color_hex="#1A78D6")
         assert cat.id == "uuid-1"
         assert cat.name == "服装护甲"
-        assert cat.color_hue == 210
+        assert cat.color_hex == "#1A78D6"
 
     def test_create_duplicate_name_raises(self, db_connection: sqlite3.Connection) -> None:
         service = _make_service(db_connection)
@@ -140,14 +140,14 @@ class TestRenameCategory:
 class TestUpdateCategoryColor:
     def test_update_color(self, db_connection: sqlite3.Connection) -> None:
         service = _make_service(db_connection, uuid_provider=lambda: "c-1")
-        service.create_category("服装护甲", color_hue=100)
-        cat = service.update_category_color("c-1", 250)
-        assert cat.color_hue == 250
+        service.create_category("服装护甲", color_hex="#D61A1A")
+        cat = service.update_category_color("c-1", "#1AD61A")
+        assert cat.color_hex == "#1AD61A"
 
     def test_update_missing_raises(self, db_connection: sqlite3.Connection) -> None:
         service = _make_service(db_connection)
         with pytest.raises(TagCategoryNotFoundError):
-            service.update_category_color("nonexistent", 200)
+            service.update_category_color("nonexistent", "#1A78D6")
 
 
 class TestDeleteCategory:
@@ -341,7 +341,7 @@ class TestListCategoriesWithTags:
 class TestExportToJson:
     def test_export_basic(self, db_connection: sqlite3.Connection, tmp_path: Path) -> None:
         service = _make_service(db_connection)
-        cat = service.create_category("服装护甲", color_hue=210)
+        cat = service.create_category("服装护甲", color_hex="#1A78D6")
         service.create_tag("重甲", cat.id)
         service.create_tag("轻甲", cat.id)
 
@@ -353,7 +353,7 @@ class TestExportToJson:
         assert data["schema_version"] == TAGS_JSON_SCHEMA_VERSION
         assert len(data["categories"]) == 1
         assert data["categories"][0]["name"] == "服装护甲"
-        assert data["categories"][0]["color_hue"] == 210
+        assert data["categories"][0]["color_hex"] == "#1A78D6"
         assert sorted(data["categories"][0]["tags"]) == ["轻甲", "重甲"]
 
     def test_export_chinese(self, db_connection: sqlite3.Connection, tmp_path: Path) -> None:
@@ -372,7 +372,10 @@ class TestExportToJson:
 
 
 class TestImportFromJson:
-    def test_import_basic(self, db_connection: sqlite3.Connection, tmp_path: Path) -> None:
+    def test_import_v1_color_hue_compat(
+        self, db_connection: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """兼容旧导出：schema_version=1 的 color_hue 自动换算为 color_hex。"""
         service = _make_service(db_connection)
         # 准备 JSON
         json_path = tmp_path / "input.json"
@@ -401,8 +404,35 @@ class TestImportFromJson:
         cats = service.list_categories()
         assert len(cats) == 1
         assert cats[0].name == "服装护甲"
+        assert cats[0].color_hex == "#1A78D6"  # hue 210 换算
         tags = service.list_tags_by_category(cats[0].id)
         assert {t.name for t in tags} == {"重甲", "轻甲"}
+
+    def test_import_v2_color_hex(self, db_connection: sqlite3.Connection, tmp_path: Path) -> None:
+        """新格式：schema_version=2 直接使用 color_hex。"""
+        service = _make_service(db_connection)
+        json_path = tmp_path / "input_v2.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "categories": [
+                        {
+                            "name": "服装护甲",
+                            "color_hex": "#1AD61A",
+                            "tags": ["重甲"],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        result = service.import_from_json(json_path)
+        assert result["created_categories"] == 1
+        assert result["created_tags"] == 1
+        cats = service.list_categories()
+        assert cats[0].color_hex == "#1AD61A"
 
     def test_import_skips_existing_category(
         self, db_connection: sqlite3.Connection, tmp_path: Path
@@ -496,10 +526,10 @@ class TestClearAllTags:
     def test_clears_categories_tags_and_links(self, db_connection: sqlite3.Connection) -> None:
         """clear_all_tags 级联清理分类、标签、content_unit_tag 关联。"""
         service = _make_service(db_connection, uuid_provider=_counter_uuid_provider())
-        cat = service.create_category("服装护甲", color_hue=210)
+        cat = service.create_category("服装护甲", color_hex="#1A78D6")
         service.create_tag("重甲", cat.id)
         service.create_tag("轻甲", cat.id)
-        cat2 = service.create_category("武器", color_hue=30)
+        cat2 = service.create_category("武器", color_hex="#D6781A")
         service.create_tag("单手剑", cat2.id)
         db_connection.commit()
 
@@ -536,10 +566,10 @@ class TestOverwriteImportFromJson:
         json_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "categories": [
-                        {"name": "新分类A", "color_hue": 210, "tags": ["标签1", "标签2"]},
-                        {"name": "新分类B", "color_hue": 30, "tags": ["标签3"]},
+                        {"name": "新分类A", "color_hex": "#1A78D6", "tags": ["标签1", "标签2"]},
+                        {"name": "新分类B", "color_hex": "#D6781A", "tags": ["标签3"]},
                     ],
                 },
                 ensure_ascii=False,
@@ -593,10 +623,10 @@ class TestLoadDefaultTagsIfEmpty:
         json_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "categories": [
-                        {"name": "服装护甲", "color_hue": 210, "tags": ["重甲", "轻甲"]},
-                        {"name": "武器", "color_hue": 30, "tags": ["单手剑"]},
+                        {"name": "服装护甲", "color_hex": "#1A78D6", "tags": ["重甲", "轻甲"]},
+                        {"name": "武器", "color_hex": "#D6781A", "tags": ["单手剑"]},
                     ],
                 },
                 ensure_ascii=False,
@@ -754,8 +784,8 @@ class TestListTagsOfContentUnit:
     def test_multiple_categories_grouped(self, db_connection: sqlite3.Connection) -> None:
         """跨分类标签应按分类分组返回。"""
         service = _make_service(db_connection)
-        cat_a = service.create_category("服装护甲", color_hue=210)
-        cat_b = service.create_category("武器", color_hue=30)
+        cat_a = service.create_category("服装护甲", color_hex="#1A78D6")
+        cat_b = service.create_category("武器", color_hex="#D6781A")
         tag_heavy = service.create_tag("重甲", cat_a.id)
         tag_sword = service.create_tag("单手剑", cat_b.id)
         tag_light = service.create_tag("轻甲", cat_a.id)

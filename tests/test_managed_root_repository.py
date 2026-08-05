@@ -263,9 +263,9 @@ def test_delete_preserves_content_unit_and_folder_cache(
 
     # 模拟扫描结果存在（直接插入 content_unit 与 folder_cache）
     db_connection.execute(
-        "INSERT INTO content_unit (id, path, path_key, title, content_type, "
+        "INSERT INTO content_unit (id, path, path_key, content_type, "
         "created_at, updated_at) VALUES "
-        "('cu-1', ?, ?, 'Mods', 'mod', '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
+        "('cu-1', ?, ?, 'mod', '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
         (str(path), make_path_key(str(path))),
     )
     db_connection.execute(

@@ -397,7 +397,6 @@ class FileOperationService:
             updated = ContentUnit(
                 id=unit.id,
                 path=new_path,
-                title=unit.title,
                 content_type=unit.content_type,
                 source_url=unit.source_url,
                 cover_path=unit.cover_path,
@@ -417,7 +416,7 @@ class FileOperationService:
 
         文件重命名/移动不会产生新的 ContentUnit 行，而是改写旧行：
         - path / path_key 更新为新路径（仓储 update 自动重算 path_key）
-        - title 原样保留（UI合理性13：title 列停止使用，重命名不再维护 title）
+        - title 列已于 schema v15 删除（UI合理性13 起即停止使用，不再维护）
         - 若目标位于已标记文件夹内（spec §5.4：父子不可同时标记），改为删除该行，
           与扫描侧 _has_ancestor_content_unit 的跳过逻辑保持一致
 
@@ -447,7 +446,6 @@ class FileOperationService:
         updated = ContentUnit(
             id=unit.id,
             path=str(dst),
-            title=unit.title,
             content_type=unit.content_type,
             source_url=unit.source_url,
             cover_path=unit.cover_path,
@@ -951,7 +949,6 @@ class FileOperationService:
             new_unit = ContentUnit(
                 id=self._new_uuid(),
                 path=new_path,
-                title=unit.title,
                 content_type=unit.content_type,
                 source_url=unit.source_url,
                 cover_path=unit.cover_path,

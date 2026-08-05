@@ -34,7 +34,6 @@ def _make_unit(unit_id: str, tmp_path: Path) -> ContentUnit:
     return ContentUnit(
         id=unit_id,
         path=str(tmp_path / unit_id),
-        title=f"Unit {unit_id}",
         content_type="mod",
         created_at="2026-07-01T00:00:00Z",
         updated_at="2026-07-01T00:00:00Z",

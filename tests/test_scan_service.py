@@ -147,14 +147,13 @@ class TestScanRootFull:
         mod_tree: Path,
         db_connection,
     ) -> None:
-        """UI合理性13：扫描创建的内容单元不再写 title（恒为 None）。"""
+        """UI合理性13：扫描创建的内容单元不再写 title（schema v15 已删除该列）。"""
         root = managed_root_service.add_root(mod_tree)
         scan_service.scan_root(root.id, incremental=False)
 
         repo = ContentUnitRepository(db_connection)
         units = repo.list_all()
         assert len(units) >= 3
-        assert all(u.title is None for u in units)
 
 
 class TestScanRootIncremental:
@@ -580,7 +579,7 @@ class TestStaleContentUnitCleanup:
 
         # 给失效行挂一个标签，验证级联清理（schema 无 ON DELETE CASCADE）
         db_connection.execute(
-            "INSERT INTO tag_category (id, name, color_hue) VALUES ('cat1', '分类', 0)"
+            "INSERT INTO tag_category (id, name, color_hex) VALUES ('cat1', '分类', '#D61A1A')"
         )
         db_connection.execute(
             "INSERT INTO tag (id, name, category_id) VALUES ('tag1', '标签', 'cat1')"

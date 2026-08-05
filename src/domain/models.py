@@ -11,6 +11,7 @@ ContentUnit / TagCategory / Tag / OperationHistory / FolderCache / ManagedRoot�
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -26,6 +27,8 @@ class ContentUnit:
     v11 schema（Stage 5 Code Review D2/D3）：status 字段重构为 is_marked: bool。
     v13 schema（UX 重构 Task 6）：移除 is_marked 字段，回归纯 DELETE 模式——
     记录存在即已标记，取消标记 = DELETE 记录，无需表达"曾标记但已取消"的状态。
+    v15 schema（2026-08-05）：移除 title 列——UI合理性14 起已停止读写，
+    title 无任何用户语义，物理删除。
     path_key 为 DB 层列（UNIQUE 约束），Domain 实体不含该字段。
     """
 
@@ -33,7 +36,6 @@ class ContentUnit:
     path: str
     created_at: str
     updated_at: str
-    title: str | None = None
     content_type: str = "mod"
     source_url: str | None = None
     cover_path: str | None = None
@@ -61,19 +63,25 @@ class ContentUnit:
 
 @dataclass
 class TagCategory:
-    """标签分类。spec §4.2。"""
+    """标签分类。spec §4.2。
+
+    schema v15（2026-08-05）：color_hue → color_hex（完整 #RRGGBB，大写），
+    支持未来全功能选色（自定义 RGB / 十六进制输入）。
+    """
 
     id: str
     name: str
-    color_hue: int = 0
+    color_hex: str = "#D61A1A"
+
+    _HEX_RE = re.compile(r"^#[0-9A-F]{6}$")
 
     def __post_init__(self) -> None:
         if not self.id:
             raise ValueError("TagCategory.id 不能为空")
         if not self.name:
             raise ValueError("TagCategory.name 不能为空")
-        if self.color_hue < 0 or self.color_hue > 360:
-            raise ValueError("TagCategory.color_hue 必须在 0-360 之间")
+        if not self._HEX_RE.fullmatch(self.color_hex or ""):
+            raise ValueError("TagCategory.color_hex 必须是 #RRGGBB 大写十六进制")
 
 
 @dataclass

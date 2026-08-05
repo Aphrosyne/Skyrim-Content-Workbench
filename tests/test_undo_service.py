@@ -197,7 +197,6 @@ class TestUndoRename:
         unit = ContentUnit(
             id="cu1",
             path=str(archive),
-            title="mod",
             content_type="mod",
             created_at="2026-07-30T00:00:00Z",
             updated_at="2026-07-30T00:00:00Z",
@@ -292,7 +291,6 @@ class TestUndoMove:
         unit = ContentUnit(
             id="cu1",
             path=str(archive),
-            title="mod",
             content_type="mod",
             created_at="2026-07-30T00:00:00Z",
             updated_at="2026-07-30T00:00:00Z",

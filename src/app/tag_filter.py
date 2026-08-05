@@ -139,8 +139,8 @@ class TagFilterBar(QWidget):
         # - _selected_tag_ids: set[str]（已选标签 ID）
         # - _expanded_category_id: str | None（当前展开的分类 ID，互斥）
         self._categories: list[tuple[TagCategory, list[Tag]]] = []
-        # BugFix2：分类色映射（tag_id → color_hue），供标签按钮填充着色
-        self._tag_hues: dict[str, int] = {}
+        # BugFix2（schema v15 起存完整颜色）：tag_id → color_hex，供标签按钮着色
+        self._tag_colors: dict[str, str] = {}
         self._selected_tag_ids: set[str] = set()
         # UI合理性16：三态（0=未选 / 1=已选 / 2=已排除），反选可多个
         self._tag_states: dict[str, int] = {}
@@ -213,8 +213,8 @@ class TagFilterBar(QWidget):
         except Exception:  # noqa: BLE001
             logger.exception("加载标签分类失败")
             self._categories = []
-        self._tag_hues = {
-            tag.id: category.color_hue for category, tags in self._categories for tag in tags
+        self._tag_colors = {
+            tag.id: category.color_hex for category, tags in self._categories for tag in tags
         }
         # 剔除已不存在的已选标签
         valid_tag_ids = {tag.id for _, tags in self._categories for tag in tags}
@@ -415,11 +415,11 @@ class TagFilterBar(QWidget):
         文字内容不变（不用 ✓/− 前缀），宽度由 _reserve_button_width 预留，状态切换不跳动。
         """
         state = self._tag_states.get(tag_id, 0)
-        hue = self._tag_hues.get(tag_id)
+        color = self._tag_colors.get(tag_id)
 
         if state == 1:
-            bg = category_color_vivid_hex(hue) if hue is not None else "#b3d4fc"
-            text = text_color_vivid_hex(hue) if hue is not None else "#1a1a1a"
+            bg = category_color_vivid_hex(color) if color is not None else "#b3d4fc"
+            text = text_color_vivid_hex(color) if color is not None else "#1a1a1a"
             btn.setStyleSheet(_tag_button_style(bg, text, "#ffffff"))
             font = btn.font()
             font.setBold(True)
@@ -427,8 +427,8 @@ class TagFilterBar(QWidget):
             btn.setFont(font)
             btn.setToolTip("")
         elif state == 2:
-            bg = category_color_faded_hex(hue) if hue is not None else "#e0e0e0"
-            text = text_color_faded_hex(hue) if hue is not None else "#1a1a1a"
+            bg = category_color_faded_hex(color) if color is not None else "#e0e0e0"
+            text = text_color_faded_hex(color) if color is not None else "#1a1a1a"
             btn.setStyleSheet(_tag_button_style(bg, text, bg))
             btn.setToolTip(ui.TAG_FILTER_EXCLUDED_TOOLTIP)
             font = btn.font()
@@ -436,10 +436,12 @@ class TagFilterBar(QWidget):
             font.setStrikeOut(True)
             btn.setFont(font)
         else:
-            if hue is not None:
+            if color is not None:
                 btn.setStyleSheet(
                     _tag_button_style(
-                        category_color_hex(hue), text_color_hex(hue), category_color_hex(hue)
+                        category_color_hex(color),
+                        text_color_hex(color),
+                        category_color_hex(color),
                     )
                 )
             else:

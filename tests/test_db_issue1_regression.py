@@ -109,10 +109,9 @@ def test_rename_then_scan_search_returns_single_result(tmp_path: Path) -> None:
     assert results[0].path.endswith("BAA.7z")
 
     # content_unit 表应只有一行，且无失效路径
-    rows = conn.execute("SELECT path, title FROM content_unit").fetchall()
+    rows = conn.execute("SELECT path FROM content_unit").fetchall()
     assert len(rows) == 1
     assert rows[0]["path"].endswith("BAA.7z")
-    assert rows[0]["title"] is None  # UI合理性13：title 不再写入/跟随
     conn.close()
 
 

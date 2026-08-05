@@ -25,7 +25,7 @@ from infrastructure.repositories.tag_category import TagCategoryRepository
 
 def _seed_cat(conn: sqlite3.Connection, category_id: str = "c-1", name: str = "服装护甲") -> None:
     """插入一个 TagCategory 供 Tag 引用。"""
-    TagCategoryRepository(conn).create(TagCategory(id=category_id, name=name, color_hue=210))
+    TagCategoryRepository(conn).create(TagCategory(id=category_id, name=name, color_hex="#1A78D6"))
 
 
 def _make_tag(

@@ -25,24 +25,6 @@
 - 但是高度还是会抖一下（闪一下）
 - 优先级L0
 
-### Schema 升级：tag_category 存储完整颜色（独立 issue，2026-08-03 记录）
-- 背景：BugFix2 当前选色采用预选色表（24 色相），因数据库仅存 `color_hue`（0-360）
-  单列；若需恢复全功能 QColorDialog（十六进制输入 / 自定义 RGB），必须存储完整颜色。
-- 计划：bump `CURRENT_SCHEMA_VERSION`，`tag_category` 新增颜色列（RGB），
-  同步 `TagCategory` 模型、仓库、`TagService.create_category / update_category_color`、
-  标签 JSON 导入导出（兼容旧 `color_hue` 字段映射，旧导出可导入）。
-- 前置条件：与「删除 content_unit.title 列」的 v14 迁移窗口协调（二选一占 v14，
-  或分 v14/v15）；不影响当前预选色表方案（颜色一致已达成）。
-- 优先级L1（体验增强，非阻塞）
-
-### Schema 升级：删除 content_unit.title 列（独立 issue，2026-08-03 记录）
-- 背景：UI合理性14 收尾后，content_unit.title 已无任何读写路径（列保留但停止使用）。
-- 计划：bump CURRENT_SCHEMA_VERSION 至 14，迁移删除 title 列（同步 ContentUnit 模型、
-  content_unit 仓储列、相关测试；删除前确认旧库 title 数据无用户依赖）。
-- 前置条件：等数据导出/导入机制就绪（原 UI合理性14 备注），且 title 停止使用经过
-  一段真实使用期后再物理删除，避免迁移窗口冲突。
-- 优先级L0（低风险但需迁移窗口，独立于 UI合理性14 处理）
-
 #### 后续规划（从已修复项拆出）
 
 ### 操作便捷性3 二期：固定移动目标（书签）（未开始）
@@ -76,7 +58,7 @@
 
 ### 操作合理性6
 - 操作历史支持undo redo
-- 已经撤回(undo)的操作标记灰色而不是之间从历史删掉（至少目前在历史中看不到已经撤回的操作）
+- 已经撤回(undo)的操作标记灰色而不是直接从历史删掉（至少目前在历史中看不到已经撤回的操作）
 - 快捷键会自动跳过灰色的，只会从可撤回栈顶往里执行
 - 优先级L0
 
@@ -161,11 +143,53 @@
 - 相关内容 UI合理性26
 - 优先级L1
 
+## 26-8-5
+
 ### UI合理性29
-- 清楚全部应该也要关闭只看封面
+- 清除全部应该也要关闭只看封面
 - 优先级L2
 
+### UI合理性30
+- 已选标签栏，删除队头标签，其他应该自动左移补充队伍
+- 优先级L0
+
 ## 已修复（归档）
+
+### 26-8-5
+
+### Schema 升级：删除 content_unit.title 列 ✅ 已修复（2026-08-05，未发版）
+- 优先级L0
+- 决策（用户确认 2026-08-05）：
+  - 与「tag_category 存储完整颜色」合并为一个 schema 版本 **v15**（原 issue
+    所述「二选一占 v14 / 分 v14/v15」已过时——v14 已被操作便捷性1 的 'strip'
+    迁移占用，两项共享下一迁移窗口）
+  - title 列已无有价值数据，删除列及数据（UI合理性14 起停止读写；遗留别名
+    已清，剩余均为 title == 文件名 默认值；「等数据导出/导入机制」前置条件
+    已由用户「直接备份 data/ 即可」决策替代）
+  - 版本号 0.51.0（CHANGELOG 规则：schema 变更递增 MINOR）
+- 实现：
+  - `migrate_v14_to_v15` 删除 content_unit.title（ALTER TABLE DROP COLUMN，
+    幂等检查列存在）
+  - ContentUnit 模型 / ContentUnitRepository / FileOperationService 移除
+    title 字段；`scripts/clear_legacy_titles.py` 及其测试删除（使命随列删除终结）
+  - 相关测试更新（约 60 处 title 引用清理 + 迁移测试：删列/数据保留/幂等）
+
+### Schema 升级：tag_category 存储完整颜色 ✅ 已修复（2026-08-05，未发版）
+- 优先级L1（体验增强，非阻塞）
+- 决策（用户确认 2026-08-05）：
+  - **只做存储升级**，选色 UI 维持 24 色预选表（颜色观感零变化）；
+    完整颜色为未来恢复全功能选色（自定义 RGB / 十六进制输入）铺路
+  - 合并进 schema v15；版本号 0.51.0
+- 实现：
+  - tag_category 新增 `color_hex` TEXT（大写 #RRGGBB），回填 `hue_to_hex`
+    （纯 Python HSL→RGB，固定 S=200/L=120；360 色相与 QColor.fromHsl
+    对照 0 偏差），随后删除 color_hue 列
+  - TagCategory 模型 / TagCategoryRepository / TagService.create_category /
+    update_category_color 改为 color_hex；tag_colors / color_picker_dialog /
+    metadata_panel / batch_tag_dialog / tag_filter / tag_manager_dialog 全部
+    切 hex；选中/排除三态变体从存储色取色相按原 S/L 重建（观感不变）
+  - 标签 JSON 导入导出 schema v1 → v2（color_hue → color_hex），导入兼容旧
+    v1（color_hue 自动换算）；`default_tags.json` 升级 v2
 
 ### 26-8-4
 

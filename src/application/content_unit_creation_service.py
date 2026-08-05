@@ -7,9 +7,9 @@
 1. 从文件名提取主要名称（剔除版本号、扩展名）。
 2. 在暂存区创建以该名称命名的新文件夹（FileOperationService.new_folder）。
 3. 把源压缩包文件移入新文件夹（FileOperationService.move）。
-4. 取消源文件旧路径的 ContentUnit 标记（若存在，设为 "unmarked" 避免悬挂标记）。
+4. 取消源文件旧路径的 ContentUnit 标记（若存在，删除旧记录避免悬挂标记）。
 5. 为新文件夹标记 ContentUnit（mark_as_content_unit，spec §5.4 标记文件夹时
-   取消子项标记；默认 title=path.name）。
+   取消子项标记；title 列已随 schema v15 删除）。
 
 Stage 4.5 H4（TD-M22）：FileOperationService 注入 FolderCacheSyncHelper 后，
 new_folder/move 自动同步 folder_cache，本服务不再手动同步。
@@ -131,7 +131,7 @@ class ContentUnitCreationService:
             name: Mod 组名称。None 时从 source_file 文件名自动提取。
 
         Returns:
-            新创建的 ContentUnit（path 指向新文件夹，title=文件夹名；纯 DELETE 模式
+            新创建的 ContentUnit（path 指向新文件夹；纯 DELETE 模式
             下记录存在即已标记）。
 
         Raises:
@@ -325,7 +325,7 @@ class ContentUnitCreationService:
 
         # 步骤 4：为新文件夹标记 ContentUnit
         # 使用 mark_as_content_unit（spec §5.4：标记文件夹时取消子项标记），
-        # 默认 title=path.name（即文件夹名 == name）。
+        # 标记为内容单元（title 列已随 schema v15 删除）。
         try:
             unit = self._content.mark_as_content_unit(target_folder)
         except (ApplicationError, RepositoryError, sqlite3.Error) as create_err:

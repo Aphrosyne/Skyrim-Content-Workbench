@@ -31,7 +31,6 @@ def _make_unit(unit_id: str = "u1", cover_path: str | None = None) -> ContentUni
     return ContentUnit(
         id=unit_id,
         path=f"/test/folder_{unit_id}",
-        title=f"Folder {unit_id}",
         content_type="mod",
         created_at="2026-07-01T00:00:00Z",
         updated_at="2026-07-01T00:00:00Z",

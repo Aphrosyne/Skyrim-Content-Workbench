@@ -32,7 +32,6 @@ class TestContentUnit:
         assert unit.id == "u-1"
         assert unit.path == "/mods/armor"
         assert unit.content_type == "mod"
-        assert unit.title is None
 
     def test_create_with_all_fields(self) -> None:
         unit = ContentUnit(
@@ -40,13 +39,13 @@ class TestContentUnit:
             path="/mods/weapon",
             created_at="2026-07-12T00:00:00Z",
             updated_at="2026-07-12T00:00:00Z",
-            title="龙之剑",
             content_type="mod",
             source_url="https://example.com",
             cover_path="/mods/weapon/cover.png",
             notes="测试备注",
         )
-        assert unit.title == "龙之剑"
+        assert unit.source_url == "https://example.com"
+        assert unit.notes == "测试备注"
 
     def test_empty_id_raises(self) -> None:
         with pytest.raises(ValueError, match="id"):
@@ -88,7 +87,7 @@ class TestContentUnit:
 class TestTagCategory:
     def test_create_with_defaults(self) -> None:
         cat = TagCategory(id="c-1", name="类型")
-        assert cat.color_hue == 0
+        assert cat.color_hex == "#D61A1A"
 
     def test_empty_id_raises(self) -> None:
         with pytest.raises(ValueError, match="id"):
@@ -98,17 +97,20 @@ class TestTagCategory:
         with pytest.raises(ValueError, match="name"):
             TagCategory(id="c", name="")
 
-    def test_color_hue_below_range_raises(self) -> None:
-        with pytest.raises(ValueError, match="color_hue"):
-            TagCategory(id="c", name="x", color_hue=-1)
+    def test_color_hex_valid(self) -> None:
+        TagCategory(id="c", name="x", color_hex="#1A78D6")
 
-    def test_color_hue_above_range_raises(self) -> None:
-        with pytest.raises(ValueError, match="color_hue"):
-            TagCategory(id="c", name="x", color_hue=361)
+    def test_color_hex_lowercase_raises(self) -> None:
+        with pytest.raises(ValueError, match="color_hex"):
+            TagCategory(id="c", name="x", color_hex="#1a78d6")
 
-    def test_color_hue_boundaries(self) -> None:
-        TagCategory(id="c", name="x", color_hue=0)
-        TagCategory(id="c", name="x", color_hue=360)
+    def test_color_hex_missing_hash_raises(self) -> None:
+        with pytest.raises(ValueError, match="color_hex"):
+            TagCategory(id="c", name="x", color_hex="1A78D6")
+
+    def test_color_hex_wrong_length_raises(self) -> None:
+        with pytest.raises(ValueError, match="color_hex"):
+            TagCategory(id="c", name="x", color_hex="#1A78D")
 
 
 # === Tag ===

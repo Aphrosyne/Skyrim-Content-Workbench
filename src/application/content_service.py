@@ -22,8 +22,9 @@ Stage 4 Task 2 新增：
 - list_cover_candidates：列出内容单元目录内所有支持的图片格式（用于 CoverPickerDialog）。
 - 委托 TagService 完成标签关联与批量打标签。
 
-UI合理性13（2026-08-03）：title 列保留但停止使用——创建不再默认 title=文件名，
-update_metadata 不再提供 title 参数；重命名/移动由 FileOperationService 处理且不维护 title。
+schema v15（2026-08-05）：content_unit.title 列已物理删除（UI合理性13 起
+停止使用）——创建不再有 title、update_metadata 不提供 title 参数；
+重命名/移动由 FileOperationService 处理且不维护 title。
 """
 
 from __future__ import annotations
@@ -164,7 +165,7 @@ class ContentService:
         Raises:
             ConstraintViolationError: path 已存在 ContentUnit。
 
-        UI合理性13：不再接收 title——新记录 title 恒为 None（列保留、停止使用）。
+        UI合理性13：不再接收 title（schema v15 已删除该列）。
         """
         now = self._now()
         unit = ContentUnit(
@@ -258,7 +259,7 @@ class ContentService:
                     failures=failures,
                 )
 
-        # 创建新记录（UI合理性13：不再默认 title=文件名，title 列停止使用）
+        # 创建新记录（UI合理性13：不再默认 title=文件名；schema v15 已删除该列）
         result = self.create_content_unit(path)
 
         # Stage 5 Task 1：标记文件夹为内容单元时自动录入封面
@@ -440,7 +441,7 @@ class ContentService:
         cover_changed = False
         original_cover_path = unit.cover_path
 
-        # 校验并应用各字段（UI合理性13：title 已停用，不再写入）
+        # 校验并应用各字段（UI合理性13：title 已停用；schema v15 已删除该列）
         if source_url is not None:
             source_url = source_url.strip()
             if len(source_url) > _URL_MAX_LENGTH:

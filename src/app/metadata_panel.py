@@ -331,8 +331,8 @@ class MetadataPanel(QWidget):
         self._managed_root_service = None
         # 图片预览模式（操作合理性2）：当前预览的图片文件路径（None = 非预览模式）
         self._preview_only_path: Path | None = None
-        # 分类色映射（BugFix2）：category_id → color_hue，供 chip / 预选按钮边框着色
-        self._category_hues: dict[str, int] = {}
+        # 分类色映射（BugFix2；schema v15 起存完整颜色）：category_id → color_hex
+        self._category_colors: dict[str, str] = {}
 
         self._setup_ui()
 
@@ -948,7 +948,7 @@ class MetadataPanel(QWidget):
     def _load_tags_for_unit(self, unit_id: str) -> None:
         """从 TagService 加载当前 unit 的所有标签，填充 chip 列表。"""
         self._current_tags = []
-        self._category_hues = {}
+        self._category_colors = {}
         self._disconnect_flow_buttons(self._tag_flow)
         self._tag_flow.clear()
         self._chip_buttons = []
@@ -959,7 +959,7 @@ class MetadataPanel(QWidget):
             return
 
         for category, tags in grouped:
-            self._category_hues[category.id] = category.color_hue
+            self._category_colors[category.id] = category.color_hex
             for tag in tags:
                 self._append_tag_chip(tag)
                 self._current_tags.append(tag)
@@ -981,11 +981,11 @@ class MetadataPanel(QWidget):
     def _append_tag_chip(self, tag: Tag) -> None:
         """添加一个 chip 按钮（背景/边框统一分类色，文字色按亮度自动黑/白）。"""
         btn = QPushButton(f"{tag.name} ×", self._tag_list)
-        hue = self._category_hues.get(tag.category_id)
+        color = self._category_colors.get(tag.category_id)
         btn.setStyleSheet(
             ui.TAG_BUTTON_FILLED_STYLE.format(
                 color=self._category_hex(tag.category_id),
-                text=text_color_hex(hue) if hue is not None else "#1a1a1a",
+                text=text_color_hex(color) if color is not None else "#1a1a1a",
             )
         )
         btn.setToolTip(ui.METADATA_PANEL_TAG_REMOVED.format(name=tag.name))
@@ -1049,10 +1049,10 @@ class MetadataPanel(QWidget):
 
     def _category_hex(self, category_id: str) -> str:
         """返回分类色 hex（未知分类回退浅灰，供 chip / 预选按钮边框着色）。"""
-        hue = self._category_hues.get(category_id)
-        if hue is None:
+        color = self._category_colors.get(category_id)
+        if color is None:
             return "#c0c0c0"
-        return category_color_hex(hue)
+        return category_color_hex(color)
 
     # --- 事件处理 ---
 
@@ -1115,7 +1115,7 @@ class MetadataPanel(QWidget):
             self._preset_empty_hint.setVisible(True)
             return
         current_ids = {t.id for t in self._current_tags}
-        self._category_hues = {category.id: category.color_hue for category, _tags in grouped}
+        self._category_colors = {category.id: category.color_hex for category, _tags in grouped}
         total_shown = 0
         for category, tags in grouped:
             available = sorted(
@@ -1147,8 +1147,8 @@ class MetadataPanel(QWidget):
                 # BugFix2：组内标签按钮背景/边框统一分类色，文字色自动黑/白
                 btn.setStyleSheet(
                     ui.TAG_BUTTON_FILLED_STYLE.format(
-                        color=category_color_hex(category.color_hue),
-                        text=text_color_hex(category.color_hue),
+                        color=category_color_hex(category.color_hex),
+                        text=text_color_hex(category.color_hex),
                     )
                 )
                 btn.clicked.connect(lambda checked=False, t=tag: self._apply_tag_toggle(t, True))
@@ -1190,16 +1190,16 @@ class MetadataPanel(QWidget):
             self._recent_widget.setVisible(False)
             self._recent_title.setVisible(False)
             return
-        # 映射 id → Tag 与 id → 分类色相（list_categories_with_tags 一次获取全部；
-        # 不依赖 _category_hues，避免 _refresh_recent_list 先于 _refresh_preset_list
+        # 映射 id → Tag 与 id → 分类颜色（list_categories_with_tags 一次获取全部；
+        # 不依赖 _category_colors，避免 _refresh_recent_list 先于 _refresh_preset_list
         # 执行时着色缺失）
         id_to_tag: dict[str, Tag] = {}
-        id_to_hue: dict[str, int | None] = {}
+        id_to_color: dict[str, str | None] = {}
         try:
             for category, tags in self._tag_service.list_categories_with_tags():
                 for t in tags:
                     id_to_tag[t.id] = t
-                    id_to_hue[t.id] = category.color_hue
+                    id_to_color[t.id] = category.color_hex
         except ApplicationError:
             self._recent_widget.setVisible(False)
             self._recent_title.setVisible(False)
@@ -1212,11 +1212,11 @@ class MetadataPanel(QWidget):
                 continue  # 标签已删除，跳过
             btn = QPushButton(tag.name, self._recent_widget)
             # 修复（2026-08-04 验收反馈）：最近标签与预选/ chip 一致使用分类色
-            hue = id_to_hue.get(tag.id)
+            color = id_to_color.get(tag.id)
             btn.setStyleSheet(
                 ui.TAG_BUTTON_FILLED_STYLE.format(
-                    color=category_color_hex(hue) if hue is not None else "#c0c0c0",
-                    text=text_color_hex(hue) if hue is not None else "#1a1a1a",
+                    color=category_color_hex(color) if color is not None else "#c0c0c0",
+                    text=text_color_hex(color) if color is not None else "#1a1a1a",
                 )
             )
             if tag.id in current_ids:

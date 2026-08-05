@@ -25,9 +25,9 @@ from infrastructure.repositories.tag_category import TagCategoryRepository
 def _make_category(
     category_id: str = "c-1",
     name: str = "服装护甲",
-    color_hue: int = 210,
+    color_hex: str = "#1A78D6",
 ) -> TagCategory:
-    return TagCategory(id=category_id, name=name, color_hue=color_hue)
+    return TagCategory(id=category_id, name=name, color_hex=color_hex)
 
 
 class TestCreate:
@@ -36,7 +36,7 @@ class TestCreate:
         created = repo.create(_make_category())
         assert created.id == "c-1"
         assert created.name == "服装护甲"
-        assert created.color_hue == 210
+        assert created.color_hex == "#1A78D6"
 
         fetched = repo.get_by_id("c-1")
         assert fetched is not None
@@ -120,14 +120,14 @@ class TestUpdate:
         updated = repo.update(cat)
         assert updated.name == "新名"
 
-    def test_update_color_hue(self, db_connection: sqlite3.Connection) -> None:
+    def test_update_color_hex(self, db_connection: sqlite3.Connection) -> None:
         repo = TagCategoryRepository(db_connection)
-        repo.create(_make_category(color_hue=100))
+        repo.create(_make_category(color_hex="#D61A1A"))
         cat = repo.get_by_id("c-1")
         assert cat is not None
-        cat.color_hue = 200
+        cat.color_hex = "#1AD61A"
         updated = repo.update(cat)
-        assert updated.color_hue == 200
+        assert updated.color_hex == "#1AD61A"
 
     def test_update_duplicate_name_raises_constraint(
         self, db_connection: sqlite3.Connection

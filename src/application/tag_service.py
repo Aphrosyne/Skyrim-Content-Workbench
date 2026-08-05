@@ -14,14 +14,14 @@
 - 异常分层：repo 层 RepositoryError / ConstraintViolationError → service 层
   ApplicationError 子类（DuplicateTagCategoryNameError / TagCategoryNotFoundError 等）。
 
-JSON 格式（schema_version=1）：
+JSON 格式（schema_version=2；导入兼容旧 schema_version=1 的 color_hue 字段）：
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "categories": [
     {
       "name": "服装护甲",
-      "color_hue": 210,
+      "color_hex": "#1A78D6",
       "tags": ["重甲", "轻甲", ...]
     },
     ...
@@ -52,6 +52,7 @@ from application.errors import (
     TagNotFoundError,
 )
 from domain.models import Tag, TagCategory
+from infrastructure.color_utils import hue_to_hex
 from infrastructure.repositories.content_unit_tag import ContentUnitTagRepository
 from infrastructure.repositories.errors import (
     ConstraintViolationError,
@@ -63,8 +64,8 @@ from infrastructure.repositories.tag_category import TagCategoryRepository
 
 logger = logging.getLogger(__name__)
 
-# JSON schema 版本号
-TAGS_JSON_SCHEMA_VERSION = 1
+# JSON schema 版本号（v2：color_hue → color_hex；导入兼容 v1）
+TAGS_JSON_SCHEMA_VERSION = 2
 
 
 def _default_now_utc() -> str:
@@ -80,7 +81,7 @@ class TagService:
 
     使用方式：
         service = TagService(category_repo, tag_repo, cut_repo)
-        category = service.create_category("服装护甲", color_hue=210)
+        category = service.create_category("服装护甲", color_hex="#1A78D6")
         tag = service.create_tag("重甲", category.id)
         service.load_default_tags_if_empty(Path("default_tags.json"))
         service.export_to_json(Path("my_tags.json"))
@@ -102,7 +103,7 @@ class TagService:
 
     # --- TagCategory CRUD ---
 
-    def create_category(self, name: str, color_hue: int = 0) -> TagCategory:
+    def create_category(self, name: str, color_hex: str = "#D61A1A") -> TagCategory:
         """创建标签分类。同名抛 DuplicateTagCategoryNameError。"""
         name = name.strip()
         if not name:
@@ -112,7 +113,7 @@ class TagService:
         category = TagCategory(
             id=self._new_uuid(),
             name=name,
-            color_hue=color_hue,
+            color_hex=color_hex,
         )
         try:
             return self._category_repo.create(category)
@@ -151,10 +152,10 @@ class TagService:
         except RepositoryError as e:
             raise InvalidTagJsonError(f"无法重命名分类：{e}") from e
 
-    def update_category_color(self, category_id: str, color_hue: int) -> TagCategory:
-        """更新分类的色相值。不存在抛 TagCategoryNotFoundError。"""
+    def update_category_color(self, category_id: str, color_hex: str) -> TagCategory:
+        """更新分类的完整颜色。不存在抛 TagCategoryNotFoundError。"""
         category = self.get_category(category_id)
-        category.color_hue = color_hue
+        category.color_hex = color_hex
         try:
             return self._category_repo.update(category)
         except RepositoryError as e:
@@ -498,9 +499,9 @@ class TagService:
         JSON 结构：
         ```json
         {
-          "schema_version": 1,
+          "schema_version": 2,
           "categories": [
-            {"name": "服装护甲", "color_hue": 210, "tags": ["重甲", ...]},
+            {"name": "服装护甲", "color_hex": "#1A78D6", "tags": ["重甲", ...]},
             ...
           ]
         }
@@ -513,7 +514,7 @@ class TagService:
             data["categories"].append(
                 {
                     "name": cat.name,
-                    "color_hue": cat.color_hue,
+                    "color_hex": cat.color_hex,
                     "tags": [t.name for t in tags],
                 }
             )
@@ -547,9 +548,10 @@ class TagService:
         if not isinstance(data, dict):
             raise InvalidTagJsonError("JSON 顶层必须是对象")
         schema_version = data.get("schema_version")
-        if schema_version != TAGS_JSON_SCHEMA_VERSION:
+        if schema_version not in (1, TAGS_JSON_SCHEMA_VERSION):
             raise InvalidTagJsonError(
-                f"不支持的 schema_version：{schema_version}，当前支持 {TAGS_JSON_SCHEMA_VERSION}"
+                f"不支持的 schema_version：{schema_version}，"
+                f"当前支持 1 / {TAGS_JSON_SCHEMA_VERSION}"
             )
         categories = data.get("categories")
         if not isinstance(categories, list):
@@ -564,12 +566,19 @@ class TagService:
             if not isinstance(cat_data, dict):
                 raise InvalidTagJsonError("categories 必须是对象数组")
             name = cat_data.get("name")
-            color_hue = cat_data.get("color_hue", 0)
             tags = cat_data.get("tags", [])
             if not isinstance(name, str) or not name.strip():
                 raise InvalidTagJsonError("分类 name 缺失或为空")
             if not isinstance(tags, list):
                 raise InvalidTagJsonError(f"{name} 的 tags 字段必须是数组")
+
+            # 颜色：v2 用 color_hex；v1 兼容映射 color_hue（与显示色一致换算）
+            color_hex = cat_data.get("color_hex")
+            if color_hex is None:
+                try:
+                    color_hex = hue_to_hex(int(cat_data.get("color_hue", 0)))
+                except (TypeError, ValueError) as e:
+                    raise InvalidTagJsonError(f"{name} 的 color_hue 非法：{e}") from e
 
             # 同名分类整体跳过
             if self._category_repo.get_by_name(name) is not None:
@@ -578,14 +587,16 @@ class TagService:
                 continue
 
             # 创建分类
-            category = TagCategory(
-                id=self._new_uuid(),
-                name=name,
-                color_hue=int(color_hue),
-            )
             try:
+                category = TagCategory(
+                    id=self._new_uuid(),
+                    name=name,
+                    color_hex=color_hex,
+                )
                 self._category_repo.create(category)
                 created_categories += 1
+            except ValueError as e:
+                raise InvalidTagJsonError(f"{name} 的颜色配置非法：{e}") from e
             except (ConstraintViolationError, sqlite3.IntegrityError) as e:
                 # 竞态：去重检查与 create 之间另一线程插入了相同 name
                 raise DuplicateTagCategoryNameError(f"该分类已存在：{name}") from e

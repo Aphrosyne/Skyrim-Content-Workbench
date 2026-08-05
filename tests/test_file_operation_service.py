@@ -399,8 +399,6 @@ def _seed_content_unit(repo: ContentUnitRepository, unit_id: str, path: str) -> 
     unit = ContentUnit(
         id=unit_id,
         path=path,
-        # 模拟遗留数据的 title（= 文件名）；UI合理性13 起重命名不再维护 title
-        title=Path(path).name,
         content_type="mod",
         created_at="2026-07-28T00:00:00Z",
         updated_at="2026-07-28T00:00:00Z",
@@ -998,12 +996,10 @@ class TestRenameWithoutSync:
 class TestFileContentUnitSync:
     """数据库问题1：文件重命名/移动原地更新 content_unit 行。
 
-    UI合理性13：title 列停止使用，重命名/移动不再维护 title（原值保留）。
+    schema v15：content_unit.title 列已删除，重命名/移动只更新 path/path_key。
     """
 
-    def test_rename_file_updates_content_unit_path_keeps_title(
-        self, service_with_sync, tmp_path: Path
-    ) -> None:
+    def test_rename_file_updates_content_unit_path(self, service_with_sync, tmp_path: Path) -> None:
         svc, conn, _, content_unit_repo = service_with_sync
         parent = tmp_path / "parent"
         parent.mkdir()
@@ -1015,40 +1011,9 @@ class TestFileContentUnitSync:
         svc.rename(src, "BAA.7z")
         conn.commit()
 
-        rows = conn.execute("SELECT path, path_key, title FROM content_unit").fetchall()
+        rows = conn.execute("SELECT path, path_key FROM content_unit").fetchall()
         assert len(rows) == 1
         assert make_path_key(rows[0]["path"]) == make_path_key(str(parent / "BAA.7z"))
-        assert rows[0]["title"] == "AAA.7z"  # title 不再跟随重命名
-
-    def test_rename_file_preserves_custom_title(self, service_with_sync, tmp_path: Path) -> None:
-        svc, conn, _, content_unit_repo = service_with_sync
-        parent = tmp_path / "parent"
-        parent.mkdir()
-        src = parent / "AAA.7z"
-        src.write_bytes(b"data")
-        unit = _seed_content_unit(content_unit_repo, "cu-file", str(src))
-        # 模拟用户手动改过标题
-        content_unit_repo.update(
-            ContentUnit(
-                id=unit.id,
-                path=unit.path,
-                title="自定义标题",
-                content_type=unit.content_type,
-                source_url=unit.source_url,
-                cover_path=unit.cover_path,
-                notes=unit.notes,
-                created_at=unit.created_at,
-                updated_at=unit.updated_at,
-            )
-        )
-        conn.commit()
-
-        svc.rename(src, "BAA.7z")
-        conn.commit()
-
-        rows = conn.execute("SELECT title FROM content_unit").fetchall()
-        assert len(rows) == 1
-        assert rows[0]["title"] == "自定义标题"
 
     def test_rename_file_without_content_unit_noop(self, service_with_sync, tmp_path: Path) -> None:
         svc, conn, _, content_unit_repo = service_with_sync
@@ -1076,14 +1041,11 @@ class TestFileContentUnitSync:
         svc.move(src, dst_dir / "AAA.7z")
         conn.commit()
 
-        rows = conn.execute("SELECT path, title FROM content_unit").fetchall()
+        rows = conn.execute("SELECT path FROM content_unit").fetchall()
         assert len(rows) == 1
         assert make_path_key(rows[0]["path"]) == make_path_key(str(dst_dir / "AAA.7z"))
-        assert rows[0]["title"] == "AAA.7z"  # 文件名未变，标题不变
 
-    def test_move_file_with_new_name_keeps_title_unchanged(
-        self, service_with_sync, tmp_path: Path
-    ) -> None:
+    def test_move_file_with_new_name_updates_path(self, service_with_sync, tmp_path: Path) -> None:
         svc, conn, _, content_unit_repo = service_with_sync
         src_dir = tmp_path / "src"
         src_dir.mkdir()
@@ -1097,10 +1059,9 @@ class TestFileContentUnitSync:
         svc.move(src, dst_dir / "BAA.7z")
         conn.commit()
 
-        rows = conn.execute("SELECT path, title FROM content_unit").fetchall()
+        rows = conn.execute("SELECT path FROM content_unit").fetchall()
         assert len(rows) == 1
         assert make_path_key(rows[0]["path"]) == make_path_key(str(dst_dir / "BAA.7z"))
-        assert rows[0]["title"] == "AAA.7z"  # UI合理性13：title 不再跟随
 
     def test_move_file_into_marked_folder_removes_unit(
         self, service_with_sync, tmp_path: Path

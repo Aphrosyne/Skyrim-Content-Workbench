@@ -52,7 +52,6 @@ def _make_entry(
 def _make_unit(
     unit_id: str = "u-1",
     path: str = "/mods/armor",
-    title: str | None = None,
     cover_path: str | None = None,
 ) -> ContentUnit:
     return ContentUnit(
@@ -60,7 +59,6 @@ def _make_unit(
         path=path,
         created_at="2026-07-13T00:00:00Z",
         updated_at="2026-07-13T00:00:00Z",
-        title=title,
         cover_path=cover_path,
     )
 

@@ -354,9 +354,9 @@ def test_remove_root_cleans_scan_records(db_connection, tmp_path: Path) -> None:
 
     # 模拟扫描结果（直接插入 content_unit 与 folder_cache）
     db_connection.execute(
-        "INSERT INTO content_unit (id, path, path_key, title, content_type, "
+        "INSERT INTO content_unit (id, path, path_key, content_type, "
         "created_at, updated_at) VALUES "
-        "('cu-1', ?, ?, 'Mods', 'mod', '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
+        "('cu-1', ?, ?, 'mod', '2026-07-07T00:00:00Z', '2026-07-07T00:00:00Z')",
         (str(target), make_path_key(str(target))),
     )
     db_connection.execute(
@@ -408,9 +408,9 @@ def test_remove_root_cleans_nested_scan_records(db_connection, tmp_path: Path) -
         (str(nested_dir),),
     )
     db_connection.execute(
-        "INSERT INTO content_unit (id, path, path_key, title, content_type, "
+        "INSERT INTO content_unit (id, path, path_key, content_type, "
         "created_at, updated_at) VALUES "
-        "('cu-nested', ?, ?, 'BDOR.7z', 'mod', 't', 't')",
+        "('cu-nested', ?, ?, 'mod', 't', 't')",
         (str(nested_dir / "BDOR.7z"), make_path_key(str(nested_dir / "BDOR.7z"))),
     )
     db_connection.commit()
@@ -450,15 +450,15 @@ def test_remove_root_overlap_guard(db_connection, tmp_path: Path) -> None:
         (str(outer / "Other"),),
     )
     db_connection.execute(
-        "INSERT INTO content_unit (id, path, path_key, title, content_type, "
+        "INSERT INTO content_unit (id, path, path_key, content_type, "
         "created_at, updated_at) VALUES "
-        "('cu-inner', ?, ?, 'Inner.7z', 'mod', 't', 't')",
+        "('cu-inner', ?, ?, 'mod', 't', 't')",
         (str(inner / "Inner.7z"), make_path_key(str(inner / "Inner.7z"))),
     )
     db_connection.execute(
-        "INSERT INTO content_unit (id, path, path_key, title, content_type, "
+        "INSERT INTO content_unit (id, path, path_key, content_type, "
         "created_at, updated_at) VALUES "
-        "('cu-outer-other', ?, ?, 'Other.7z', 'mod', 't', 't')",
+        "('cu-outer-other', ?, ?, 'mod', 't', 't')",
         (str(outer / "Other.7z"), make_path_key(str(outer / "Other.7z"))),
     )
     db_connection.commit()
