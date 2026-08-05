@@ -1,0 +1,18 @@
+# Skyrim Content Workbench 依赖锁定（2026-08-05）
+# 生成：.venv\Scripts\python -m pip freeze（剔除项目本体 editable 条目）
+# 用法：pip install -r requirements.txt
+#   - 首行 -e . 会一并安装项目本体（含 src 路径），无需再单独 pip install -e .
+#   - 运行时依赖以 pyproject.toml 为准；本文件用于完全复现开发环境版本
+-e .
+colorama==0.4.6
+iniconfig==2.3.0
+packaging==26.2
+pillow==12.3.0
+pluggy==1.6.0
+Pygments==2.20.0
+PySide6==6.11.1
+PySide6_Addons==6.11.1
+PySide6_Essentials==6.11.1
+pytest==9.1.1
+ruff==0.16.0
+shiboken6==6.11.1
